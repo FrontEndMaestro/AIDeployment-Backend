@@ -1,0 +1,12 @@
+Give me the remaining codes and setup and testing
+
+app/controllers/upload_controller.py
+
+app/routes/upload.py
+
+There are some issues while testing the project metadata while extracting it,
+ also ML is not detecting frameworks or languages properly, Sometimes it does true detection but sometimes
+it cant detect what language and framework so it marks it unknown, also its not checking for docker or
+docker-compolse correctly, there are multiple folders, in the main, it has to check for these files,
+so also help me update this part also
+
