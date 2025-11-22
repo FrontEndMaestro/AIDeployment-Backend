@@ -1,7 +1,8 @@
 import os
 import json
 import re
-from typing import Dict, List, Tuple
+from collections import Counter
+from typing import Dict, List, Tuple, Optional
 from .ml_analyzer import get_ml_analyzer
 
 
@@ -108,6 +109,55 @@ FRAMEWORK_INDICATORS = {
     }
 }
 
+# Simple mapping to tie frameworks to primary language for scoring
+FRAMEWORK_LANGUAGES: Dict[str, str] = {
+    "Flask": "Python",
+    "Django": "Python",
+    "FastAPI": "Python",
+    "Express.js": "JavaScript",
+    "Next.js": "JavaScript",
+    "React": "JavaScript",
+    "Spring Boot": "Java",
+    "Laravel": "PHP",
+    "Rails": "Ruby",
+}
+
+# --- Database indicator config (for DB detection) ---
+
+DB_INDICATORS = {
+    "PostgreSQL": {
+        "dependencies": [
+            "psycopg2", "psycopg2-binary", "asyncpg", "pg", "pg-promise",
+            "org.postgresql", "postgresql", "pgx", "pq"
+        ],
+        "env_keys": ["POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "DATABASE_URL"],
+        "compose_images": ["postgres"]
+    },
+    "MySQL": {
+        "dependencies": [
+            "mysqlclient", "pymysql", "mysql-connector", "mysql-connector-python",
+            "mysql2", "mysql", "mariadb-java-client", "mariadb"
+        ],
+        "env_keys": ["MYSQL_DATABASE", "MYSQL_USER", "MYSQL_PASSWORD"],
+        "compose_images": ["mysql", "mariadb"]
+    },
+    "MongoDB": {
+        "dependencies": ["pymongo", "mongoengine", "mongoose", "mongodb", "motor"],
+        "env_keys": ["MONGO_URI", "MONGODB_URI"],
+        "compose_images": ["mongo"]
+    },
+    "SQLite": {
+        "dependencies": ["sqlite3"],
+        "env_keys": [],
+        "compose_images": []
+    },
+    "Redis": {
+        "dependencies": ["redis", "aioredis", "ioredis"],
+        "env_keys": ["REDIS_URL", "REDIS_HOST"],
+        "compose_images": ["redis"]
+    }
+}
+
 
 def parse_dependencies_file(file_path: str, file_type: str) -> List[str]:
     """Parse dependencies from various file types"""
@@ -138,10 +188,17 @@ def parse_dependencies_file(file_path: str, file_type: str) -> List[str]:
         elif file_type == "go.mod":
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                dependencies = [
-                    line.split()[0] for line in content.split('\n')
-                    if line.strip() and not line.startswith('module') and not line.startswith('go')
-                ]
+                deps: List[str] = []
+                for line in content.split('\n'):
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    if stripped.startswith(('module', 'go', 'require', 'replace', '//')):
+                        continue
+                    parts = stripped.split()
+                    if parts:
+                        deps.append(parts[0])
+                dependencies = deps
     
     except Exception as e:
         print(f"Error parsing {file_type}: {e}")
@@ -190,7 +247,8 @@ def get_runtime_info(language: str, framework: str) -> Dict:
             "start_command": "ruby app.rb"
         },
         "PHP": {
-            "runtime": "php:8.2-apache",
+            # Use CLI image when starting via `php -S`
+            "runtime": "php:8.2-cli",
             "port": 80,
             "build_command": "composer install",
             "start_command": "php -S 0.0.0.0:80"
@@ -252,7 +310,7 @@ def detect_docker_files(project_path: str) -> Dict:
 
 
 def detect_env_variables(project_path: str) -> List[str]:
-    """Detect environment variables from .env files"""
+    """Detect environment variables from .env files (keys only)"""
     env_vars = []
     env_files = ['.env', '.env.example', '.env.sample', '.env.local']
     
@@ -271,6 +329,28 @@ def detect_env_variables(project_path: str) -> List[str]:
                 print(f"Error reading {env_file}: {e}")
     
     return env_vars
+
+
+def _read_env_key_values(project_path: str) -> Dict[str, str]:
+    """Internal helper: read key=value pairs from typical .env files (for DB/port hints)."""
+    env_values: Dict[str, str] = {}
+    env_files = [
+        '.env', '.env.local', '.env.development', '.env.production',
+        '.env.test', '.env.example'
+    ]
+    for env_file in env_files:
+        env_path = os.path.join(project_path, env_file)
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#') and '=' in line:
+                            key, value = line.split('=', 1)
+                            env_values[key.strip()] = value.strip()
+            except Exception as e:
+                print(f"Error reading {env_file} for values: {e}")
+    return env_values
 
 
 def find_project_root(extracted_path: str, max_depth: int = 3) -> str:
@@ -379,7 +459,7 @@ def heuristic_language_detection(project_path: str) -> Tuple[str, float]:
 def heuristic_framework_detection(project_path: str, language: str) -> Tuple[str, float]:
     """Detect framework using markers, config files, and dependencies - highly reliable"""
     
-    framework_scores = {}
+    framework_scores: Dict[str, float] = {}
     found_evidence = []
     
     try:
@@ -466,9 +546,14 @@ def heuristic_framework_detection(project_path: str, language: str) -> Tuple[str
     best_framework = "Unknown"
     best_score = 0.0
     
+    # Apply a soft penalty for frameworks that don't match the detected language
     for framework, score in framework_scores.items():
-        if score > best_score:
-            best_score = score
+        fw_lang = FRAMEWORK_LANGUAGES.get(framework)
+        adjusted_score = score
+        if fw_lang and language != "Unknown" and fw_lang != language:
+            adjusted_score *= 0.5  # penalize mismatched language/framework
+        if adjusted_score > best_score:
+            best_score = adjusted_score
             best_framework = framework
     
     confidence = min(best_score / 2.0, 1.0)
@@ -477,6 +562,418 @@ def heuristic_framework_detection(project_path: str, language: str) -> Tuple[str
         print(f"   Heuristic Framework: {best_framework} (score: {best_score:.2f})")
     
     return best_framework, confidence
+
+
+# ----- Port detection helpers -----
+
+
+def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
+    """
+    Detect typical fullstack structure with separate frontend/backend folders.
+    Looks for 'backend/server/api' and 'frontend/client/web' with package.json.
+    """
+    structure = {
+        "is_fullstack": False,
+        "has_backend": False,
+        "has_frontend": False,
+        "backend_path": None,
+        "frontend_path": None,
+    }
+    
+    for root, dirs, files in os.walk(project_path):
+        depth = root.replace(project_path, '').count(os.sep)
+        if depth > 2:
+            continue
+        
+        for folder in dirs:
+            folder_lower = folder.lower()
+            folder_path = os.path.join(root, folder)
+            pkg_path = os.path.join(folder_path, "package.json")
+            
+            if os.path.exists(pkg_path):
+                if folder_lower in ["backend", "server", "api"]:
+                    structure["has_backend"] = True
+                    structure["backend_path"] = folder_path
+                    structure["is_fullstack"] = True
+                    print(f"🔍 Fullstack: found backend folder '{folder}'")
+                if folder_lower in ["frontend", "client", "web"]:
+                    structure["has_frontend"] = True
+                    structure["frontend_path"] = folder_path
+                    structure["is_fullstack"] = True
+                    print(f"🔍 Fullstack: found frontend folder '{folder}'")
+    
+    return structure
+
+
+def _detect_port_from_package_json(project_path: str, prefer_frontend: bool = False) -> Optional[int]:
+    """
+    Guess port from package.json scripts.
+    prefer_frontend:
+      - True  => prioritise typical frontend ports
+      - False => prioritise typical backend ports
+    """
+    pkg_json = os.path.join(project_path, "package.json")
+    if not os.path.exists(pkg_json):
+        return None
+    
+    try:
+        with open(pkg_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"Error reading package.json for port detection: {e}")
+        return None
+    
+    scripts = data.get("scripts", {})
+    script_strings = " ".join(str(v) for v in scripts.values())
+    
+    # Look for explicit PORT=XXXX patterns first
+    match = re.search(r"\bPORT\s*=?\s*(\d{2,5})\b", script_strings)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    
+    # Heuristic port priorities
+    if prefer_frontend:
+        candidates = [3000, 5173, 4173, 4200, 8080, 8000, 5000, 4000]
+    else:
+        candidates = [8000, 8080, 5000, 4000, 3000, 5173, 4200]
+    
+    # More precise matching than simple substring
+    for port in candidates:
+        port_pattern = re.compile(
+            rf"(?:[:=]\s*{port}\b|\bPORT\s*=?\s*{port}\b)"
+        )
+        if port_pattern.search(script_strings):
+            return port
+    
+    # Default for Node apps
+    return 3000
+
+
+def _scan_code_for_ports(project_path: str, max_files: int = 150) -> Optional[int]:
+    """
+    Generic port scan: look for host:port patterns in code.
+    Used mainly for non-JS/TS projects.
+    """
+    exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rb", ".php"}
+    pattern = re.compile(
+        r"(?:0\.0\.0\.0|127\.0\.0\.1|localhost)\s*[: ]\s*(\d{2,5})"
+    )
+    
+    counts: Counter = Counter()
+    files_scanned = 0
+    
+    try:
+        for root, dirs, files in os.walk(project_path):
+            dirs[:] = [d for d in dirs if d not in [
+                "node_modules", "__pycache__", ".git", "venv", ".venv",
+                "dist", "build", ".next", "target", "bin", "obj", "out"
+            ]]
+            
+            for file in files:
+                if files_scanned >= max_files:
+                    break
+                _, ext = os.path.splitext(file)
+                if ext.lower() not in exts:
+                    continue
+                
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read(8000)
+                    for m in pattern.finditer(content):
+                        try:
+                            port = int(m.group(1))
+                            if 1024 <= port <= 65535:
+                                counts[port] += 1
+                        except ValueError:
+                            continue
+                except Exception:
+                    continue
+                files_scanned += 1
+            
+            if files_scanned >= max_files:
+                break
+    except Exception as e:
+        print(f"Port scan error: {e}")
+    
+    if not counts:
+        return None
+    
+    # Most frequent port
+    port, _ = counts.most_common(1)[0]
+    return port
+
+
+def detect_ports_for_project(
+    project_path: str,
+    language: str,
+    framework: str,
+    base_port: Optional[int]
+) -> Dict[str, Optional[int]]:
+    """
+    Detect backend and frontend ports.
+    - For JS/TS: look for fullstack structure and read package.json.
+    - For others: scan code for host:port; fall back to base_port / defaults.
+    """
+    backend_port: Optional[int] = None
+    frontend_port: Optional[int] = None
+    
+    # JS / TS fullstack or single service
+    if language in ["JavaScript", "TypeScript"]:
+        fullstack = _detect_fullstack_structure(project_path)
+        
+        # Backend
+        if fullstack.get("has_backend") and fullstack.get("backend_path"):
+            backend_port = _detect_port_from_package_json(
+                fullstack["backend_path"], prefer_frontend=False
+            )
+        else:
+            backend_port = _detect_port_from_package_json(
+                project_path, prefer_frontend=False
+            )
+        
+        # Frontend
+        if fullstack.get("has_frontend") and fullstack.get("frontend_path"):
+            frontend_port = _detect_port_from_package_json(
+                fullstack["frontend_path"], prefer_frontend=True
+            )
+        # If no explicit frontend folder we leave frontend_port = None
+        
+    else:
+        # Non JS/TS: single backend service usually.
+        detected = _scan_code_for_ports(project_path)
+        if detected:
+            backend_port = detected
+        else:
+            # fallback to base_port or language default
+            backend_port = base_port
+            if backend_port is None:
+                # Just in case base_port is not set, create a small default map
+                default_ports = {
+                    "Python": 8000,
+                    "Java": 8080,
+                    "Go": 8080,
+                    "Ruby": 3000,
+                    "PHP": 8000
+                }
+                backend_port = default_ports.get(language, 8000)
+    
+    return {
+        "backend_port": backend_port,
+        "frontend_port": frontend_port
+    }
+
+
+# ----- Database detection helpers -----
+
+
+def _infer_database_port(
+    primary_db: str,
+    env_kv: Dict[str, str],
+    compose_content: str
+) -> Optional[int]:
+    """
+    Infer database port from env key/values and docker-compose content.
+    Falls back to well-known defaults if nothing explicit is found.
+    """
+    primary = primary_db or "Unknown"
+    DEFAULT_DB_PORTS: Dict[str, Optional[int]] = {
+        "PostgreSQL": 5432,
+        "MySQL": 3306,
+        "MongoDB": 27017,
+        "SQLite": None,  # file-based
+        "Redis": 6379,
+    }
+
+    # DB-specific env keys to prefer over generic PORT vars
+    DB_SPECIFIC_PORT_KEYS: Dict[str, List[str]] = {
+        "PostgreSQL": ["PGPORT", "POSTGRES_PORT", "DB_PORT", "DATABASE_PORT"],
+        "MySQL": ["MYSQL_PORT", "MARIADB_PORT", "DB_PORT", "DATABASE_PORT"],
+        "MongoDB": ["MONGO_PORT", "MONGODB_PORT", "DB_PORT", "DATABASE_PORT"],
+        "Redis": ["REDIS_PORT", "DB_PORT", "DATABASE_PORT"],
+    }
+    
+    default_port = DEFAULT_DB_PORTS.get(primary, None)
+    specific_ports: List[int] = []
+    generic_ports: List[int] = []
+    
+    # 1) From env key/values (DB-specific first, then generic PORT keys)
+    specific_keys_for_db = set(DB_SPECIFIC_PORT_KEYS.get(primary, []))
+    
+    for key, value in env_kv.items():
+        key_upper = key.upper()
+        val = value.strip()
+        
+        # DB-specific keys
+        if key_upper in specific_keys_for_db:
+            if val.isdigit():
+                specific_ports.append(int(val))
+            else:
+                for m in re.findall(r":(\d{2,5})", val):
+                    try:
+                        specific_ports.append(int(m))
+                    except ValueError:
+                        continue
+            continue
+        
+        # Generic PORT keys
+        if "PORT" in key_upper:
+            if val.isdigit():
+                generic_ports.append(int(val))
+            else:
+                for m in re.findall(r":(\d{2,5})", val):
+                    try:
+                        generic_ports.append(int(m))
+                    except ValueError:
+                        continue
+    
+    # Prefer env-based port matching default if available (specific first)
+    if default_port is not None:
+        if default_port in specific_ports:
+            return default_port
+        if specific_ports:
+            return specific_ports[0]
+        if default_port in generic_ports:
+            return default_port
+    
+    if specific_ports:
+        return specific_ports[0]
+    
+    if generic_ports:
+        return generic_ports[0]
+    
+    # 2) From docker-compose port mappings
+    # Look for patterns like "5432:5432" or "15432:5432"
+    if compose_content and default_port is not None:
+        try:
+            # host:container
+            pattern = re.compile(r"(\d{2,5})\s*:\s*(\d{2,5})")
+            for host_p, container_p in pattern.findall(compose_content):
+                try:
+                    host_port = int(host_p)
+                    container_port = int(container_p)
+                except ValueError:
+                    continue
+                
+                if container_port == default_port:
+                    return host_port  # host port that maps to default DB port
+        except Exception as e:
+            print(f"Error inferring DB port from compose: {e}")
+    
+    # 3) Fall back to default if known (non-SQLite)
+    return default_port
+
+
+def detect_databases(
+    project_path: str,
+    dependencies: List[str],
+    env_vars: List[str]
+) -> Dict:
+    """
+    Detect likely databases based on:
+    - dependency names
+    - env var keys
+    - docker-compose images
+    Also tries to infer a database port.
+    """
+    deps_lower = [d.lower() for d in dependencies]
+    env_lower = [e.lower() for e in env_vars]
+    
+    # docker-compose content
+    compose_content = ""
+    for fname in ("docker-compose.yml", "docker-compose.yaml"):
+        cpath = os.path.join(project_path, fname)
+        if os.path.exists(cpath):
+            try:
+                with open(cpath, "r", encoding="utf-8", errors="ignore") as f:
+                    compose_content += f.read().lower()
+            except Exception:
+                pass
+    
+    # read env key/values for DB port hints
+    env_kv = _read_env_key_values(project_path)
+    
+    scores: Dict[str, float] = {}
+    evidence: Dict[str, List[str]] = {}
+    
+    for db_name, info in DB_INDICATORS.items():
+        score = 0.0
+        ev: List[str] = []
+        
+        # Dependencies
+        for dep_pattern in info["dependencies"]:
+            for d in deps_lower:
+                if dep_pattern in d:
+                    score += 1.0
+                    ev.append(f"dependency:{dep_pattern}")
+                    break
+        
+        # Env var keys
+        for key in info["env_keys"]:
+            if key.lower() in env_lower:
+                score += 0.8
+                ev.append(f"env:{key}")
+        
+        # docker-compose images
+        for img in info["compose_images"]:
+            if img in compose_content:
+                score += 0.7
+                ev.append(f"compose:{img}")
+        
+        if score > 0:
+            scores[db_name] = score
+            evidence[db_name] = ev
+    
+    if not scores:
+        return {
+            "primary": "Unknown",
+            "all": [],
+            "details": {},
+            "port": None
+        }
+    
+    # Sort databases by score desc
+    sorted_dbs = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    primary = sorted_dbs[0][0]
+    all_names = [name for name, _ in sorted_dbs]
+    
+    details = {
+        name: {"score": scores[name], "evidence": evidence.get(name, [])}
+        for name in all_names
+    }
+    
+    print(f"   Detected databases (best first): {all_names}")
+    
+    # infer port for primary DB
+    db_port = _infer_database_port(primary, env_kv, compose_content)
+    
+    return {
+        "primary": primary,
+        "all": all_names,
+        "details": details,
+        "port": db_port
+    }
+
+
+def detect_db_and_ports(
+    project_path: str,
+    language: str,
+    framework: str,
+    dependencies: List[str],
+    env_vars: List[str],
+    base_port: Optional[int]
+) -> Tuple[Dict, Dict]:
+    """
+    High-level helper:
+    - database detection
+    - port detection (backend & frontend)
+    """
+    db_info = detect_databases(project_path, dependencies, env_vars)
+    ports_info = detect_ports_for_project(project_path, language, framework, base_port)
+    return db_info, ports_info
 
 
 def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
@@ -488,7 +985,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
     
     actual_path = find_project_root(project_path, max_depth=3)
     
-    results = {
+    results: Dict = {
         "framework": "Unknown",
         "language": "Unknown",
         "runtime": "alpine:latest",
@@ -504,7 +1001,14 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             "language": 0.0,
             "framework": 0.0,
             "method": "unknown"
-        }
+        },
+        # New fields for DB & multi-port
+        "database": "Unknown",
+        "databases": [],
+        "database_detection": {},
+        "database_port": None,
+        "backend_port": None,
+        "frontend_port": None,
     }
     
     try:
@@ -518,6 +1022,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         results["detection_confidence"]["framework"] = heur_fw_conf
         results["detection_confidence"]["method"] = "heuristic"
         
+        # Optional ML supplement
         if use_ml and (heur_lang_conf < 0.5 or heur_fw_conf < 0.5):
             print("\nHeuristic confidence low, trying ML as supplement...")
             try:
@@ -532,14 +1037,17 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                 if ml_results.get("framework_confidence", 0) > 0.6 and heur_fw == "Unknown":
                     results["framework"] = ml_results["framework"]
                     results["detection_confidence"]["framework"] = ml_results["framework_confidence"]
-                    results["detection_confidence"]["method"] = "hybrid (ML framework)"
-            
+                    # if we changed framework via ML, mark method accordingly
+                    if results["detection_confidence"]["method"] == "heuristic":
+                        results["detection_confidence"]["method"] = "hybrid (ML framework)"
             except Exception as e:
                 print(f"ML analysis failed, continuing with heuristic: {e}")
         
+        # Runtime defaults (may include default port)
         runtime_info = get_runtime_info(results["language"], results["framework"])
         results.update(runtime_info)
         
+        # Dependencies
         dep_files = {
             "requirements.txt": "requirements.txt",
             "package.json": "package.json",
@@ -555,16 +1063,48 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                 if filename not in results["detected_files"]:
                     results["detected_files"].append(filename)
         
+        # Docker files
         docker_info = detect_docker_files(actual_path)
         results["dockerfile"] = docker_info["dockerfile"]
         results["docker_compose"] = docker_info["docker_compose"]
         results["detected_files"].extend(docker_info["detected_files"])
         
+        # Env vars
         env_vars = detect_env_variables(actual_path)
         if env_vars:
             results["env_variables"] = env_vars
         
+        # DB + port detection (using final language/framework + deps/env + base port)
+        db_info, ports_info = detect_db_and_ports(
+            actual_path,
+            results["language"],
+            results["framework"],
+            results["dependencies"],
+            results.get("env_variables", []),
+            base_port=results.get("port")
+        )
+        
+        results["database"] = db_info.get("primary", "Unknown")
+        results["databases"] = db_info.get("all", [])
+        results["database_detection"] = db_info.get("details", {})
+        results["database_port"] = db_info.get("port")
+        
+        if ports_info.get("backend_port") is not None:
+            results["backend_port"] = ports_info["backend_port"]
+            # Keep existing 'port' field as backend port for backwards compatibility
+            results["port"] = ports_info["backend_port"]
+        
+        if ports_info.get("frontend_port") is not None:
+            results["frontend_port"] = ports_info["frontend_port"]
+        
+        # Deduplicate detected_files
         results["detected_files"] = list(set(results["detected_files"]))
+
+        # Safe debug print
+        try:
+            print("Here are all the results:\n" + json.dumps(results, indent=2, default=str))
+        except Exception:
+            print("Here are all the results (non-serializable parts skipped)")
         
         print(f"\nDetection Complete!")
         print(f"   Language: {results['language']} (confidence: {results['detection_confidence']['language']:.2f})")

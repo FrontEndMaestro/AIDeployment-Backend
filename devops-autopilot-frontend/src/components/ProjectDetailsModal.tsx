@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
-import { Card } from './Card';
-import { Button } from './Button';
-import { Badge } from './Badge';
-import { apiClient } from '../api/client';
-import { Project } from '../types/api';
+import React, { useState } from "react";
+import { Card } from "./Card";
+import { Button } from "./Button";
+import { Badge } from "./Badge";
+import { apiClient } from "../api/client";
+import { Project } from "../types/api";
 
 interface ProjectDetailsModalProps {
   project: Project;
@@ -16,25 +16,27 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'metadata' | 'logs'>('overview');
+  const [activeTab, setActiveTab] = useState<"overview" | "metadata" | "logs">(
+    "overview"
+  );
   const [exporting, setExporting] = useState(false);
 
-  const handleExport = async (format: 'json' | 'yaml') => {
+  const handleExport = async (format: "json" | "yaml") => {
     try {
       setExporting(true);
       const response = await apiClient.exportMetadata(project._id, format);
       if (response.success) {
         const dataStr = JSON.stringify(response.data, null, 2);
-        const dataBlob = new Blob([dataStr], { type: 'application/json' });
+        const dataBlob = new Blob([dataStr], { type: "application/json" });
         const url = URL.createObjectURL(dataBlob);
-        const link = document.createElement('a');
+        const link = document.createElement("a");
         link.href = url;
         link.download = `${project.project_name}-metadata.${format}`;
         link.click();
         URL.revokeObjectURL(url);
       }
     } catch (err) {
-      console.error('Export failed:', err);
+      console.error("Export failed:", err);
     } finally {
       setExporting(false);
     }
@@ -44,18 +46,18 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'uploaded':
-        return 'info';
-      case 'extracting':
-      case 'analyzing':
-        return 'warning';
-      case 'analyzed':
-      case 'completed':
-        return 'success';
-      case 'failed':
-        return 'error';
+      case "uploaded":
+        return "info";
+      case "extracting":
+      case "analyzing":
+        return "warning";
+      case "analyzed":
+      case "completed":
+        return "success";
+      case "failed":
+        return "error";
       default:
-        return 'default';
+        return "default";
     }
   };
 
@@ -66,12 +68,16 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h2 className="text-2xl font-bold text-white mb-2">{project.project_name}</h2>
+              <h2 className="text-2xl font-bold text-white mb-2">
+                {project.project_name}
+              </h2>
               <div className="flex items-center gap-2">
                 <Badge variant={getStatusColor(project.status) as any}>
                   {project.status}
                 </Badge>
-                <span className="text-gray-400 text-sm">{project.file_name}</span>
+                <span className="text-gray-400 text-sm">
+                  {project.file_name}
+                </span>
               </div>
             </div>
             <button
@@ -85,31 +91,31 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
           {/* Tabs */}
           <div className="flex gap-4 mb-6 border-b border-gray-700">
             <button
-              onClick={() => setActiveTab('overview')}
+              onClick={() => setActiveTab("overview")}
               className={`px-4 py-2 font-medium transition-colors border-b-2 ${
-                activeTab === 'overview'
-                  ? 'border-cyan-500 text-cyan-400'
-                  : 'border-transparent text-gray-400 hover:text-gray-300'
+                activeTab === "overview"
+                  ? "border-cyan-500 text-cyan-400"
+                  : "border-transparent text-gray-400 hover:text-gray-300"
               }`}
             >
               Overview
             </button>
             <button
-              onClick={() => setActiveTab('metadata')}
+              onClick={() => setActiveTab("metadata")}
               className={`px-4 py-2 font-medium transition-colors border-b-2 ${
-                activeTab === 'metadata'
-                  ? 'border-cyan-500 text-cyan-400'
-                  : 'border-transparent text-gray-400 hover:text-gray-300'
+                activeTab === "metadata"
+                  ? "border-cyan-500 text-cyan-400"
+                  : "border-transparent text-gray-400 hover:text-gray-300"
               }`}
             >
               Metadata
             </button>
             <button
-              onClick={() => setActiveTab('logs')}
+              onClick={() => setActiveTab("logs")}
               className={`px-4 py-2 font-medium transition-colors border-b-2 ${
-                activeTab === 'logs'
-                  ? 'border-cyan-500 text-cyan-400'
-                  : 'border-transparent text-gray-400 hover:text-gray-300'
+                activeTab === "logs"
+                  ? "border-cyan-500 text-cyan-400"
+                  : "border-transparent text-gray-400 hover:text-gray-300"
               }`}
             >
               Logs
@@ -117,23 +123,29 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
           </div>
 
           {/* Overview Tab */}
-          {activeTab === 'overview' && (
+          {activeTab === "overview" && (
             <div className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">File Name</p>
+                  <p className="text-gray-400 text-xs mb-2 uppercase">
+                    File Name
+                  </p>
                   <p className="text-white font-medium">{project.file_name}</p>
                 </div>
 
                 <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">File Size</p>
+                  <p className="text-gray-400 text-xs mb-2 uppercase">
+                    File Size
+                  </p>
                   <p className="text-white font-medium">
                     {(project.file_size / (1024 * 1024)).toFixed(2)} MB
                   </p>
                 </div>
 
                 <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">Upload Date</p>
+                  <p className="text-gray-400 text-xs mb-2 uppercase">
+                    Upload Date
+                  </p>
                   <p className="text-white font-medium">
                     {new Date(project.upload_date).toLocaleString()}
                   </p>
@@ -147,19 +159,29 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
                 </div>
 
                 <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">Total Files</p>
-                  <p className="text-white font-medium">{project.files_count}</p>
+                  <p className="text-gray-400 text-xs mb-2 uppercase">
+                    Total Files
+                  </p>
+                  <p className="text-white font-medium">
+                    {project.files_count}
+                  </p>
                 </div>
 
                 <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">Total Folders</p>
-                  <p className="text-white font-medium">{project.folders_count}</p>
+                  <p className="text-gray-400 text-xs mb-2 uppercase">
+                    Total Folders
+                  </p>
+                  <p className="text-white font-medium">
+                    {project.folders_count}
+                  </p>
                 </div>
               </div>
 
               {project.extraction_date && (
                 <div className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 border border-cyan-500/20 rounded-lg p-4">
-                  <p className="text-cyan-400 font-semibold mb-1">Extraction Date</p>
+                  <p className="text-cyan-400 font-semibold mb-1">
+                    Extraction Date
+                  </p>
                   <p className="text-gray-300">
                     {new Date(project.extraction_date).toLocaleString()}
                   </p>
@@ -168,7 +190,9 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
 
               {project.analysis_date && (
                 <div className="bg-gradient-to-r from-green-500/10 to-emerald-500/10 border border-green-500/20 rounded-lg p-4">
-                  <p className="text-green-400 font-semibold mb-1">Analysis Date</p>
+                  <p className="text-green-400 font-semibold mb-1">
+                    Analysis Date
+                  </p>
                   <p className="text-gray-300">
                     {new Date(project.analysis_date).toLocaleString()}
                   </p>
@@ -178,53 +202,114 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
           )}
 
           {/* Metadata Tab */}
-          {activeTab === 'metadata' && (
+          {activeTab === "metadata" && (
             <div className="space-y-4">
               {project.metadata ? (
                 <>
+                  {/* Core metadata grid */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">Framework</p>
-                      <p className="text-white font-medium text-lg">{project.metadata.framework}</p>
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Framework
+                      </p>
+                      <p className="text-white font-medium text-lg">
+                        {project.metadata.framework}
+                      </p>
                     </div>
 
                     <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">Language</p>
-                      <p className="text-white font-medium text-lg">{project.metadata.language}</p>
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Language
+                      </p>
+                      <p className="text-white font-medium text-lg">
+                        {project.metadata.language}
+                      </p>
                     </div>
 
                     <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">Runtime</p>
-                      <p className="text-white font-medium text-sm">{project.metadata.runtime || 'N/A'}</p>
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Runtime
+                      </p>
+                      <p className="text-white font-medium text-sm">
+                        {project.metadata.runtime || "N/A"}
+                      </p>
                     </div>
 
+                    {/* Backend Port (keeps legacy port field compatible) */}
                     <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">Port</p>
-                      <p className="text-white font-medium">{project.metadata.port || 'N/A'}</p>
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Backend Port
+                      </p>
+                      <p className="text-white font-medium">
+                        {project.metadata.backend_port ??
+                          project.metadata.port ??
+                          "N/A"}
+                      </p>
                     </div>
+
+                    {/* Frontend Port (new) */}
+                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Frontend Port
+                      </p>
+                      <p className="text-white font-medium">
+                        {project.metadata.frontend_port ?? "N/A"}
+                      </p>
+                    </div>
+
+                    {/* Primary Database */}
+                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Primary Database
+                      </p>
+                      <p className="text-white font-medium">
+                        {project.metadata.database || "Unknown"}
+                      </p>
+                    </div>
+
+                    {/* Database Port (optional – backend field is `database_port`) */}
+                    {typeof project.metadata.database_port !== "undefined" && (
+                      <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
+                        <p className="text-gray-400 text-xs mb-2 uppercase">
+                          Database Port
+                        </p>
+                        <p className="text-white font-medium">
+                          {project.metadata.database_port ?? "N/A"}
+                        </p>
+                      </div>
+                    )}
                   </div>
 
+                  {/* Build Command */}
                   {project.metadata.build_command && (
                     <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">Build Command</p>
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Build Command
+                      </p>
                       <code className="text-cyan-400 text-sm break-all">
                         {project.metadata.build_command}
                       </code>
                     </div>
                   )}
 
+                  {/* Start Command */}
                   {project.metadata.start_command && (
                     <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">Start Command</p>
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Start Command
+                      </p>
                       <code className="text-cyan-400 text-sm break-all">
                         {project.metadata.start_command}
                       </code>
                     </div>
                   )}
 
+                  {/* Docker flags */}
                   <div className="grid grid-cols-2 gap-4">
                     <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">Dockerfile</p>
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Dockerfile
+                      </p>
                       <p className="text-lg font-bold">
                         {project.metadata.dockerfile ? (
                           <span className="text-green-400">✅ Yes</span>
@@ -235,7 +320,9 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
                     </div>
 
                     <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">Docker Compose</p>
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Docker Compose
+                      </p>
                       <p className="text-lg font-bold">
                         {project.metadata.docker_compose ? (
                           <span className="text-green-400">✅ Yes</span>
@@ -246,6 +333,25 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
                     </div>
                   </div>
 
+                  {/* Detected Databases list */}
+                  {project.metadata.databases &&
+                    project.metadata.databases.length > 0 && (
+                      <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
+                        <p className="text-gray-400 text-xs mb-3 uppercase">
+                          Detected Databases (
+                          {project.metadata.databases.length})
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {project.metadata.databases.map((db, idx) => (
+                            <Badge key={idx} variant="info" size="sm">
+                              {db}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                  {/* Dependencies */}
                   {project.metadata.dependencies.length > 0 && (
                     <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
                       <p className="text-gray-400 text-xs mb-3 uppercase">
@@ -261,15 +367,23 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
                     </div>
                   )}
 
+                  {/* ML Confidence */}
                   {project.metadata.ml_confidence && (
                     <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4">
-                      <p className="text-yellow-400 font-semibold mb-3">ML Confidence Scores</p>
+                      <p className="text-yellow-400 font-semibold mb-3">
+                        ML Confidence Scores
+                      </p>
                       <div className="space-y-3">
                         <div>
                           <div className="flex justify-between mb-1">
-                            <span className="text-gray-300 text-sm">Language</span>
+                            <span className="text-gray-300 text-sm">
+                              Language
+                            </span>
                             <span className="text-white font-bold">
-                              {Math.round(project.metadata.ml_confidence.language * 100)}%
+                              {Math.round(
+                                project.metadata.ml_confidence.language * 100
+                              )}
+                              %
                             </span>
                           </div>
                           <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
@@ -284,9 +398,14 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
 
                         <div>
                           <div className="flex justify-between mb-1">
-                            <span className="text-gray-300 text-sm">Framework</span>
+                            <span className="text-gray-300 text-sm">
+                              Framework
+                            </span>
                             <span className="text-white font-bold">
-                              {Math.round(project.metadata.ml_confidence.framework * 100)}%
+                              {Math.round(
+                                project.metadata.ml_confidence.framework * 100
+                              )}
+                              %
                             </span>
                           </div>
                           <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
@@ -304,24 +423,31 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
                 </>
               ) : (
                 <div className="text-center py-12 text-gray-400">
-                  <p>No metadata available. Please analyze the project first.</p>
+                  <p>
+                    No metadata available. Please analyze the project first.
+                  </p>
                 </div>
               )}
             </div>
           )}
 
           {/* Logs Tab */}
-          {activeTab === 'logs' && (
+          {activeTab === "logs" && (
             <div>
               {project.logs && project.logs.length > 0 ? (
                 <div className="bg-gray-900/80 rounded-lg border border-gray-700 font-mono text-sm max-h-96 overflow-y-auto">
                   <div className="divide-y divide-gray-700">
                     {project.logs.map((log, idx) => (
-                      <div key={idx} className="p-3 hover:bg-gray-800/30 transition flex gap-3">
+                      <div
+                        key={idx}
+                        className="p-3 hover:bg-gray-800/30 transition flex gap-3"
+                      >
                         <span className="text-gray-500 flex-shrink-0 min-w-fit">
                           {new Date(log.timestamp).toLocaleTimeString()}
                         </span>
-                        <span className="text-cyan-400 flex-1 break-all">{log.message}</span>
+                        <span className="text-cyan-400 flex-1 break-all">
+                          {log.message}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -336,11 +462,11 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
 
           {/* Actions */}
           <div className="flex items-center gap-3 pt-6 border-t border-gray-700 flex-wrap">
-            {project.status === 'analyzed' && (
+            {project.status === "analyzed" && (
               <>
                 <Button
                   variant="secondary"
-                  onClick={() => handleExport('json')}
+                  onClick={() => handleExport("json")}
                   loading={exporting}
                 >
                   <svg
@@ -361,7 +487,7 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
 
                 <Button
                   variant="secondary"
-                  onClick={() => handleExport('yaml')}
+                  onClick={() => handleExport("yaml")}
                   loading={exporting}
                 >
                   <svg

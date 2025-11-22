@@ -40,18 +40,39 @@ export interface ProjectMetadata {
   language: string;
   runtime?: string;
   dependencies: string[];
-  port?: number;
+  port?: number; // still the "main" port (backend_port)
   build_command?: string;
   start_command?: string;
   env_variables: string[];
   dockerfile: boolean;
   docker_compose: boolean;
   detected_files: string[];
+
+  // ML / detection confidence
   ml_confidence?: {
     language: number;
     framework: number;
+    method?: string; // mirrors detection_confidence.method when present
   };
-  detection_method?: string;
+  detection_confidence?: {
+    language: number;
+    framework: number;
+    method?: string;
+  };
+  detection_method?: string; // kept for backwards compatibility if used anywhere
+
+  // NEW FIELDS (from detector.py)
+  backend_port?: number;
+  frontend_port?: number;
+  database?: string;
+  database_port?: number | null;
+  databases?: string[];
+  database_detection?: {
+    [dbName: string]: {
+      score: number;
+      evidence: string[];
+    };
+  };
 }
 
 export interface LogEntry {
@@ -65,7 +86,14 @@ export interface Project {
   file_name: string;
   file_size: number;
   upload_date: string;
-  status: 'uploaded' | 'extracting' | 'extracted' | 'analyzing' | 'analyzed' | 'completed' | 'failed';
+  status:
+    | "uploaded"
+    | "extracting"
+    | "extracted"
+    | "analyzing"
+    | "analyzed"
+    | "completed"
+    | "failed";
   extracted_path?: string;
   extraction_date?: string;
   files_count: number;
@@ -115,7 +143,7 @@ export interface AnalysisResponse {
     project_name: string;
     framework: string;
     language: string;
-    runtime: string;
+    runtime: string | null;
     dependencies: string[];
     port?: number;
     build_command?: string;
@@ -123,8 +151,21 @@ export interface AnalysisResponse {
     ml_confidence?: {
       language: number;
       framework: number;
+      method?: string;
     };
     analysis_date: string;
+    ml_enabled?: boolean;
+
+    // NEW (optional) – mirrors metadata
+    backend_port?: number;
+    frontend_port?: number;
+    database?: string;
+    databases?: string[];
+    database_port?: number | null;
+    env_variables?: string[];
+    dockerfile?: boolean;
+    docker_compose?: boolean;
+    detected_files?: string[];
   };
 }
 

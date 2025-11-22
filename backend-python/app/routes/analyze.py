@@ -20,7 +20,12 @@ async def analyze_project(
     use_ml: bool = Query(True, description="Use ML-based detection"),
     current_user: dict = Depends(get_current_active_user)
 ):
-    """Analyze project and detect framework"""
+    """
+    Analyze a project and detect language, framework, runtime, DB, ports, etc.
+
+    - **force**: If true, re-run analysis even if the project is already analyzed.
+    - **use_ml**: If true, allows ML-based detection to supplement heuristics.
+    """
     return await analyze_project_handler(project_id, force, use_ml, current_user)
 
 
@@ -29,7 +34,12 @@ async def get_analysis_results(
     project_id: str,
     current_user: dict = Depends(get_current_active_user)
 ):
-    """Get analysis results for a project"""
+    """
+    Get analysis results for a project.
+
+    Returns metadata (language, framework, runtime, ports, DB info, etc.),
+    analysis logs, and ML/detection confidence if available.
+    """
     return await get_analysis_results_handler(project_id, current_user)
 
 
@@ -38,7 +48,7 @@ async def get_full_details(
     project_id: str,
     current_user: dict = Depends(get_current_active_user)
 ):
-    """Get complete project details"""
+    """Get complete stored project document including status, metadata, logs, etc."""
     return await get_full_project_details_handler(project_id, current_user)
 
 
@@ -48,9 +58,10 @@ async def get_project_metadata(
     current_user: dict = Depends(get_current_active_user)
 ):
     """
-    Get only metadata for a project
-    
-    Returns framework, language, dependencies, etc.
+    Get only metadata for a project.
+
+    Returns framework, language, runtime, dependencies, ports, DB info,
+    Docker flags, and detection/ML confidence (if present).
     """
     return await get_project_metadata_handler(project_id, current_user)
 
@@ -62,7 +73,7 @@ async def get_all_metadata(
     current_user: dict = Depends(get_current_active_user)
 ):
     """
-    Get metadata for all analyzed projects with optional filters
+    Get metadata for all analyzed projects for the current user, with optional filters.
     
     - **framework**: Filter by framework (e.g., Flask, Express.js)
     - **language**: Filter by language (e.g., Python, JavaScript)
@@ -75,9 +86,13 @@ async def get_metadata_statistics(
     current_user: dict = Depends(get_current_active_user)
 ):
     """
-    Get statistics of all analyzed projects
+    Get statistics of all analyzed projects for the current user.
     
-    Returns framework distribution, language stats, Docker usage, etc.
+    Returns:
+    - framework distribution
+    - language distribution
+    - runtime distribution
+    - Docker usage stats
     """
     return await get_metadata_statistics_handler(current_user)
 
@@ -89,8 +104,8 @@ async def export_metadata(
     current_user: dict = Depends(get_current_active_user)
 ):
     """
-    Export project metadata in different formats
+    Export project metadata in different formats.
     
-    - **format**: json or yaml
+    - **format**: `json` or `yaml`
     """
     return await export_metadata_handler(project_id, format, current_user)

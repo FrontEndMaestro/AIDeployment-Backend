@@ -51,7 +51,8 @@ async def analyze_project_handler(
                     "framework": project["metadata"]["framework"],
                     "language": project["metadata"]["language"],
                     "dependencies": project["metadata"]["dependencies"],
-                    "ml_confidence": project["metadata"].get("ml_confidence")
+                    # keep old field name, but it may be None if only detection_confidence exists
+                    "ml_confidence": project["metadata"].get("ml_confidence") or project["metadata"].get("detection_confidence")
                 }
             }
         
@@ -69,8 +70,16 @@ async def analyze_project_handler(
         
         # Detect framework with ML toggle
         detection = detect_framework(project["extracted_path"], use_ml=use_ml)
+
+        # ---- Compatibility shim for confidence fields ----
+        # detector.py now uses "detection_confidence".
+        # For backward compatibility with existing code & API, we mirror it
+        # into "ml_confidence" if that key is missing.
+        if "ml_confidence" not in detection and "detection_confidence" in detection:
+            detection["ml_confidence"] = detection["detection_confidence"]
+        # -------------------------------------------------
         
-        # Detect environment variables
+        # Detect environment variables (extra pass using original extracted path)
         env_vars = detect_env_variables(project["extracted_path"])
         if env_vars:
             detection["env_variables"] = env_vars
@@ -85,9 +94,10 @@ async def analyze_project_handler(
         ]
         
         if detection.get("ml_confidence"):
+            # ml_confidence now points to detection_confidence internally
             analysis_logs.append(
-                f"ML Confidence - Language: {detection['ml_confidence']['language']}, "
-                f"Framework: {detection['ml_confidence']['framework']}"
+                f"ML Confidence - Language: {detection['ml_confidence'].get('language')}, "
+                f"Framework: {detection['ml_confidence'].get('framework')}"
             )
         
         # Update project with analysis data
@@ -164,15 +174,20 @@ async def get_analysis_results_handler(project_id: str, current_user: dict):
                 "current_status": project["status"]
             }
         
+        metadata = project.get("metadata", {})
+        # Normalize confidence for output as well
+        ml_conf = metadata.get("ml_confidence") or metadata.get("detection_confidence")
+        
         return {
             "success": True,
             "project_id": str(project["_id"]),
             "project_name": project["project_name"],
             "status": project["status"],
-            "metadata": project["metadata"],
+            "metadata": metadata,
             "analysis_date": project.get("analysis_date"),
             "analysis_logs": project.get("analysis_logs", []),
-            "ml_enabled": project.get("ml_enabled", True)
+            "ml_enabled": project.get("ml_enabled", True),
+            "ml_confidence": ml_conf
         }
     
     except HTTPException:
@@ -225,13 +240,17 @@ async def get_project_metadata_handler(project_id: str, current_user: dict):
         if project.get("user_id") != str(current_user["_id"]):
             raise HTTPException(status_code=403, detail="Access denied: Not project owner")
         
+        metadata = project.get("metadata", {})
+        ml_conf = metadata.get("ml_confidence") or metadata.get("detection_confidence")
+        
         return {
             "success": True,
             "project_id": str(project["_id"]),
             "project_name": project["project_name"],
-            "metadata": project["metadata"],
+            "metadata": metadata,
             "analysis_date": project.get("analysis_date"),
-            "ml_enabled": project.get("ml_enabled", True)
+            "ml_enabled": project.get("ml_enabled", True),
+            "ml_confidence": ml_conf
         }
     
     except HTTPException:
@@ -384,6 +403,7 @@ async def export_metadata_handler(project_id: str, format: str = "json", current
         
         # Prepare export data
         metadata = project.get("metadata", {})
+        ml_conf = metadata.get("ml_confidence") or metadata.get("detection_confidence")
         export_data = {
             "project_name": project["project_name"],
             "framework": metadata.get("framework"),
@@ -397,7 +417,7 @@ async def export_metadata_handler(project_id: str, format: str = "json", current
             "dockerfile": metadata.get("dockerfile", False),
             "docker_compose": metadata.get("docker_compose", False),
             "detected_files": metadata.get("detected_files", []),
-            "ml_confidence": metadata.get("ml_confidence"),
+            "ml_confidence": ml_conf,
             "analysis_date": str(project.get("analysis_date"))
         }
         

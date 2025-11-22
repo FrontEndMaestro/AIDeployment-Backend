@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Card } from './Card';
-import { Button } from './Button';
-import { Badge } from './Badge';
-import { Alert } from './Alert';
-import { apiClient } from '../api/client';
-import { Project, ProjectMetadata } from '../types/api';
+import React, { useState, useEffect, useRef } from "react";
+import { Card } from "./Card";
+import { Button } from "./Button";
+import { Badge } from "./Badge";
+import { Alert } from "./Alert";
+import { apiClient } from "../api/client";
+import { Project, ProjectMetadata } from "../types/api";
 
 interface AnalyzeProjectModalProps {
   project: Project;
@@ -16,7 +16,7 @@ interface AnalyzeProjectModalProps {
 interface LogEntry {
   message: string;
   timestamp: string;
-  type: 'info' | 'success' | 'warning' | 'error';
+  type: "info" | "success" | "warning" | "error";
 }
 
 export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
@@ -30,19 +30,25 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
   const [success, setSuccess] = useState(false);
   const [useMl, setUseMl] = useState(true);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [analysisResults, setAnalysisResults] = useState<ProjectMetadata | null>(null);
-  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  const [analysisResults, setAnalysisResults] =
+    useState<ProjectMetadata | null>(null);
+  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(
+    null
+  );
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
   useEffect(() => {
     scrollToBottom();
   }, [logs]);
 
-  const addLog = (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') => {
+  const addLog = (
+    message: string,
+    type: "info" | "success" | "warning" | "error" = "info"
+  ) => {
     const timestamp = new Date().toLocaleTimeString();
     setLogs((prev) => [...prev, { message, timestamp, type }]);
   };
@@ -54,8 +60,8 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
         if (response.metadata) {
           setAnalysisResults(response.metadata);
         }
-        if (response.data?.status === 'analyzed' || response.metadata) {
-          addLog('Analysis completed successfully!', 'success');
+        if (response.data?.status === "analyzed" || response.metadata) {
+          addLog("Analysis completed successfully!", "success");
           setSuccess(true);
           setLoading(false);
           if (pollingInterval) clearInterval(pollingInterval);
@@ -82,26 +88,38 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
     setAnalysisResults(null);
     setLoading(true);
 
-    addLog(`Starting analysis with ML: ${useMl ? 'Enabled' : 'Disabled'}`, 'info');
+    addLog(
+      `Starting analysis with ML: ${useMl ? "Enabled" : "Disabled"}`,
+      "info"
+    );
 
     try {
-      addLog('Analyzing project structure...', 'info');
-      const response = await apiClient.analyzeProject(project._id, useMl, false);
+      addLog("Analyzing project structure...", "info");
+      const response = await apiClient.analyzeProject(
+        project._id,
+        useMl,
+        false
+      );
 
       if (response.success) {
-        addLog('Framework detection in progress...', 'info');
+        addLog("Framework detection in progress...", "info");
 
         // Start polling for analysis status
         const pollInterval = setInterval(async () => {
           try {
-            const statusResponse = await apiClient.getAnalysisResults(project._id);
+            const statusResponse = await apiClient.getAnalysisResults(
+              project._id
+            );
             if (statusResponse.success) {
               if (statusResponse.metadata) {
                 setAnalysisResults(statusResponse.metadata);
               }
-              if (statusResponse.data?.status === 'analyzed' || statusResponse.metadata) {
+              if (
+                statusResponse.data?.status === "analyzed" ||
+                statusResponse.metadata
+              ) {
                 clearInterval(pollInterval);
-                addLog('✅ Analysis completed successfully!', 'success');
+                addLog("✅ Analysis completed successfully!", "success");
                 setSuccess(true);
                 setLoading(false);
                 onSuccess();
@@ -115,31 +133,31 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
         setPollingInterval(pollInterval as any);
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Analysis failed';
+      const errorMsg = err instanceof Error ? err.message : "Analysis failed";
       setError(errorMsg);
-      addLog(`❌ ${errorMsg}`, 'error');
+      addLog(`❌ ${errorMsg}`, "error");
       setLoading(false);
     }
   };
 
-  const handleExport = async (format: 'json' | 'yaml') => {
+  const handleExport = async (format: "json" | "yaml") => {
     try {
       const response = await apiClient.exportMetadata(project._id, format);
       if (response.success) {
         const dataStr = JSON.stringify(response.data, null, 2);
-        const dataBlob = new Blob([dataStr], { type: 'application/json' });
+        const dataBlob = new Blob([dataStr], { type: "application/json" });
         const url = URL.createObjectURL(dataBlob);
-        const link = document.createElement('a');
+        const link = document.createElement("a");
         link.href = url;
         link.download = `${project.project_name}-metadata.${format}`;
         link.click();
         URL.revokeObjectURL(url);
-        addLog(`Exported metadata as ${format.toUpperCase()}`, 'success');
+        addLog(`Exported metadata as ${format.toUpperCase()}`, "success");
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Export failed';
+      const errorMsg = err instanceof Error ? err.message : "Export failed";
       setError(errorMsg);
-      addLog(`Failed to export: ${errorMsg}`, 'error');
+      addLog(`Failed to export: ${errorMsg}`, "error");
     }
   };
 
@@ -152,7 +170,9 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h2 className="text-2xl font-bold text-white mb-1">Analyze Project</h2>
+              <h2 className="text-2xl font-bold text-white mb-1">
+                Analyze Project
+              </h2>
               <p className="text-gray-400 text-sm">{project.project_name}</p>
             </div>
             <button
@@ -168,7 +188,9 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div>
                 <p className="text-gray-500 text-xs mb-1">Status</p>
-                <p className="text-white font-medium capitalize">{project.status}</p>
+                <p className="text-white font-medium capitalize">
+                  {project.status}
+                </p>
               </div>
               <div>
                 <p className="text-gray-500 text-xs mb-1">Files</p>
@@ -176,14 +198,16 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
               </div>
               <div>
                 <p className="text-gray-500 text-xs mb-1">Folders</p>
-                <p className="text-white font-medium">{project.folders_count}</p>
+                <p className="text-white font-medium">
+                  {project.folders_count}
+                </p>
               </div>
               <div>
                 <p className="text-gray-500 text-xs mb-1">Extracted Date</p>
                 <p className="text-white font-medium">
                   {project.extraction_date
                     ? new Date(project.extraction_date).toLocaleDateString()
-                    : 'N/A'}
+                    : "N/A"}
                 </p>
               </div>
             </div>
@@ -192,7 +216,12 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
           {/* Error Alert */}
           {error && (
             <div className="mb-6">
-              <Alert type="error" title="Error" message={error} onClose={() => setError(null)} />
+              <Alert
+                type="error"
+                title="Error"
+                message={error}
+                onClose={() => setError(null)}
+              />
             </div>
           )}
 
@@ -207,7 +236,9 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
                   className="w-5 h-5 rounded border-gray-600 text-cyan-500 focus:ring-cyan-500"
                 />
                 <div>
-                  <p className="text-white font-medium">Use ML-Based Detection</p>
+                  <p className="text-white font-medium">
+                    Use ML-Based Detection
+                  </p>
                   <p className="text-gray-400 text-sm">
                     Enable CodeBERT for more accurate framework detection
                   </p>
@@ -230,25 +261,27 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
                     <div
                       key={idx}
                       className={`p-3 flex items-start gap-3 ${
-                        log.type === 'success'
-                          ? 'bg-green-500/5'
-                          : log.type === 'error'
-                          ? 'bg-red-500/5'
-                          : log.type === 'warning'
-                          ? 'bg-yellow-500/5'
-                          : 'hover:bg-gray-800/30'
+                        log.type === "success"
+                          ? "bg-green-500/5"
+                          : log.type === "error"
+                            ? "bg-red-500/5"
+                            : log.type === "warning"
+                              ? "bg-yellow-500/5"
+                              : "hover:bg-gray-800/30"
                       }`}
                     >
-                      <span className="text-gray-500 flex-shrink-0 min-w-fit">{log.timestamp}</span>
+                      <span className="text-gray-500 flex-shrink-0 min-w-fit">
+                        {log.timestamp}
+                      </span>
                       <span
                         className={`${
-                          log.type === 'success'
-                            ? 'text-green-400'
-                            : log.type === 'error'
-                            ? 'text-red-400'
-                            : log.type === 'warning'
-                            ? 'text-yellow-400'
-                            : 'text-cyan-400'
+                          log.type === "success"
+                            ? "text-green-400"
+                            : log.type === "error"
+                              ? "text-red-400"
+                              : log.type === "warning"
+                                ? "text-yellow-400"
+                                : "text-cyan-400"
                         }`}
                       >
                         {log.message}
@@ -264,27 +297,78 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
           {/* Results */}
           {success && analysisResults && (
             <div className="mb-6">
-              <h3 className="text-lg font-bold text-white mb-4">Analysis Results</h3>
+              <h3 className="text-lg font-bold text-white mb-4">
+                Analysis Results
+              </h3>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                 <div className="bg-gradient-to-br from-cyan-500/10 to-cyan-600/5 border border-cyan-500/20 rounded-lg p-4">
                   <p className="text-cyan-400 text-sm mb-2">Framework</p>
-                  <p className="text-2xl font-bold text-white">{analysisResults.framework}</p>
+                  <p className="text-2xl font-bold text-white">
+                    {analysisResults.framework}
+                  </p>
                 </div>
 
                 <div className="bg-gradient-to-br from-green-500/10 to-green-600/5 border border-green-500/20 rounded-lg p-4">
                   <p className="text-green-400 text-sm mb-2">Language</p>
-                  <p className="text-2xl font-bold text-white">{analysisResults.language}</p>
+                  <p className="text-2xl font-bold text-white">
+                    {analysisResults.language}
+                  </p>
                 </div>
 
                 <div className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border border-purple-500/20 rounded-lg p-4">
                   <p className="text-purple-400 text-sm mb-2">Runtime</p>
-                  <p className="text-lg font-bold text-white">{analysisResults.runtime || 'N/A'}</p>
+                  <p className="text-lg font-bold text-white">
+                    {analysisResults.runtime || "N/A"}
+                  </p>
                 </div>
 
                 <div className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border border-blue-500/20 rounded-lg p-4">
                   <p className="text-blue-400 text-sm mb-2">Dependencies</p>
-                  <p className="text-2xl font-bold text-white">{analysisResults.dependencies.length}</p>
+                  <p className="text-2xl font-bold text-white">
+                    {analysisResults.dependencies.length}
+                  </p>
+                </div>
+              </div>
+
+              {analysisResults.databases &&
+                analysisResults.databases.length > 0 && (
+                  <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 mt-4">
+                    <p className="text-gray-400 text-sm mb-3">
+                      Detected Databases
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {analysisResults.databases.map((db, idx) => (
+                        <Badge key={idx} variant="info" size="sm">
+                          {db}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
+                  <p className="text-gray-400 text-sm mb-2">Backend Port</p>
+                  <p className="text-lg font-bold text-white">
+                    {analysisResults.backend_port ??
+                      analysisResults.port ??
+                      "N/A"}
+                  </p>
+                </div>
+
+                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
+                  <p className="text-gray-400 text-sm mb-2">Frontend Port</p>
+                  <p className="text-lg font-bold text-white">
+                    {analysisResults.frontend_port ?? "N/A"}
+                  </p>
+                </div>
+
+                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
+                  <p className="text-gray-400 text-sm mb-2">Database</p>
+                  <p className="text-lg font-bold text-white">
+                    {analysisResults.database || "Unknown"}
+                  </p>
                 </div>
               </div>
 
@@ -313,60 +397,78 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
                 </div>
               </div>
 
-              {/* ML Confidence */}
-              {analysisResults.ml_confidence && (
-                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 mb-6">
-                  <p className="text-yellow-400 font-medium mb-3">ML Confidence Scores</p>
-                  <div className="space-y-2">
-                    <div>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-gray-300 text-sm">Language</span>
-                        <span className="text-white font-bold">
-                          {Math.round(analysisResults.ml_confidence.language * 100)}%
-                        </span>
-                      </div>
-                      <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-cyan-500 to-blue-600"
-                          style={{
-                            width: `${analysisResults.ml_confidence.language * 100}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
+              {/* ML Confidence (with fallback to detection_confidence) */}
+              {(() => {
+                const mlConfidence =
+                  analysisResults.ml_confidence ||
+                  (analysisResults as any).detection_confidence;
 
-                    <div>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-gray-300 text-sm">Framework</span>
-                        <span className="text-white font-bold">
-                          {Math.round(analysisResults.ml_confidence.framework * 100)}%
-                        </span>
+                if (!mlConfidence) return null;
+
+                return (
+                  <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 mb-6">
+                    <p className="text-yellow-400 font-medium mb-3">
+                      ML / Detection Confidence Scores
+                    </p>
+                    <div className="space-y-2">
+                      <div>
+                        <div className="flex justify-between mb-1">
+                          <span className="text-gray-300 text-sm">
+                            Language
+                          </span>
+                          <span className="text-white font-bold">
+                            {Math.round(mlConfidence.language * 100)}%
+                          </span>
+                        </div>
+                        <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-cyan-500 to-blue-600"
+                            style={{
+                              width: `${mlConfidence.language * 100}%`,
+                            }}
+                          />
+                        </div>
                       </div>
-                      <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-cyan-500 to-blue-600"
-                          style={{
-                            width: `${analysisResults.ml_confidence.framework * 100}%`,
-                          }}
-                        />
+
+                      <div>
+                        <div className="flex justify-between mb-1">
+                          <span className="text-gray-300 text-sm">
+                            Framework
+                          </span>
+                          <span className="text-white font-bold">
+                            {Math.round(mlConfidence.framework * 100)}%
+                          </span>
+                        </div>
+                        <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-cyan-500 to-blue-600"
+                            style={{
+                              width: `${mlConfidence.framework * 100}%`,
+                            }}
+                          />
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Commands */}
               {analysisResults.build_command && (
                 <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 mb-4">
                   <p className="text-gray-400 text-sm mb-2">Build Command</p>
-                  <code className="text-cyan-400 text-sm break-all">{analysisResults.build_command}</code>
+                  <code className="text-cyan-400 text-sm break-all">
+                    {analysisResults.build_command}
+                  </code>
                 </div>
               )}
 
               {analysisResults.start_command && (
                 <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 mb-4">
                   <p className="text-gray-400 text-sm mb-2">Start Command</p>
-                  <code className="text-cyan-400 text-sm break-all">{analysisResults.start_command}</code>
+                  <code className="text-cyan-400 text-sm break-all">
+                    {analysisResults.start_command}
+                  </code>
                 </div>
               )}
 
@@ -375,11 +477,13 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
                 <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
                   <p className="text-gray-400 text-sm mb-3">Dependencies</p>
                   <div className="flex flex-wrap gap-2">
-                    {analysisResults.dependencies.slice(0, 10).map((dep, idx) => (
-                      <Badge key={idx} variant="info" size="sm">
-                        {dep}
-                      </Badge>
-                    ))}
+                    {analysisResults.dependencies
+                      .slice(0, 10)
+                      .map((dep, idx) => (
+                        <Badge key={idx} variant="info" size="sm">
+                          {dep}
+                        </Badge>
+                      ))}
                     {analysisResults.dependencies.length > 10 && (
                       <Badge variant="default" size="sm">
                         +{analysisResults.dependencies.length - 10} more
@@ -416,7 +520,7 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
               <>
                 <Button
                   variant="secondary"
-                  onClick={() => handleExport('json')}
+                  onClick={() => handleExport("json")}
                   className="flex items-center gap-2"
                 >
                   <svg
@@ -437,7 +541,7 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
 
                 <Button
                   variant="secondary"
-                  onClick={() => handleExport('yaml')}
+                  onClick={() => handleExport("yaml")}
                   className="flex items-center gap-2"
                 >
                   <svg
@@ -456,7 +560,11 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
                   Export YAML
                 </Button>
 
-                <Button variant="secondary" onClick={onClose} className="ml-auto">
+                <Button
+                  variant="secondary"
+                  onClick={onClose}
+                  className="ml-auto"
+                >
                   Close
                 </Button>
               </>
