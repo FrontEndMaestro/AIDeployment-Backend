@@ -430,6 +430,7 @@ def heuristic_language_detection(project_path: str) -> Tuple[str, float]:
                             
                             for lang, indicators in LANGUAGE_INDICATORS.items():
                                 for import_pattern in indicators["imports"]:
+
                                     if import_pattern.lower() in content.lower():
                                         language_scores[lang] += 0.4
                                         found_evidence.append((lang, "import", import_pattern))
@@ -591,12 +592,12 @@ def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
             pkg_path = os.path.join(folder_path, "package.json")
             
             if os.path.exists(pkg_path):
-                if folder_lower in ["backend", "server", "api","app"]:
+                if folder_lower in ["backend", "server", "api", "app"]:
                     structure["has_backend"] = True
                     structure["backend_path"] = folder_path
                     structure["is_fullstack"] = True
                     print(f"🔍 Fullstack: found backend folder '{folder}'")
-                if folder_lower in ["frontend", "client", "web","ui"]:
+                if folder_lower in ["frontend", "client", "web", "ui"]:
                     structure["has_frontend"] = True
                     structure["frontend_path"] = folder_path
                     structure["is_fullstack"] = True
@@ -782,6 +783,135 @@ def _scan_code_for_ports(project_path: str, max_files: int = 150) -> Optional[in
     return port
 
 
+def _parse_docker_compose_ports(project_path: str) -> Dict[str, List[Tuple[int, int]]]:
+    """
+    More robust docker-compose port parser.
+    Supports:
+      - ports:
+            - "3000:3000"
+            - 5173:80
+      - ports: ["3000:3000", "5173:80"]
+      - ports: "3000:3000"
+      - weird indentation (e.g. under `services:`)
+      - quoted/unquoted values
+
+    Returns:
+        Dict[str, List[Tuple[int, int]]]:
+            {
+                "<service_name>": [(host_port, container_port), ...],
+                ...
+            }
+    """
+
+    compose_files = ("docker-compose.yml", "docker-compose.yaml")
+    compose_path = None
+
+    for fname in compose_files:
+        candidate = os.path.join(project_path, fname)
+        if os.path.exists(candidate):
+            compose_path = candidate
+            break
+
+    if not compose_path:
+        return {}
+
+    try:
+        with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    except Exception:
+        return {}
+
+    service_ports: Dict[str, List[Tuple[int, int]]] = {}
+
+    # Detect service blocks; allow leading indentation so we can match lines like
+    # "  frontend:" under a top-level "services:" key.
+    service_pattern = re.compile(
+        r"(?ms)^\s*([A-Za-z0-9_-]+)\s*:\s*(?:\n\s+[^\S\r\n]*[^\n]+)*?"
+        r"(?:\n\s+ports\s*:\s*(?P<ports_block>.*?)(?=\n\S|\Z))?"
+    )
+
+    # Also detect inline "ports: [...]"
+    inline_ports_pattern = re.compile(
+        r"ports\s*:\s*\[([^\]]+)\]", re.MULTILINE
+    )
+
+    # Pattern for extracting "3000:80"
+    mapping_pattern = re.compile(r"['\"]?(\d{2,5})\s*:\s*(\d{2,5})['\"]?")
+
+    for match in service_pattern.finditer(content):
+        service = match.group(1)
+        block = match.group("ports_block")
+        ports: List[Tuple[int, int]] = []
+
+        if block:
+            for hp, cp in mapping_pattern.findall(block):
+                ports.append((int(hp), int(cp)))
+
+        # Inline ports: ["3000:3000", "5173:80"]
+        inline = inline_ports_pattern.search(match.group(0))
+        if inline:
+            for hp, cp in mapping_pattern.findall(inline.group(1)):
+                ports.append((int(hp), int(cp)))
+
+        if ports:
+            service_ports[service] = ports
+
+    return service_ports
+
+
+def _parse_dockerfile_expose_ports(project_path: str) -> List[int]:
+    """
+    Collect exposed ports from any Dockerfile found in the project.
+    Supports:
+      EXPOSE 3000
+      EXPOSE 80 443
+      EXPOSE 8080/tcp
+      EXPOSE 8081/udp
+    """
+    ports = []
+    dockerfiles = ["Dockerfile", "dockerfile"]
+
+    for root, dirs, files in os.walk(project_path):
+        dirs[:] = [d for d in dirs if d not in ["node_modules", ".git", "__pycache__", "dist", "build"]]
+
+        for file in files:
+            if file in dockerfiles:
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            m = re.search(r"EXPOSE\s+(.*)", line, re.IGNORECASE)
+                            if not m:
+                                continue
+
+                            tokens = m.group(1).split()
+                            for token in tokens:
+                                token = token.strip()
+                                token = token.split("/")[0]  # drop /tcp
+                                if token.isdigit():
+                                    ports.append(int(token))
+                except:
+                    pass
+
+    return sorted(set(ports))
+
+
+def _classify_docker_service(name: str) -> str:
+    """
+    Classify a docker-compose service name into one of:
+    'frontend', 'backend', 'database', or 'other'.
+    """
+    n = name.lower()
+
+    if any(k in n for k in ["front", "client", "web", "ui"]):
+        return "frontend"
+    if any(k in n for k in ["back", "api", "server", "app"]):
+        return "backend"
+    if any(k in n for k in ["mongo", "mysql", "postgres", "pgsql", "redis", "db"]):
+        return "database"
+    return "other"
+
+
 def detect_ports_for_project(
     project_path: str,
     language: str,
@@ -790,11 +920,24 @@ def detect_ports_for_project(
 ) -> Dict[str, Optional[int]]:
     """
     Detect backend and frontend ports.
+
     - For JS/TS: look for fullstack structure and read package.json,
       then refine backend with a JS code scan.
       Also consult .env for port hints (root and, for fullstack, backend/frontend subfolders).
     - For others: scan code for host:port; fall back to base_port / defaults,
       with .env overrides.
+
+    Additionally:
+    - Parse docker-compose.yml/.yaml and expose:
+        docker_backend_ports             (HOST ports on the machine)
+        docker_frontend_ports            (HOST ports on the machine)
+        docker_database_ports            (HOST ports on the machine)
+        docker_other_ports               (service_name -> [HOST ports])
+        docker_backend_container_ports   (CONTAINER ports inside backend containers)
+        docker_frontend_container_ports  (CONTAINER ports inside frontend containers)
+        docker_database_container_ports  (CONTAINER ports inside DB containers)
+        docker_other_container_ports     (service_name -> [CONTAINER ports])
+    - Parse Dockerfile EXPOSE lines to collect container ports in docker_expose_ports.
     """
     backend_port: Optional[int] = None
     frontend_port: Optional[int] = None
@@ -883,7 +1026,7 @@ def detect_ports_for_project(
             # Frontend-specific env: frontend/.env overrides root .env
             if frontend_path:
                 frontend_env_kv = _read_env_key_values(frontend_path)
-                _, f_frontend_env_port, f_generic_env_port = _extract_env_ports(frontend_env_kv)
+                _, f_frontend_env_port, _ = _extract_env_ports(frontend_env_kv)
 
                 if f_frontend_env_port is not None:
                     frontend_env_port = f_frontend_env_port
@@ -994,10 +1137,80 @@ def detect_ports_for_project(
         if frontend_env_port is not None:
             frontend_port = frontend_env_port
 
+    # ---- Docker-compose ports (non-breaking, only adds information) ----
+    docker_service_ports = _parse_docker_compose_ports(project_path)
+
+    # ---- Dockerfile EXPOSE ports ----
+    dockerfile_exposed_ports = _parse_dockerfile_expose_ports(project_path)
+
+    docker_backend_ports: List[int] = []
+    docker_frontend_ports: List[int] = []
+    docker_database_ports: List[int] = []
+    docker_other_ports: Dict[str, List[int]] = {}
+
+    # Container (internal) ports for the same services
+    docker_backend_container_ports: List[int] = []
+    docker_frontend_container_ports: List[int] = []
+    docker_database_container_ports: List[int] = []
+    docker_other_container_ports: Dict[str, List[int]] = {}
+
+    for svc, mappings in docker_service_ports.items():
+        role = _classify_docker_service(svc)
+        host_ports = [hp for (hp, cp) in mappings]
+        container_ports = [cp for (hp, cp) in mappings]
+
+        if not host_ports and not container_ports:
+            continue
+
+        if role == "backend":
+            docker_backend_ports.extend(host_ports)
+            docker_backend_container_ports.extend(container_ports)
+            # if we never found a backend_port from code/env, use the first docker HOST port
+            if backend_port is None and host_ports:
+                backend_port = host_ports[0]
+        elif role == "frontend":
+            docker_frontend_ports.extend(host_ports)
+            docker_frontend_container_ports.extend(container_ports)
+            if frontend_port is None and host_ports:
+                frontend_port = host_ports[0]
+        elif role == "database":
+            docker_database_ports.extend(host_ports)
+            docker_database_container_ports.extend(container_ports)
+        else:
+            if host_ports:
+                docker_other_ports[svc] = host_ports
+            if container_ports:
+                docker_other_container_ports[svc] = container_ports
+
+    # de-duplicate docker port lists
+    docker_backend_ports = sorted(set(docker_backend_ports))
+    docker_frontend_ports = sorted(set(docker_frontend_ports))
+    docker_database_ports = sorted(set(docker_database_ports))
+
+    docker_backend_container_ports = sorted(set(docker_backend_container_ports))
+    docker_frontend_container_ports = sorted(set(docker_frontend_container_ports))
+    docker_database_container_ports = sorted(set(docker_database_container_ports))
+
     return {
         "backend_port": backend_port,
-        "frontend_port": frontend_port
+        "frontend_port": frontend_port,
+
+        # HOST ports from docker-compose (what you bind on the machine)
+        "docker_backend_ports": docker_backend_ports or None,
+        "docker_frontend_ports": docker_frontend_ports or None,
+        "docker_database_ports": docker_database_ports or None,
+        "docker_other_ports": docker_other_ports or None,
+
+        # CONTAINER ports from docker-compose (internal container-side ports)
+        "docker_backend_container_ports": docker_backend_container_ports or None,
+        "docker_frontend_container_ports": docker_frontend_container_ports or None,
+        "docker_database_container_ports": docker_database_container_ports or None,
+        "docker_other_container_ports": docker_other_container_ports or None,
+
+        # Container ports from Dockerfile EXPOSE lines
+        "docker_expose_ports": dockerfile_exposed_ports or None,
     }
+
 
 # ----- Database detection helpers -----
 
@@ -1107,12 +1320,11 @@ def detect_databases(
     """
     Detect likely databases based on:
     - dependency names
-    - env var keys
+    - env var keys (including nested backend/frontend .env files)
     - docker-compose images
     Also tries to infer a database port.
     """
     deps_lower = [d.lower() for d in dependencies]
-    env_lower = [e.lower() for e in env_vars]
     
     # docker-compose content
     compose_content = ""
@@ -1125,8 +1337,28 @@ def detect_databases(
             except Exception:
                 pass
     
-    # read env key/values for DB port hints
-    env_kv = _read_env_key_values(project_path)
+    # read env key/values for DB hints (root + nested backend/frontend .env files)
+    env_kv_root = _read_env_key_values(project_path)
+    env_kv: Dict[str, str] = dict(env_kv_root)
+
+    try:
+        fullstack = _detect_fullstack_structure(project_path)
+        backend_path = fullstack.get("backend_path")
+        frontend_path = fullstack.get("frontend_path")
+
+        if backend_path:
+            env_kv.update(_read_env_key_values(backend_path) or {})
+        if frontend_path:
+            env_kv.update(_read_env_key_values(frontend_path) or {})
+    except Exception as e:
+        print(f"Error reading nested .env files for DB detection: {e}")
+
+    # env var keys for DB indicator scoring:
+    # - from the original env_vars list (root)
+    # - plus any keys we saw in nested .env files
+    env_lower_from_list = [e.lower() for e in env_vars]
+    env_lower_from_kv = [k.lower() for k in env_kv.keys()]
+    env_lower = list(set(env_lower_from_list) | set(env_lower_from_kv))
     
     scores: Dict[str, float] = {}
     evidence: Dict[str, List[str]] = {}
@@ -1179,7 +1411,7 @@ def detect_databases(
     
     print(f"   Detected databases (best first): {all_names}")
     
-    # infer port for primary DB
+    # infer port for primary DB (using merged env values)
     db_port = _infer_database_port(primary, env_kv, compose_content)
     
     return {
@@ -1241,6 +1473,18 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         "database_port": None,
         "backend_port": None,
         "frontend_port": None,
+        # docker-aware ports (HOST ports)
+        "docker_backend_ports": None,
+        "docker_frontend_ports": None,
+        "docker_database_ports": None,
+        "docker_other_ports": None,
+        # NEW: docker container ports
+        "docker_backend_container_ports": None,
+        "docker_frontend_container_ports": None,
+        "docker_database_container_ports": None,
+        "docker_other_container_ports": None,
+        # Dockerfile EXPOSE ports (container ports)
+        "docker_expose_ports": None,
     }
     
     try:
@@ -1279,8 +1523,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         runtime_info = get_runtime_info(results["language"], results["framework"])
         results.update(runtime_info)
         
-        # Dependencies
-               # Dependencies (root + nested subprojects like client/server)
+        # Dependencies (root + nested subprojects like client/server)
         dep_files = {
             "requirements.txt": "requirements.txt",
             "package.json": "package.json",
@@ -1320,7 +1563,6 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                         results["detected_files"].append(file)
                     
                     visited_dep_files.add(full_path)
-
         
         # Docker files
         docker_info = detect_docker_files(actual_path)
@@ -1355,6 +1597,25 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         
         if ports_info.get("frontend_port") is not None:
             results["frontend_port"] = ports_info["frontend_port"]
+        
+        if "docker_backend_ports" in ports_info:
+            results["docker_backend_ports"] = ports_info.get("docker_backend_ports")
+        if "docker_frontend_ports" in ports_info:
+            results["docker_frontend_ports"] = ports_info.get("docker_frontend_ports")
+        if "docker_database_ports" in ports_info:
+            results["docker_database_ports"] = ports_info.get("docker_database_ports")
+        if "docker_other_ports" in ports_info:
+            results["docker_other_ports"] = ports_info.get("docker_other_ports")
+        if "docker_backend_container_ports" in ports_info:
+            results["docker_backend_container_ports"] = ports_info.get("docker_backend_container_ports")
+        if "docker_frontend_container_ports" in ports_info:
+            results["docker_frontend_container_ports"] = ports_info.get("docker_frontend_container_ports")
+        if "docker_database_container_ports" in ports_info:
+            results["docker_database_container_ports"] = ports_info.get("docker_database_container_ports")
+        if "docker_other_container_ports" in ports_info:
+            results["docker_other_container_ports"] = ports_info.get("docker_other_container_ports")
+        if "docker_expose_ports" in ports_info:
+            results["docker_expose_ports"] = ports_info.get("docker_expose_ports")
         
         # Deduplicate detected_files
         results["detected_files"] = list(set(results["detected_files"]))

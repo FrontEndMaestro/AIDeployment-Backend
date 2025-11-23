@@ -73,6 +73,13 @@ export interface ProjectMetadata {
       evidence: string[];
     };
   };
+
+  // NEW DOCKER PORT FIELDS
+  docker_backend_ports?: number[] | null;
+  docker_frontend_ports?: number[] | null;
+  docker_database_ports?: number[] | null;
+  docker_other_ports?: { [serviceName: string]: number[] } | null;
+  docker_expose_ports?: number[] | null;
 }
 
 export interface LogEntry {
@@ -159,13 +166,35 @@ export interface AnalysisResponse {
     // NEW (optional) – mirrors metadata
     backend_port?: number;
     frontend_port?: number;
+
     database?: string;
     databases?: string[];
     database_port?: number | null;
+    database_detection?: {
+      [dbName: string]: {
+        score: number;
+        evidence: string[];
+      };
+    };
+
     env_variables?: string[];
     dockerfile?: boolean;
     docker_compose?: boolean;
     detected_files?: string[];
+
+    // detection confidence (if you ever need it on the response)
+    detection_confidence?: {
+      language: number;
+      framework: number;
+      method?: string;
+    };
+
+    // NEW DOCKER PORT FIELDS (match detector.py)
+    docker_backend_ports?: number[] | null;
+    docker_frontend_ports?: number[] | null;
+    docker_database_ports?: number[] | null;
+    docker_other_ports?: { [serviceName: string]: number[] } | null;
+    docker_expose_ports?: number[] | null;
   };
 }
 

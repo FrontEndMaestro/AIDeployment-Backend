@@ -333,6 +333,133 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
                     </div>
                   </div>
 
+                  {/* Docker Ports (from docker-compose / Dockerfile) */}
+                  {(project.metadata.docker_backend_ports ||
+                    project.metadata.docker_frontend_ports ||
+                    project.metadata.docker_database_ports ||
+                    project.metadata.docker_other_ports ||
+                    project.metadata.docker_expose_ports) && (
+                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 space-y-3">
+                      <p className="text-gray-400 text-xs mb-2 uppercase">
+                        Docker Ports
+                      </p>
+
+                      {/* Backend services */}
+                      {Array.isArray(project.metadata.docker_backend_ports) &&
+                        project.metadata.docker_backend_ports.length > 0 && (
+                          <div>
+                            <p className="text-gray-400 text-xs mb-1">
+                              Backend Services
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {project.metadata.docker_backend_ports.map(
+                                (port: number, idx: number) => (
+                                  <Badge key={idx} variant="info" size="sm">
+                                    {port}
+                                  </Badge>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                      {/* Frontend services */}
+                      {Array.isArray(project.metadata.docker_frontend_ports) &&
+                        project.metadata.docker_frontend_ports.length > 0 && (
+                          <div>
+                            <p className="text-gray-400 text-xs mb-1">
+                              Frontend Services
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {project.metadata.docker_frontend_ports.map(
+                                (port: number, idx: number) => (
+                                  <Badge key={idx} variant="info" size="sm">
+                                    {port}
+                                  </Badge>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                      {/* Database services */}
+                      {Array.isArray(project.metadata.docker_database_ports) &&
+                        project.metadata.docker_database_ports.length > 0 && (
+                          <div>
+                            <p className="text-gray-400 text-xs mb-1">
+                              Database Services
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {project.metadata.docker_database_ports.map(
+                                (port: number, idx: number) => (
+                                  <Badge key={idx} variant="info" size="sm">
+                                    {port}
+                                  </Badge>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                      {/* Other docker services */}
+                      {project.metadata.docker_other_ports &&
+                        Object.keys(project.metadata.docker_other_ports)
+                          .length > 0 && (
+                          <div>
+                            <p className="text-gray-400 text-xs mb-1">
+                              Other Services
+                            </p>
+                            <div className="space-y-1">
+                              {Object.entries(
+                                project.metadata.docker_other_ports
+                              ).map(
+                                ([service, ports]: [string, number[]], idx) => (
+                                  <div
+                                    key={idx}
+                                    className="flex items-center gap-2 flex-wrap"
+                                  >
+                                    <span className="text-gray-300 text-xs">
+                                      {service}
+                                    </span>
+                                    <div className="flex flex-wrap gap-1">
+                                      {ports.map((p: number, pIdx: number) => (
+                                        <Badge
+                                          key={pIdx}
+                                          variant="default"
+                                          size="sm"
+                                        >
+                                          {p}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                      {/* Dockerfile EXPOSE ports */}
+                      {Array.isArray(project.metadata.docker_expose_ports) &&
+                        project.metadata.docker_expose_ports.length > 0 && (
+                          <div>
+                            <p className="text-gray-400 text-xs mb-1">
+                              Dockerfile EXPOSE Ports
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {project.metadata.docker_expose_ports.map(
+                                (port: number, idx: number) => (
+                                  <Badge key={idx} variant="default" size="sm">
+                                    {port}
+                                  </Badge>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        )}
+                    </div>
+                  )}
+
                   {/* Detected Databases list */}
                   {project.metadata.databases &&
                     project.metadata.databases.length > 0 && (

@@ -402,15 +402,32 @@ async def export_metadata_handler(project_id: str, format: str = "json", current
             raise HTTPException(status_code=400, detail="Project not yet analyzed")
         
         # Prepare export data
-        metadata = project.get("metadata", {})
+        metadata = project.get("metadata", {}) or {}
         ml_conf = metadata.get("ml_confidence") or metadata.get("detection_confidence")
+
         export_data = {
             "project_name": project["project_name"],
             "framework": metadata.get("framework"),
             "language": metadata.get("language"),
             "runtime": metadata.get("runtime"),
             "dependencies": metadata.get("dependencies", []),
+
+            # legacy single port (kept for backwards compatibility)
             "port": metadata.get("port"),
+
+            # NEW: explicit ports
+            "backend_port": metadata.get("backend_port"),
+            "frontend_port": metadata.get("frontend_port"),
+            "database": metadata.get("database"),
+            "database_port": metadata.get("database_port"),
+
+            # NEW: docker-aware ports (may be None / missing)
+            "docker_backend_ports": metadata.get("docker_backend_ports"),
+            "docker_frontend_ports": metadata.get("docker_frontend_ports"),
+            "docker_database_ports": metadata.get("docker_database_ports"),
+            "docker_other_ports": metadata.get("docker_other_ports"),
+            "docker_expose_ports": metadata.get("docker_expose_ports"),
+
             "build_command": metadata.get("build_command"),
             "start_command": metadata.get("start_command"),
             "env_variables": metadata.get("env_variables", []),
@@ -418,7 +435,7 @@ async def export_metadata_handler(project_id: str, format: str = "json", current
             "docker_compose": metadata.get("docker_compose", False),
             "detected_files": metadata.get("detected_files", []),
             "ml_confidence": ml_conf,
-            "analysis_date": str(project.get("analysis_date"))
+            "analysis_date": str(project.get("analysis_date")),
         }
         
         if format == "json":
