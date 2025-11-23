@@ -591,12 +591,12 @@ def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
             pkg_path = os.path.join(folder_path, "package.json")
             
             if os.path.exists(pkg_path):
-                if folder_lower in ["backend", "server", "api"]:
+                if folder_lower in ["backend", "server", "api","app"]:
                     structure["has_backend"] = True
                     structure["backend_path"] = folder_path
                     structure["is_fullstack"] = True
                     print(f"🔍 Fullstack: found backend folder '{folder}'")
-                if folder_lower in ["frontend", "client", "web"]:
+                if folder_lower in ["frontend", "client", "web","ui"]:
                     structure["has_frontend"] = True
                     structure["frontend_path"] = folder_path
                     structure["is_fullstack"] = True
@@ -605,12 +605,77 @@ def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
     return structure
 
 
+def _scan_js_for_port_hint(service_path: str, max_files: int = 50) -> Optional[int]:
+    """
+    Scan JS/TS files under service_path for typical port patterns like:
+      - process.env.PORT || 5050
+      - app.listen(5050)
+    Returns the first reasonable port it finds, or None.
+    """
+    exts = {".js", ".jsx", ".ts", ".tsx"}
+    patterns = [
+        # process.env.PORT || 5050
+        re.compile(r"process\.env\.PORT\s*\|\|\s*(\d{2,5})"),
+        # generic 'PORT ... 5050'
+        re.compile(r"\bPORT\b[^;\n]*\b(\d{2,5})\b"),
+        # app.listen(5050) / listen(5050)
+        re.compile(r"\blist(?:en)?\s*\(\s*(\d{2,5})")
+    ]
+    
+    ports: List[int] = []
+    files_scanned = 0
+    
+    for root, dirs, files in os.walk(service_path):
+        dirs[:] = [
+            d for d in dirs
+            if d not in ["node_modules", "dist", "build", ".next", ".vite", ".git"]
+        ]
+        
+        for file in files:
+            if files_scanned >= max_files:
+                break
+            
+            _, ext = os.path.splitext(file)
+            if ext.lower() not in exts:
+                continue
+            
+            file_path = os.path.join(root, file)
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read(10000)
+            except Exception:
+                files_scanned += 1
+                continue
+            
+            for pat in patterns:
+                for m in pat.finditer(content):
+                    # last non-None group first
+                    for g in reversed(m.groups()):
+                        if g and g.isdigit():
+                            p = int(g)
+                            if 1024 <= p <= 65535:
+                                ports.append(p)
+                                break
+                    if ports:
+                        break
+                if ports:
+                    break
+            
+            files_scanned += 1
+        
+        if files_scanned >= max_files:
+            break
+    
+    return ports[0] if ports else None
+
+
 def _detect_port_from_package_json(project_path: str, prefer_frontend: bool = False) -> Optional[int]:
     """
     Guess port from package.json scripts.
     prefer_frontend:
       - True  => prioritise typical frontend ports
       - False => prioritise typical backend ports
+    Also special-cases Vite (frontend) to default to 5173 when no explicit port is set.
     """
     pkg_json = os.path.join(project_path, "package.json")
     if not os.path.exists(pkg_json):
@@ -624,6 +689,12 @@ def _detect_port_from_package_json(project_path: str, prefer_frontend: bool = Fa
         return None
     
     scripts = data.get("scripts", {})
+    # collect dependency names to detect Vite etc.
+    deps = {}
+    deps.update(data.get("dependencies", {}))
+    deps.update(data.get("devDependencies", {}))
+    dep_names = set(k.lower() for k in deps.keys())
+    
     script_strings = " ".join(str(v) for v in scripts.values())
     
     # Look for explicit PORT=XXXX patterns first
@@ -648,7 +719,11 @@ def _detect_port_from_package_json(project_path: str, prefer_frontend: bool = Fa
         if port_pattern.search(script_strings):
             return port
     
-    # Default for Node apps
+    # If this looks like a Vite frontend app, default to Vite's dev port 5173
+    if prefer_frontend and "vite" in dep_names:
+        return 5173
+    
+    # Default for Node apps when nothing explicit is found
     return 3000
 
 
@@ -715,43 +790,191 @@ def detect_ports_for_project(
 ) -> Dict[str, Optional[int]]:
     """
     Detect backend and frontend ports.
-    - For JS/TS: look for fullstack structure and read package.json.
-    - For others: scan code for host:port; fall back to base_port / defaults.
+    - For JS/TS: look for fullstack structure and read package.json,
+      then refine backend with a JS code scan.
+      Also consult .env for port hints (root and, for fullstack, backend/frontend subfolders).
+    - For others: scan code for host:port; fall back to base_port / defaults,
+      with .env overrides.
     """
     backend_port: Optional[int] = None
     frontend_port: Optional[int] = None
-    
-    # JS / TS fullstack or single service
-    if language in ["JavaScript", "TypeScript"]:
+
+    # ---- read env key/values at the project root ----
+    root_env_kv = _read_env_key_values(project_path)
+
+    def _extract_port(val: str) -> Optional[int]:
+        val = val.strip()
+        if not val:
+            return None
+        if val.isdigit():
+            p = int(val)
+            if 1 <= p <= 65535:
+                return p
+        m = re.search(r"(\d{2,5})", val)
+        if m:
+            try:
+                p = int(m.group(1))
+                if 1 <= p <= 65535:
+                    return p
+            except ValueError:
+                return None
+        return None
+
+    def _extract_env_ports(env_kv: Dict[str, str]):
+        """
+        Given a mapping of env key -> value, extract:
+          - backend_env_port: from BACKEND_PORT/SERVER_PORT/API_PORT
+          - frontend_env_port: from FRONTEND_PORT/CLIENT_PORT/VITE_PORT/REACT_APP_PORT
+          - generic_env_port: from PORT
+        """
+        backend_env_port: Optional[int] = None
+        frontend_env_port: Optional[int] = None
+        generic_env_port: Optional[int] = None
+
+        for key, value in env_kv.items():
+            p = _extract_port(value)
+            if p is None:
+                continue
+            ku = key.upper()
+
+            # explicit backend hints
+            if ku in ("BACKEND_PORT", "SERVER_PORT", "API_PORT"):
+                if backend_env_port is None:
+                    backend_env_port = p
+                continue
+
+            # explicit frontend hints
+            if ku in ("FRONTEND_PORT", "CLIENT_PORT", "VITE_PORT", "REACT_APP_PORT"):
+                if frontend_env_port is None:
+                    frontend_env_port = p
+                continue
+
+            # generic PORT
+            if ku == "PORT" and generic_env_port is None:
+                generic_env_port = p
+
+        return backend_env_port, frontend_env_port, generic_env_port
+
+    # root env-derived ports (may be overridden for fullstack)
+    backend_env_port, frontend_env_port, generic_env_port = _extract_env_ports(root_env_kv)
+
+    is_js_ts = language in ["JavaScript", "TypeScript"]
+
+    if is_js_ts:
         fullstack = _detect_fullstack_structure(project_path)
-        
-        # Backend
-        if fullstack.get("has_backend") and fullstack.get("backend_path"):
-            backend_port = _detect_port_from_package_json(
-                fullstack["backend_path"], prefer_frontend=False
-            )
+        is_fullstack = fullstack.get("is_fullstack", False)
+
+        # ---- FULLSTACK JS/TS (client + server folders) ----
+        if is_fullstack:
+            backend_path = fullstack.get("backend_path")
+            frontend_path = fullstack.get("frontend_path")
+
+            # Backend-specific env: backend/.env overrides root .env
+            if backend_path:
+                backend_env_kv = _read_env_key_values(backend_path)
+                b_backend_env_port, _, b_generic_env_port = _extract_env_ports(backend_env_kv)
+
+                if b_backend_env_port is not None:
+                    backend_env_port = b_backend_env_port
+                if b_generic_env_port is not None:
+                    # generic PORT from backend/.env overrides root generic PORT
+                    generic_env_port = b_generic_env_port
+
+            # Frontend-specific env: frontend/.env overrides root .env
+            if frontend_path:
+                frontend_env_kv = _read_env_key_values(frontend_path)
+                _, f_frontend_env_port, f_generic_env_port = _extract_env_ports(frontend_env_kv)
+
+                if f_frontend_env_port is not None:
+                    frontend_env_port = f_frontend_env_port
+                # We intentionally do NOT use generic PORT for frontend in fullstack,
+                # to keep the original semantics.
+
+            # Backend: env override > package.json + code scan > generic PORT
+            if backend_env_port is not None:
+                backend_port = backend_env_port
+            else:
+                if fullstack.get("has_backend") and backend_path:
+                    backend_port = _detect_port_from_package_json(
+                        backend_path, prefer_frontend=False
+                    )
+                    code_port = _scan_js_for_port_hint(backend_path)
+                    if code_port is not None:
+                        backend_port = code_port
+                else:
+                    backend_port = _detect_port_from_package_json(
+                        project_path, prefer_frontend=False
+                    )
+                    code_port = _scan_js_for_port_hint(project_path)
+                    if code_port is not None:
+                        backend_port = code_port
+
+                if backend_port is None and generic_env_port is not None:
+                    backend_port = generic_env_port
+
+            # Frontend: env override > package.json (frontend preference)
+            if fullstack.get("has_frontend") and frontend_path:
+                if frontend_env_port is not None:
+                    frontend_port = frontend_env_port
+                else:
+                    frontend_port = _detect_port_from_package_json(
+                        frontend_path, prefer_frontend=True
+                    )
+            # we do NOT use generic PORT for frontend in fullstack case
+
+        # ---- SINGLE JS/TS PROJECT (no separate client/server folders) ----
         else:
-            backend_port = _detect_port_from_package_json(
-                project_path, prefer_frontend=False
-            )
-        
-        # Frontend
-        if fullstack.get("has_frontend") and fullstack.get("frontend_path"):
-            frontend_port = _detect_port_from_package_json(
-                fullstack["frontend_path"], prefer_frontend=True
-            )
-        # If no explicit frontend folder we leave frontend_port = None
-        
+            # treat React / Next.js as frontend-only by default
+            is_frontend_only = framework in ["React", "Next.js"]
+
+            if is_frontend_only:
+                # FRONTEND: env > generic PORT > package.json + JS scan
+                if frontend_env_port is not None:
+                    frontend_port = frontend_env_port
+                elif generic_env_port is not None:
+                    frontend_port = generic_env_port
+                else:
+                    frontend_port = _detect_port_from_package_json(
+                        project_path, prefer_frontend=True
+                    )
+                    code_port = _scan_js_for_port_hint(project_path)
+                    if code_port is not None:
+                        frontend_port = code_port
+
+                # BACKEND: only if explicitly defined in env
+                if backend_env_port is not None:
+                    backend_port = backend_env_port
+                else:
+                    backend_port = None
+
+            else:
+                # Non-React/Next single JS/TS: treat as backend app
+                # Backend: env > package.json + JS scan > generic PORT
+                if backend_env_port is not None:
+                    backend_port = backend_env_port
+                else:
+                    backend_port = _detect_port_from_package_json(
+                        project_path, prefer_frontend=False
+                    )
+                    code_port = _scan_js_for_port_hint(project_path)
+                    if code_port is not None:
+                        backend_port = code_port
+
+                    if backend_port is None and generic_env_port is not None:
+                        backend_port = generic_env_port
+
+                # Frontend only if explicitly given in env
+                if frontend_env_port is not None:
+                    frontend_port = frontend_env_port
+
     else:
-        # Non JS/TS: single backend service usually.
+        # ---- NON JS/TS PROJECTS ----
         detected = _scan_code_for_ports(project_path)
         if detected:
             backend_port = detected
         else:
-            # fallback to base_port or language default
             backend_port = base_port
             if backend_port is None:
-                # Just in case base_port is not set, create a small default map
                 default_ports = {
                     "Python": 8000,
                     "Java": 8080,
@@ -760,12 +983,21 @@ def detect_ports_for_project(
                     "PHP": 8000
                 }
                 backend_port = default_ports.get(language, 8000)
-    
+
+        # Env overrides for backend
+        if backend_env_port is not None:
+            backend_port = backend_env_port
+        elif generic_env_port is not None and backend_port is None:
+            backend_port = generic_env_port
+
+        # Allow explicit frontend env even in non-JS projects (edge multi-service)
+        if frontend_env_port is not None:
+            frontend_port = frontend_env_port
+
     return {
         "backend_port": backend_port,
         "frontend_port": frontend_port
     }
-
 
 # ----- Database detection helpers -----
 
@@ -1048,6 +1280,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         results.update(runtime_info)
         
         # Dependencies
+               # Dependencies (root + nested subprojects like client/server)
         dep_files = {
             "requirements.txt": "requirements.txt",
             "package.json": "package.json",
@@ -1055,6 +1288,9 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             "go.mod": "go.mod"
         }
         
+        visited_dep_files = set()
+        
+        # 1) Root-level dep files
         for filename, file_type in dep_files.items():
             file_path = os.path.join(actual_path, filename)
             if os.path.exists(file_path):
@@ -1062,6 +1298,29 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                 results["dependencies"].extend(deps)
                 if filename not in results["detected_files"]:
                     results["detected_files"].append(filename)
+                visited_dep_files.add(os.path.abspath(file_path))
+        
+        # 2) Nested dep files (e.g. mern/client/package.json, mern/server/package.json)
+        for root, dirs, files in os.walk(actual_path):
+            dirs[:] = [
+                d for d in dirs
+                if d not in ['node_modules', '__pycache__', '.git', 'venv', '.venv', 'dist', 'build', '.next']
+            ]
+            
+            for file in files:
+                if file in dep_files:
+                    full_path = os.path.abspath(os.path.join(root, file))
+                    if full_path in visited_dep_files:
+                        continue
+                    
+                    file_type = dep_files[file]
+                    deps = parse_dependencies_file(full_path, file_type)
+                    results["dependencies"].extend(deps)
+                    if file not in results["detected_files"]:
+                        results["detected_files"].append(file)
+                    
+                    visited_dep_files.add(full_path)
+
         
         # Docker files
         docker_info = detect_docker_files(actual_path)
