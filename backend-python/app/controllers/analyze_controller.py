@@ -415,17 +415,25 @@ async def export_metadata_handler(project_id: str, format: str = "json", current
             # legacy single port (kept for backwards compatibility)
             "port": metadata.get("port"),
 
-            # NEW: explicit ports
+            # explicit ports
             "backend_port": metadata.get("backend_port"),
             "frontend_port": metadata.get("frontend_port"),
             "database": metadata.get("database"),
             "database_port": metadata.get("database_port"),
 
-            # NEW: docker-aware ports (may be None / missing)
+            # docker-aware HOST ports
             "docker_backend_ports": metadata.get("docker_backend_ports"),
             "docker_frontend_ports": metadata.get("docker_frontend_ports"),
             "docker_database_ports": metadata.get("docker_database_ports"),
             "docker_other_ports": metadata.get("docker_other_ports"),
+
+            # NEW: docker CONTAINER ports (from docker-compose)
+            "docker_backend_container_ports": metadata.get("docker_backend_container_ports"),
+            "docker_frontend_container_ports": metadata.get("docker_frontend_container_ports"),
+            "docker_database_container_ports": metadata.get("docker_database_container_ports"),
+            "docker_other_container_ports": metadata.get("docker_other_container_ports"),
+
+            # Dockerfile EXPOSE ports
             "docker_expose_ports": metadata.get("docker_expose_ports"),
 
             "build_command": metadata.get("build_command"),
@@ -437,6 +445,7 @@ async def export_metadata_handler(project_id: str, format: str = "json", current
             "ml_confidence": ml_conf,
             "analysis_date": str(project.get("analysis_date")),
         }
+
         
         if format == "json":
             return {

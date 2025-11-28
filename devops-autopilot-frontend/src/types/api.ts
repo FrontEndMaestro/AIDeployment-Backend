@@ -74,12 +74,18 @@ export interface ProjectMetadata {
     };
   };
 
-  // NEW DOCKER PORT FIELDS
+  // NEW DOCKER PORT FIELDS (HOST)
   docker_backend_ports?: number[] | null;
   docker_frontend_ports?: number[] | null;
   docker_database_ports?: number[] | null;
   docker_other_ports?: { [serviceName: string]: number[] } | null;
   docker_expose_ports?: number[] | null;
+
+  // NEW DOCKER CONTAINER PORT FIELDS
+  docker_backend_container_ports?: number[] | null;
+  docker_frontend_container_ports?: number[] | null;
+  docker_database_container_ports?: number[] | null;
+  docker_other_container_ports?: { [serviceName: string]: number[] } | null;
 }
 
 export interface LogEntry {
@@ -195,6 +201,12 @@ export interface AnalysisResponse {
     docker_database_ports?: number[] | null;
     docker_other_ports?: { [serviceName: string]: number[] } | null;
     docker_expose_ports?: number[] | null;
+
+    // NEW DOCKER CONTAINER PORT FIELDS
+    docker_backend_container_ports?: number[] | null;
+    docker_frontend_container_ports?: number[] | null;
+    docker_database_container_ports?: number[] | null;
+    docker_other_container_ports?: { [serviceName: string]: number[] } | null;
   };
 }
 

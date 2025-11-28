@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import yaml
 from collections import Counter
 from typing import Dict, List, Tuple, Optional
 from .ml_analyzer import get_ml_analyzer
@@ -785,24 +786,26 @@ def _scan_code_for_ports(project_path: str, max_files: int = 150) -> Optional[in
 
 def _parse_docker_compose_ports(project_path: str) -> Dict[str, List[Tuple[int, int]]]:
     """
-    More robust docker-compose port parser.
+    Parse docker-compose.yml/.yaml using a proper YAML parser (PyYAML).
+
     Supports:
-      - ports:
-            - "3000:3000"
-            - 5173:80
-      - ports: ["3000:3000", "5173:80"]
-      - ports: "3000:3000"
-      - weird indentation (e.g. under `services:`)
-      - quoted/unquoted values
+      services:
+        frontend:
+          ports:
+            - "5173:80"
+            - 3000:3000
+        backend:
+          ports: "5000:5000"
+        db:
+          ports:
+            - "27017:27017"
 
     Returns:
-        Dict[str, List[Tuple[int, int]]]:
-            {
-                "<service_name>": [(host_port, container_port), ...],
-                ...
-            }
+        {
+            "<service_name>": [(host_port, container_port), ...],
+            ...
+        }
     """
-
     compose_files = ("docker-compose.yml", "docker-compose.yaml")
     compose_path = None
 
@@ -812,49 +815,87 @@ def _parse_docker_compose_ports(project_path: str) -> Dict[str, List[Tuple[int, 
             compose_path = candidate
             break
 
+    # No compose file found
     if not compose_path:
+        return {}
+
+    # If PyYAML isn't installed, fall back to "no ports" rather than breaking
+    if yaml is None:
+        print("Warning: PyYAML not installed; docker-compose ports will not be parsed.")
         return {}
 
     try:
         with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-    except Exception:
+            data = yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"Error parsing docker-compose with YAML: {e}")
         return {}
 
+    services = data.get("services", {})
     service_ports: Dict[str, List[Tuple[int, int]]] = {}
 
-    # Detect service blocks; allow leading indentation so we can match lines like
-    # "  frontend:" under a top-level "services:" key.
-    service_pattern = re.compile(
-        r"(?ms)^\s*([A-Za-z0-9_-]+)\s*:\s*(?:\n\s+[^\S\r\n]*[^\n]+)*?"
-        r"(?:\n\s+ports\s*:\s*(?P<ports_block>.*?)(?=\n\S|\Z))?"
-    )
+    for svc_name, svc_def in services.items():
+        if not isinstance(svc_def, dict):
+            continue
 
-    # Also detect inline "ports: [...]"
-    inline_ports_pattern = re.compile(
-        r"ports\s*:\s*\[([^\]]+)\]", re.MULTILINE
-    )
+        ports_field = svc_def.get("ports")
+        if not ports_field:
+            continue
 
-    # Pattern for extracting "3000:80"
-    mapping_pattern = re.compile(r"['\"]?(\d{2,5})\s*:\s*(\d{2,5})['\"]?")
+        # Normalize ports_field to a list
+        if isinstance(ports_field, (str, int)):
+            ports_list = [ports_field]
+        elif isinstance(ports_field, list):
+            ports_list = ports_field
+        else:
+            # Unknown type, skip
+            continue
 
-    for match in service_pattern.finditer(content):
-        service = match.group(1)
-        block = match.group("ports_block")
-        ports: List[Tuple[int, int]] = []
+        mappings: List[Tuple[int, int]] = []
 
-        if block:
-            for hp, cp in mapping_pattern.findall(block):
-                ports.append((int(hp), int(cp)))
+        for entry in ports_list:
+            # Possible formats:
+            # - "3000:3000"
+            # - "0.0.0.0:3000:3000"
+            # - "3000"
+            # - 3000
+            host_port: Optional[int] = None
+            container_port: Optional[int] = None
 
-        # Inline ports: ["3000:3000", "5173:80"]
-        inline = inline_ports_pattern.search(match.group(0))
-        if inline:
-            for hp, cp in mapping_pattern.findall(inline.group(1)):
-                ports.append((int(hp), int(cp)))
+            if isinstance(entry, int):
+                # `ports: - 3000` means container port 3000, host randomized.
+                # We can treat this as (3000, 3000) for our detection purposes,
+                # or skip host mapping. Here we treat host == container.
+                host_port = entry
+                container_port = entry
+            else:
+                # It's a string
+                text = str(entry).strip().strip('"').strip("'")
+                # Drop protocol suffix if present, e.g. "3000:3000/tcp"
+                if "/" in text:
+                    text = text.split("/", 1)[0]
 
-        if ports:
-            service_ports[service] = ports
+                parts = text.split(":")
+                # "3000" => only container port (host random)
+                if len(parts) == 1 and parts[0].isdigit():
+                    container_port = int(parts[0])
+                    # we *could* leave host_port as None; but for your
+                    # detector it's more useful to treat host == container
+                    host_port = container_port
+                elif len(parts) >= 2:
+                    # Could be "host:container" or "ip:host:container"
+                    # We take last two segments as host/container
+                    maybe_host = parts[-2]
+                    maybe_container = parts[-1]
+                    if maybe_host.isdigit() and maybe_container.isdigit():
+                        host_port = int(maybe_host)
+                        container_port = int(maybe_container)
+
+            if host_port is not None and container_port is not None:
+                mappings.append((host_port, container_port))
+
+        if mappings:
+            service_ports[svc_name] = mappings
 
     return service_ports
 
