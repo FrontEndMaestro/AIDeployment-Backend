@@ -210,6 +210,40 @@ export interface AnalysisResponse {
   };
 }
 
+// ============ DOCKER DEPLOY TYPES ============
+export interface DockerfileInfo {
+  path: string;
+  content: string;
+}
+
+export interface FileNode {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  children?: FileNode[];
+}
+
+export interface DockerContextResponse {
+  success: boolean;
+  project: { id: string; project_name: string; status: string };
+  metadata: ProjectMetadata;
+  dockerfiles: DockerfileInfo[];
+  compose_files: DockerfileInfo[];
+  file_tree: {
+    text: string;
+    tree: FileNode[];
+  };
+  docker_compose_present?: boolean;
+}
+
+export interface DockerChatResponse {
+  success: boolean;
+  reply: string;
+  model: string;
+  dockerfiles_found: boolean;
+  log_stream_base_url?: string;
+}
+
 export interface ApiError {
   success: false;
   message: string;

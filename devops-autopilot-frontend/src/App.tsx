@@ -5,6 +5,7 @@ import { ProtectedRoute } from "./components/ProtectedRoute";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { DeployPage } from "./pages/DeployPage";
 export default function App() {
   return (
     <BrowserRouter>
@@ -18,6 +19,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <DashboardPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects/:projectId/deploy"
+            element={
+              <ProtectedRoute>
+                <DeployPage />
               </ProtectedRoute>
             }
           />

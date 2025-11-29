@@ -1,5 +1,6 @@
 import type React from "react";
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { Navbar } from "../components/Navbar";
 import { Card } from "../components/Card";
@@ -13,6 +14,7 @@ import { apiClient } from "../api/client";
 import { Project } from "../types/api";
 
 export const DashboardPage: React.FC = () => {
+  const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -751,6 +753,32 @@ export const DashboardPage: React.FC = () => {
                         />
                       </svg>
                       Delete
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={
+                        project.status !== "analyzed" &&
+                        project.status !== "completed"
+                      }
+                      onClick={() =>
+                        navigate(`/projects/${project._id}/deploy`)
+                      }
+                    >
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M12 8v8m-4-4h8M5 12a7 7 0 1114 0 7 7 0 01-14 0z"
+                        />
+                      </svg>
+                      Docker Deploy
                     </Button>
                   </div>
                 </Card>
