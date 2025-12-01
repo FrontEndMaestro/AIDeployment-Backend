@@ -751,7 +751,7 @@ def run_project_stream(
                     project_root=project_root,
                     dockerfile_rel_paths=dockerfiles,
                     backend_host_port=host_port,
-                    metadata=metadata,
+                    metadata=metadata or {},
                 )
 
                 llm_response = call_llama(

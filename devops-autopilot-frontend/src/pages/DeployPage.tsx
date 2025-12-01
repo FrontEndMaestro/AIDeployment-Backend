@@ -116,8 +116,13 @@ export const DeployPage: React.FC = () => {
     }
     setLogs([]);
     const token = apiClient.getToken();
-    const base = logStreamBaseUrl || `${apiBase}/docker/${projectId}/logs`;
-    const url = new URL(base, window.location.origin);
+    const base =
+      logStreamBaseUrl && logStreamBaseUrl.startsWith("http")
+        ? logStreamBaseUrl
+        : logStreamBaseUrl
+        ? `${apiBase}${logStreamBaseUrl.startsWith("/") ? "" : "/"}${logStreamBaseUrl}`
+        : `${apiBase}/docker/${projectId}/logs`;
+    const url = new URL(base);
     url.searchParams.set("action", action);
     if (token) {
       url.searchParams.set("token", token);

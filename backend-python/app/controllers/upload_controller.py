@@ -156,13 +156,21 @@ async def delete_project(project_id: str, current_user: dict):
         if not project:
             raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         
-        # Delete uploaded file
-        if os.path.exists(project["file_path"]):
-            os.remove(project["file_path"])
-        
-        # Delete extracted folder
-        if project.get("extracted_path") and os.path.exists(project["extracted_path"]):
-            shutil.rmtree(project["extracted_path"])
+        file_path = project.get("file_path")
+        if file_path:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except Exception:
+                pass  # optional: log it
+
+        extracted_path = project.get("extracted_path")
+        if extracted_path:
+            try:
+                if os.path.exists(extracted_path):
+                    shutil.rmtree(extracted_path, ignore_errors=True)
+            except Exception:
+                pass 
         
         # Delete from database
         await collection.delete_one({"_id": ObjectId(project_id)})

@@ -1178,7 +1178,7 @@ def detect_ports_for_project(
         if frontend_env_port is not None:
             frontend_port = frontend_env_port
 
-    # ---- Docker-compose ports (non-breaking, only adds information) ----
+    # ---- Docker-compose ports ----
     docker_service_ports = _parse_docker_compose_ports(project_path)
 
     # ---- Dockerfile EXPOSE ports ----
@@ -1206,14 +1206,11 @@ def detect_ports_for_project(
         if role == "backend":
             docker_backend_ports.extend(host_ports)
             docker_backend_container_ports.extend(container_ports)
-            # if we never found a backend_port from code/env, use the first docker HOST port
-            if backend_port is None and host_ports:
-                backend_port = host_ports[0]
+            # OLD behavior was: if backend_port is None and host_ports: backend_port = host_ports[0]
+            # We now defer the canonical override until after all services are processed.
         elif role == "frontend":
             docker_frontend_ports.extend(host_ports)
             docker_frontend_container_ports.extend(container_ports)
-            if frontend_port is None and host_ports:
-                frontend_port = host_ports[0]
         elif role == "database":
             docker_database_ports.extend(host_ports)
             docker_database_container_ports.extend(container_ports)
@@ -1231,6 +1228,20 @@ def detect_ports_for_project(
     docker_backend_container_ports = sorted(set(docker_backend_container_ports))
     docker_frontend_container_ports = sorted(set(docker_frontend_container_ports))
     docker_database_container_ports = sorted(set(docker_database_container_ports))
+
+    # --- Compose-driven overrides (key fix) ---
+    # If docker-compose explicitly defines HOST ports for backend/frontend,
+    # treat those host ports as the canonical ones clients will hit.
+    #
+    # This fixes cases where JS heuristics say 3000 (from runtime or server.js),
+    # but docker-compose is actually exposing backend on 5000 or 8000.
+    if docker_backend_ports:
+        backend_port = docker_backend_ports[0]
+
+    # For frontend we keep behavior slightly more conservative:
+    # only override if we never found a better hint before.
+    if docker_frontend_ports and frontend_port is None:
+        frontend_port = docker_frontend_ports[0]
 
     return {
         "backend_port": backend_port,
