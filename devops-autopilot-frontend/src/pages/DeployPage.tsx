@@ -41,7 +41,10 @@ export const DeployPage: React.FC = () => {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [eventSource, setEventSource] = useState<EventSource | null>(null);
   const [logStreamBaseUrl, setLogStreamBaseUrl] = useState<string | null>(null);
+  const [refreshingTree, setRefreshingTree] = useState<boolean>(false);
+  const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
   const apiBase = "http://localhost:8000/api";
+  const rootLabel = context?.project.project_name || "project";
 
   useEffect(() => {
     if (!projectId) return;
@@ -68,6 +71,34 @@ export const DeployPage: React.FC = () => {
     };
     fetchContext();
   }, [projectId]);
+
+  const refreshExplorer = async () => {
+    if (!projectId) return;
+    try {
+      setRefreshingTree(true);
+      const data = await apiClient.getDockerContext(projectId);
+      setContext(data);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          content:
+            err instanceof Error
+              ? `Unable to refresh explorer: ${err.message}`
+              : "Unable to refresh explorer",
+        },
+      ]);
+    } finally {
+      setRefreshingTree(false);
+    }
+  };
+
+  const joinPaths = (base: string | null | undefined, name: string) => {
+    const cleanBase = base ? base.replace(/\/+$/, "") : "";
+    const cleanName = name.replace(/^\/+/, "");
+    return cleanBase ? `${cleanBase}/${cleanName}` : cleanName;
+  };
 
   const handleSend = async () => {
     if (!projectId || !input.trim()) return;
@@ -240,20 +271,187 @@ export const DeployPage: React.FC = () => {
     }
   };
 
+  const pruneDeletedState = (targetPath: string) => {
+    const normalized = targetPath.replace(/\/+$/, "");
+    const prefix = `${normalized}/`;
+
+    setOpenFiles((prev) =>
+      prev.filter(
+        (p) => p !== normalized && !p.startsWith(prefix)
+      )
+    );
+    setFileContents((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((key) => {
+        if (key === normalized || key.startsWith(prefix)) {
+          delete next[key];
+        }
+      });
+      return next;
+    });
+    setDirtyFlags((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((key) => {
+        if (key === normalized || key.startsWith(prefix)) {
+          delete next[key];
+        }
+      });
+      return next;
+    });
+    if (activeFile && (activeFile === normalized || activeFile.startsWith(prefix))) {
+      setActiveFile(null);
+    }
+  };
+
+  const handleCreateFile = async (basePath?: string | null) => {
+    if (!projectId) return;
+    const name = window.prompt("New file name (relative to this folder)");
+    if (!name || !name.trim()) return;
+    const fullPath = joinPaths(basePath, name.trim());
+    try {
+      await apiClient.createProjectFile(projectId, fullPath, "");
+      await refreshExplorer();
+      setMessages((prev) => [
+        ...prev,
+        { role: "ai", content: `Created file ${fullPath}` },
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          content:
+            err instanceof Error ? `Create file failed: ${err.message}` : "Create file failed",
+        },
+      ]);
+    }
+  };
+
+  const handleCreateFolder = async (basePath?: string | null) => {
+    if (!projectId) return;
+    const name = window.prompt("New folder name (relative to this folder)");
+    if (!name || !name.trim()) return;
+    const fullPath = joinPaths(basePath, name.trim());
+    try {
+      await apiClient.createProjectFolder(projectId, fullPath);
+      await refreshExplorer();
+      setMessages((prev) => [
+        ...prev,
+        { role: "ai", content: `Created folder ${fullPath}` },
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          content:
+            err instanceof Error ? `Create folder failed: ${err.message}` : "Create folder failed",
+        },
+      ]);
+    }
+  };
+
+  const handleDeletePath = async (targetPath: string) => {
+    if (!projectId) return;
+    const confirmed = window.confirm(`Delete ${targetPath}? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+      await apiClient.deleteProjectPath(projectId, targetPath);
+      pruneDeletedState(targetPath);
+      await refreshExplorer();
+      setMessages((prev) => [
+        ...prev,
+        { role: "ai", content: `Deleted ${targetPath}` },
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          content:
+            err instanceof Error ? `Delete failed: ${err.message}` : "Delete failed",
+        },
+      ]);
+    }
+  };
+
   const renderFileTree = (nodes: FileNode[], depth = 0) => {
     return nodes.map((node) => (
-      <div key={node.path} className="mb-1">
-        <button
-          className={`text-left w-full text-sm ${
-            node.is_dir ? "text-cyan-300" : "text-gray-200"
-          } hover:text-white`}
-          style={{ paddingLeft: `${depth * 12}px` }}
-          onClick={() => handleFileSelect(node)}
+      <div
+        key={node.path}
+        className={`mb-1 ${depth > 0 ? "border-l border-gray-800" : ""}`}
+        style={{ paddingLeft: `${depth * 12}px` }}
+      >
+        <div
+          className={`flex items-center justify-between group rounded px-2 py-1 hover:bg-gray-700/50 ${
+            !node.is_dir && activeFile === node.path ? "bg-gray-700/60 border border-cyan-600/40" : ""
+          }`}
         >
-          {node.is_dir ? "[dir]" : "[file]"} {node.name}
-        </button>
-        {node.children && node.children.length > 0 && (
-          <div>{renderFileTree(node.children, depth + 1)}</div>
+          <div className="flex items-center gap-2">
+            {node.is_dir ? (
+              <button
+                className="text-cyan-300 hover:text-white text-xs"
+                onClick={() =>
+                  setExpandedDirs((prev) => ({
+                    ...prev,
+                    [node.path]: !(prev[node.path] ?? true),
+                  }))
+                }
+                aria-label={expandedDirs[node.path] ?? true ? "Collapse folder" : "Expand folder"}
+              >
+                {(expandedDirs[node.path] ?? true) ? "▾" : "▸"}
+              </button>
+            ) : (
+              <span className="text-gray-600 text-xs">•</span>
+            )}
+            <button
+              className={`text-left text-sm ${
+                node.is_dir ? "text-cyan-200" : activeFile === node.path ? "text-white" : "text-gray-200"
+              } hover:text-white`}
+              onClick={() => (node.is_dir ? setExpandedDirs((prev) => ({ ...prev, [node.path]: !(prev[node.path] ?? true) })) : handleFileSelect(node))}
+            >
+              {node.name}
+            </button>
+          </div>
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {node.is_dir && (
+              <>
+                <button
+                  className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-gray-200 hover:border-cyan-500"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCreateFile(node.path);
+                  }}
+                  disabled={refreshingTree}
+                >
+                  + File
+                </button>
+                <button
+                  className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-gray-200 hover:border-cyan-500"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCreateFolder(node.path);
+                  }}
+                  disabled={refreshingTree}
+                >
+                  + Folder
+                </button>
+              </>
+            )}
+            <button
+              className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-red-300 hover:border-red-500"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDeletePath(node.path);
+              }}
+              disabled={refreshingTree}
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+        {node.is_dir && (expandedDirs[node.path] ?? true) && node.children && node.children.length > 0 && (
+          <div className="mt-1">{renderFileTree(node.children, depth + 1)}</div>
         )}
       </div>
     ));
@@ -335,10 +533,44 @@ export const DeployPage: React.FC = () => {
           {/* Left sidebar: file explorer + metadata (scroll here only) */}
           <div className="lg:col-span-3 flex flex-col bg-gray-850/0 gap-3 overflow-y-auto pr-1 custom-scroll">
             <Card className="p-4 bg-gray-800 border-gray-700">
-              <h3 className="text-sm font-semibold text-white mb-2">
-                Explorer
-              </h3>
-              <div className="max-h-[420px] overflow-y-auto custom-scroll">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-gray-400">
+                    Explorer
+                  </p>
+                  <p className="text-sm text-white font-semibold">{rootLabel}</p>
+                </div>
+                <button
+                  className="text-[11px] px-2 py-1 rounded bg-gray-900 border border-gray-700 text-gray-200 hover:border-cyan-500"
+                  onClick={() => refreshExplorer()}
+                  disabled={refreshingTree}
+                  title="Refresh"
+                >
+                  ↻
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2 mb-3">
+                <button
+                  className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-md bg-gray-900/80 border border-gray-700 text-gray-100 hover:border-cyan-500 hover:text-white shadow-sm transition"
+                  onClick={() => handleCreateFile(null)}
+                  disabled={refreshingTree}
+                >
+                  <span className="text-cyan-400 text-xs">＋</span>
+                  New File
+                </button>
+                <button
+                  className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-md bg-gray-900/80 border border-gray-700 text-gray-100 hover:border-cyan-500 hover:text-white shadow-sm transition"
+                  onClick={() => handleCreateFolder(null)}
+                  disabled={refreshingTree}
+                >
+                  <span className="text-cyan-400 text-xs">＋</span>
+                  New Folder
+                </button>
+                {refreshingTree && (
+                  <span className="text-xs text-gray-400">Refreshing…</span>
+                )}
+              </div>
+              <div className="max-h-[420px] overflow-y-auto custom-scroll rounded-md border border-gray-750/60 bg-gray-900/60">
                 {renderFileTree(context.file_tree.tree)}
               </div>
             </Card>
@@ -446,13 +678,13 @@ export const DeployPage: React.FC = () => {
           </div>
 
           {/* Right sidebar: docker actions + chat */}
-          <div className="lg:col-span-3 flex flex-col gap-3">
+          <div className="lg:col-span-3 flex flex-col gap-3 max-h-[calc(100vh-180px)] overflow-y-auto custom-scroll">
             <Card className="p-4 bg-gray-800 border-gray-700">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-white">Docker Actions</h3>
                 <span className="text-xs text-gray-400">Build & Run</span>
               </div>
-              <div className="flex gap-2 mb-3">
+              <div className="flex flex-wrap gap-2 mb-3">
                 <Button variant="secondary" size="sm" onClick={() => startStream("build")}>
                   Build Image
                 </Button>
@@ -478,7 +710,7 @@ export const DeployPage: React.FC = () => {
               </div>
             </Card>
 
-            <Card className="p-4 bg-gray-800 border-gray-700 flex-1 flex flex-col">
+            <Card className="p-4 bg-gray-800 border-gray-700 flex-1 flex flex-col min-h-0">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-white">
                   Llama 3.1 Deploy Chat
@@ -486,7 +718,7 @@ export const DeployPage: React.FC = () => {
                 <span className="text-xs text-gray-400">Dockerfile validation</span>
               </div>
 
-              <div className="space-y-3 flex-1 overflow-auto mb-4 custom-scroll">
+              <div className="flex-1 overflow-y-auto custom-scroll mb-4 space-y-3 min-h-[320px] max-h-[520px]">
                 {messages.map((msg, idx) => (
                   <div
                     key={idx}

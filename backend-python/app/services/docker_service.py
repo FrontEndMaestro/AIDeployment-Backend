@@ -170,6 +170,65 @@ def _tag_and_push(
         yield event
 
 
+# --------- external network preflight for compose ---------
+
+
+def ensure_external_networks(compose_path: str, stage: str) -> List[Dict]:
+    """
+    Ensure external networks declared in docker-compose exist.
+    Returns a list of log dicts to yield before running compose commands.
+    """
+    events: List[Dict] = []
+    if yaml is None or not os.path.exists(compose_path):
+        return events
+
+    try:
+        with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as e:
+        events.append({"line": f"Skipping external network preflight (parse error: {e})", "stage": stage})
+        return events
+
+    networks = data.get("networks", {}) or {}
+    external_names: List[str] = []
+
+    for name, cfg in networks.items():
+        if not isinstance(cfg, dict):
+            continue
+        if cfg.get("external") is True:
+            net_name = cfg.get("name") or name
+            if net_name:
+                external_names.append(str(net_name))
+
+    for net in external_names:
+        events.append({"line": f"Checking external network '{net}'", "stage": stage})
+        inspect = subprocess.run(
+            ["docker", "network", "inspect", net],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if inspect.returncode == 0:
+            events.append({"line": f"External network '{net}' exists", "stage": stage})
+            continue
+        events.append({"line": f"External network '{net}' missing; creating...", "stage": stage})
+        create = subprocess.run(
+            ["docker", "network", "create", net],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if create.returncode == 0:
+            events.append({"line": f"Created external network '{net}'", "stage": stage})
+        else:
+            events.append({
+                "line": f"Failed to create external network '{net}': {create.stderr.strip()}",
+                "stage": stage,
+                "exit_code": create.returncode,
+            })
+    return events
+
+
 # --------- BUILD: whole project (compose OR all Dockerfiles) ---------
 
 
@@ -215,6 +274,9 @@ def build_project_stream(
     if compose_path:
         compose_dir = os.path.dirname(compose_path)
         compose_file = os.path.basename(compose_path)
+
+        for ev in ensure_external_networks(compose_path, "build"):
+            yield ev
 
         cmd = ["docker", "compose", "-f", compose_file, "build"]
 
@@ -858,7 +920,19 @@ def run_project_stream(
         compose_file = os.path.basename(compose_path)
         rel_compose = os.path.relpath(compose_path, project_root).replace("\\", "/")
 
-        cmd = ["docker", "compose", "-f", compose_file, "up"]
+        for ev in ensure_external_networks(compose_path, "run"):
+            yield ev
+
+        # Always recreate containers for compose runs
+        down_cmd = ["docker", "compose", "-f", compose_file, "down", "--remove-orphans"]
+        yield {
+            "line": f"Running: {' '.join(down_cmd)} (cwd={compose_dir}) to clean previous containers",
+            "stage": "run",
+        }
+        for event in _stream_command(down_cmd, cwd=compose_dir, stage="run"):
+            yield event
+
+        cmd = ["docker", "compose", "-f", compose_file, "up", "--force-recreate"]
 
         yield {
             "line": f"Using compose file for run: {rel_compose}",
@@ -967,6 +1041,9 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
             "line": f"Using compose file for push (read-only): {rel_compose}",
             "stage": "push",
         }
+
+        for ev in ensure_external_networks(compose_path, "push"):
+            yield ev
 
         # --- Helper to check for volume warnings ---
         warned_paths = set()

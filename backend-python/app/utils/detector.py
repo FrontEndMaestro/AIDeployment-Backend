@@ -1229,18 +1229,12 @@ def detect_ports_for_project(
     docker_frontend_container_ports = sorted(set(docker_frontend_container_ports))
     docker_database_container_ports = sorted(set(docker_database_container_ports))
 
-    # --- Compose-driven overrides (key fix) ---
-    # If docker-compose explicitly defines HOST ports for backend/frontend,
-    # treat those host ports as the canonical ones clients will hit.
-    #
-    # This fixes cases where JS heuristics say 3000 (from runtime or server.js),
-    # but docker-compose is actually exposing backend on 5000 or 8000.
-    if docker_backend_ports:
+    # --- Compose-driven hints (conservative) ---
+    # Only use compose HOST ports if we did not find a better hint earlier.
+    if backend_port is None and docker_backend_ports:
         backend_port = docker_backend_ports[0]
 
-    # For frontend we keep behavior slightly more conservative:
-    # only override if we never found a better hint before.
-    if docker_frontend_ports and frontend_port is None:
+    if frontend_port is None and docker_frontend_ports:
         frontend_port = docker_frontend_ports[0]
 
     return {

@@ -1,4 +1,5 @@
 import os
+import shutil
 from typing import Dict, List, Optional, Tuple
 
 from bson import ObjectId
@@ -229,12 +230,73 @@ async def write_project_file_handler(
     if not normalized.startswith(os.path.abspath(project_root)):
         raise HTTPException(status_code=400, detail="Invalid path")
 
+    if not relative_path.strip():
+        raise HTTPException(status_code=400, detail="Path is required")
+
     try:
         os.makedirs(os.path.dirname(normalized), exist_ok=True)
         with open(normalized, "w", encoding="utf-8") as f:
             f.write(content)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Unable to write file: {exc}")
+
+    return {"success": True, "path": relative_path.replace("\\", "/")}
+
+
+async def create_project_folder_handler(
+    project_id: str, current_user: dict, relative_path: str
+) -> Dict:
+    """
+    Create a folder (and parents) under the project root.
+    """
+    project = await _validate_project(project_id, current_user)
+    project_root = _safe_project_path(project)
+
+    if not relative_path or not relative_path.strip():
+        raise HTTPException(status_code=400, detail="Folder path is required")
+
+    normalized = os.path.abspath(os.path.join(project_root, relative_path))
+    if not normalized.startswith(os.path.abspath(project_root)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    try:
+        os.makedirs(normalized, exist_ok=True)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to create folder: {exc}")
+
+    return {"success": True, "path": relative_path.replace("\\", "/")}
+
+
+async def delete_project_path_handler(
+    project_id: str, current_user: dict, relative_path: str
+) -> Dict:
+    """
+    Delete a file or directory (recursively for directories) under the project root.
+    """
+    project = await _validate_project(project_id, current_user)
+    project_root = _safe_project_path(project)
+
+    if not relative_path or not relative_path.strip():
+        raise HTTPException(status_code=400, detail="Path is required")
+
+    normalized_root = os.path.abspath(project_root)
+    normalized = os.path.abspath(os.path.join(project_root, relative_path))
+    if not normalized.startswith(normalized_root):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if normalized == normalized_root:
+        raise HTTPException(status_code=400, detail="Cannot delete project root")
+
+    if not os.path.exists(normalized):
+        raise HTTPException(status_code=404, detail="File or folder not found")
+
+    try:
+        if os.path.isdir(normalized):
+            shutil.rmtree(normalized)
+        else:
+            os.remove(normalized)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to delete path: {exc}")
 
     return {"success": True, "path": relative_path.replace("\\", "/")}
 

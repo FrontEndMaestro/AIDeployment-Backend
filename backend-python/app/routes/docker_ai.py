@@ -5,6 +5,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..controllers.docker_ai_controller import (
+    create_project_folder_handler,
+    delete_project_path_handler,
     docker_chat_handler,
     get_docker_context_handler,
     read_project_file_handler,
@@ -26,6 +28,10 @@ class DockerChatRequest(BaseModel):
 class WriteFileRequest(BaseModel):
     path: str
     content: str
+
+
+class CreateFolderRequest(BaseModel):
+    path: str
 
 
 @router.get("/{project_id}/context")
@@ -79,6 +85,30 @@ async def write_project_file(
     Write a project file (for editing in the deploy file viewer).
     """
     return await write_project_file_handler(project_id, current_user, payload.path, payload.content)
+
+
+@router.post("/{project_id}/folder")
+async def create_project_folder(
+    project_id: str,
+    payload: CreateFolderRequest = Body(...),
+    current_user: dict = Depends(get_current_active_user),
+):
+    """
+    Create a folder (and parents) under the project root.
+    """
+    return await create_project_folder_handler(project_id, current_user, payload.path)
+
+
+@router.delete("/{project_id}/path")
+async def delete_project_path(
+    project_id: str,
+    path: str = Query(..., description="Relative path from project root to delete"),
+    current_user: dict = Depends(get_current_active_user),
+):
+    """
+    Delete a file or directory (recursive) under the project root.
+    """
+    return await delete_project_path_handler(project_id, current_user, path)
 
 
 @router.get("/{project_id}/logs")

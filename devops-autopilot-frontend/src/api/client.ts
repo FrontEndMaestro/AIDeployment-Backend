@@ -13,7 +13,11 @@ import {
   DockerfileInfo,
 } from "../types/api";
 
-const API_BASE_URL = "http://localhost:8000/api";
+const rawApiBase =
+  (import.meta as any).env?.VITE_API_BASE_URL || "http://localhost:8000/api";
+const API_BASE_URL = rawApiBase.endsWith("/api")
+  ? rawApiBase.replace(/\/+$/, "")
+  : `${rawApiBase.replace(/\/+$/, "")}/api`;
 
 class ApiClient {
   private token: string | null = null;
@@ -313,6 +317,40 @@ class ApiClient {
       method: "POST",
       headers: this.getHeaders(),
       body: JSON.stringify(payload),
+    });
+    return this.handleResponse(response);
+  }
+
+  // ============ FILE / FOLDER CRUD (Deploy explorer) ============
+  async createProjectFile(
+    projectId: string,
+    path: string,
+    content: string
+  ): Promise<{ success: boolean; path: string }> {
+    return this.writeProjectFile(projectId, { path, content });
+  }
+
+  async createProjectFolder(
+    projectId: string,
+    path: string
+  ): Promise<{ success: boolean; path: string }> {
+    const response = await fetch(`${API_BASE_URL}/docker/${projectId}/folder`, {
+      method: "POST",
+      headers: this.getHeaders(),
+      body: JSON.stringify({ path }),
+    });
+    return this.handleResponse(response);
+  }
+
+  async deleteProjectPath(
+    projectId: string,
+    path: string
+  ): Promise<{ success: boolean; path: string }> {
+    const url = new URL(`${API_BASE_URL}/docker/${projectId}/path`);
+    url.searchParams.set("path", path);
+    const response = await fetch(url.toString(), {
+      method: "DELETE",
+      headers: this.getHeaders(),
     });
     return this.handleResponse(response);
   }

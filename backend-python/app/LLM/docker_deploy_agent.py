@@ -44,6 +44,12 @@ LOG ANALYSIS (if applicable):
 - Bullet list summarising key clues from the logs, or say "No logs provided".
 
 Keep outputs concise and actionable.
+- Every REASON and FIX must cite concrete evidence from the provided Dockerfiles, docker-compose files, or the provided logs. If you cannot tie an item to those inputs, say “Not enough information to confirm X” and do NOT treat it as an error.
+- Do NOT speculate about missing EXPOSE lines, env vars, base images, or ports that are not explicitly shown in the provided files/logs.
+- Treat the docker-compose `version` key as a warning only (not a reason for STATUS: Invalid).
+- Explicitly check for external networks in docker-compose and call them out if missing or misconfigured.
+- If compose uses external networks, note them; assume runtime will create missing ones unless logs show otherwise.
+- If logs show runtime errors (e.g., missing/undefined env vars or connection URIs), call them out explicitly and tie fixes to compose/env/Dockerfile configuration; do not invent other issues.
 If no logs yet, say so and propose the next action (e.g., run build and send logs).
 Never ask the backend to reason; you own the reasoning and code generation."""
 
@@ -115,7 +121,7 @@ def _format_logs(logs: Optional[List[str]]) -> str:
     if not logs:
         return "Build/Run logs: none yet."
     joined = "\n".join(logs[-20:])
-    return f"Build/Run logs (latest):\n{joined}"
+    return f"Build/Run logs (latest tail):\n{joined}"
 
 
 def build_deploy_message(
