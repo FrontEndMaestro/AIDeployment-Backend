@@ -47,6 +47,13 @@ Keep outputs concise and actionable.
 - Every REASON and FIX must cite concrete evidence from the provided Dockerfiles, docker-compose files, or the provided logs. If you cannot tie an item to those inputs, say “Not enough information to confirm X” and do NOT treat it as an error.
 - Do NOT speculate about missing EXPOSE lines, env vars, base images, or ports that are not explicitly shown in the provided files/logs.
 - Treat the docker-compose `version` key as a warning only (not a reason for STATUS: Invalid).
+- Do not reference or invent logs unless they were provided in the input.
+- For simple static nginx images, do not suggest WORKDIR changes unless the provided files clearly require it.
+- If MODE = GENERATE_MISSING and no Dockerfiles/compose were provided, STATUS must be "Not Found" (or "Generated") -- never "Valid".
+- Do NOT reference services/networks/compose files that were not provided. If no compose was provided, do not invent service names.
+- For static-only bundles (no package.json/manage.py/requirements.txt or static_only flag true), prefer a minimal static server (e.g., nginx) and COPY from the build context root (e.g., COPY . /usr/share/nginx/html/). Avoid mixing build: . with a bind mount that overwrites the built content unless explicitly requested.
+- When generating docker-compose, avoid depends_on unless referencing real services in the same compose. Do not combine build: . with a bind mount that replaces the built artifact unless explicitly asked.
+- Do not flag a simple bind mount of static content into nginx (e.g., volumes: ./src:/usr/share/nginx/html/) as an error when it aligns with the chosen approach. Only warn if it actually conflicts with a build step or declared paths; otherwise treat it as optional/redundant, not an error.
 - Explicitly check for external networks in docker-compose and call them out if missing or misconfigured.
 - If compose uses external networks, note them; assume runtime will create missing ones unless logs show otherwise.
 - If logs show runtime errors (e.g., missing/undefined env vars or connection URIs), call them out explicitly and tie fixes to compose/env/Dockerfile configuration; do not invent other issues.

@@ -1512,6 +1512,10 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             "framework": 0.0,
             "method": "unknown"
         },
+        "has_package_json": False,
+        "has_requirements_txt": False,
+        "has_manage_py": False,
+        "static_only": False,
         # New fields for DB & multi-port
         "database": "Unknown",
         "databases": [],
@@ -1565,9 +1569,63 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             except Exception as e:
                 print(f"ML analysis failed, continuing with heuristic: {e}")
         
+                # Sanity check: prevent impossible framework/language combos
+        fw_lang = FRAMEWORK_LANGUAGES.get(results["framework"])
+        if fw_lang and results["language"] != "Unknown" and fw_lang != results["language"]:
+            print(
+                f"⚠️ Inconsistent detection: framework {results['framework']} "
+                f"normally uses {fw_lang}, but language detected as {results['language']}. "
+                f"Resetting framework to Unknown."
+            )
+            results["framework"] = "Unknown"
+            results["detection_confidence"]["framework"] = 0.0
+
+
         # Runtime defaults (may include default port)
         runtime_info = get_runtime_info(results["language"], results["framework"])
         results.update(runtime_info)
+
+        # --- Lightweight presence flags for key files ---
+        has_package_json = False
+        has_requirements_txt = False
+        has_manage_py = False
+
+        for root, dirs, files in os.walk(actual_path):
+            dirs[:] = [
+                d for d in dirs
+                if d not in ['node_modules', '__pycache__', '.git', 'venv', '.venv', 'dist', 'build', '.next']
+            ]
+
+            if 'package.json' in files:
+                has_package_json = True
+            if 'requirements.txt' in files:
+                has_requirements_txt = True
+            if 'manage.py' in files:
+                has_manage_py = True
+
+            if has_package_json and has_requirements_txt and has_manage_py:
+                break
+
+        results["has_package_json"] = has_package_json
+        results["has_requirements_txt"] = has_requirements_txt
+        results["has_manage_py"] = has_manage_py
+
+        # Static-only JS/TS project: no package.json or Python server files
+        results["static_only"] = (
+            results["language"] in ("JavaScript", "TypeScript")
+            and not has_package_json
+            and not has_requirements_txt
+            and not has_manage_py
+        )
+
+        if results["static_only"]:
+            # Prefer a static server image; do NOT invent Node/Django commands
+            print("🔍 Detected static-only JS/TS project (no package.json/manage.py/requirements.txt).")
+            results["runtime"] = "nginx:alpine"
+            results["port"] = 80
+            results["build_command"] = None
+            results["start_command"] = None
+
         
         # Dependencies (root + nested subprojects like client/server)
         dep_files = {
