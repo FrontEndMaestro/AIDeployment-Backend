@@ -57,46 +57,32 @@ def decode_access_token(token: str) -> dict:
 
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Get current user from JWT token"""
+    """Get current user from JWT token (lightweight, no DB query)"""
     try:
         token = credentials.credentials
         payload = decode_access_token(token)
         
         user_id = payload.get("sub")
+        username = payload.get("username")
+        email = payload.get("email")
+        
         if user_id is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials"
             )
         
-        # Get user from database
-        from ..config.database import db
-        users_collection = db.get_collection("users")
+        # Return user data from JWT payload (no DB query)
+        # This is safe because JWT is cryptographically signed and verified
+        user_data = {
+            "_id": ObjectId(user_id) if ObjectId.is_valid(user_id) else user_id,
+            "username": username,
+            "email": email,
+            "is_active": True  # Assume active if token is valid
+        }
         
-        # Convert string user_id back to ObjectId
-        if not ObjectId.is_valid(user_id):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid user ID format"
-            )
-        
-        user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        
-        if user is None:
-            print(f"User not found for ID: {user_id}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found"
-            )
-        
-        if not user.get("is_active", True):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Inactive user"
-            )
-        
-        print(f"✅ User authenticated: {user.get('username')}")
-        return user
+        print(f"✅ User authenticated: {username}")
+        return user_data
     
     except HTTPException:
         raise

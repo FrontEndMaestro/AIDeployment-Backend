@@ -1207,17 +1207,18 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
         }
         return
 
+    canonical_tag = f"{image_repo}:latest"
+    has_canonical, service_tags = False, []
     for line in (proc.stdout or "").splitlines():
         name = line.strip()
-        if not name:
-            continue
-
-        # Match e.g.:
-        #   abdul/devops-autopilot-<id>:latest
-        #   abdul/devops-autopilot-<id>-api:latest
-        #   abdul/devops-autopilot-<id>-web:latest
-        if name == f"{image_repo}:latest" or name.startswith(f"{image_repo}-"):
+        if not name: continue
+        if name == canonical_tag:
+            has_canonical = True
             discovered.append(name)
+        elif name.startswith(f"{image_repo}-"):
+            service_tags.append(name)
+    if not has_canonical:
+        discovered.extend(service_tags)
 
     if not discovered:
         msg = (

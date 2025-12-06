@@ -99,8 +99,12 @@ async def login_user_handler(user_credentials: UserLogin):
                 detail="User account is inactive"
             )
         
-        # Create access token
-        access_token = create_access_token(data={"sub": str(user["_id"])})
+        # Create access token with user data embedded
+        access_token = create_access_token(data={
+            "sub": str(user["_id"]),
+            "username": user["username"],
+            "email": user["email"]
+        })
         
         # User response
         user_response = UserResponse(
@@ -141,6 +145,6 @@ async def get_current_user_info_handler(current_user: dict):
             "is_active": current_user["is_active"],
             "is_admin": current_user.get("is_admin", False),
             "workspace_path": current_user.get("workspace_path"),
-            "created_at": current_user["created_at"]
+            "created_at": current_user.get("created_at")  # Fixed: use .get() for JWT-only auth
         }
     }

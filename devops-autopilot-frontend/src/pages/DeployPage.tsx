@@ -40,7 +40,6 @@ export const DeployPage: React.FC = () => {
   const [saving, setSaving] = useState<boolean>(false);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [eventSource, setEventSource] = useState<EventSource | null>(null);
-  const [logStreamBaseUrl, setLogStreamBaseUrl] = useState<string | null>(null);
   const [refreshingTree, setRefreshingTree] = useState<boolean>(false);
   const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
   const apiBase = "http://localhost:8000/api";
@@ -115,9 +114,6 @@ export const DeployPage: React.FC = () => {
         payload.instructions = instructions.trim();
       }
       const resp = await apiClient.sendDockerChat(projectId, payload);
-      if (resp.log_stream_base_url) {
-        setLogStreamBaseUrl(resp.log_stream_base_url);
-      }
       setMessages((prev) => [...prev, { role: "ai", content: resp.reply }]);
     } catch (err) {
       setMessages((prev) => [
@@ -147,13 +143,7 @@ export const DeployPage: React.FC = () => {
     }
     setLogs([]);
     const token = apiClient.getToken();
-    const base =
-      logStreamBaseUrl && logStreamBaseUrl.startsWith("http")
-        ? logStreamBaseUrl
-        : logStreamBaseUrl
-        ? `${apiBase}${logStreamBaseUrl.startsWith("/") ? "" : "/"}${logStreamBaseUrl}`
-        : `${apiBase}/docker/${projectId}/logs`;
-    const url = new URL(base);
+    const url = new URL(`${apiBase}/docker/${projectId}/logs`);
     url.searchParams.set("action", action);
     if (token) {
       url.searchParams.set("token", token);

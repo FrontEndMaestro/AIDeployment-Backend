@@ -44,7 +44,8 @@ async def extract_project_handler(project_id: str, current_user: dict):
         print(f"📦 Starting extraction for project: {project_id}")
         
         # Extract file with user-specific extraction path
-        user_workspace = current_user.get("workspace_path")
+        # Derive workspace_path from username (JWT doesn't include workspace_path)
+        user_workspace = f"uploads/user_{current_user['username']}"
         result = extract_file(project["file_path"], project_id, user_workspace)
         
         # Update project with extraction data
@@ -189,7 +190,8 @@ async def cleanup_extraction_handler(project_id: str, current_user: dict):
         if project.get("user_id") != str(current_user["_id"]):
             raise HTTPException(status_code=403, detail="Access denied: Not project owner")
         
-        user_workspace = current_user.get("workspace_path")
+        # Derive workspace_path from username (JWT doesn't include workspace_path)
+        user_workspace = f"uploads/user_{current_user['username']}"
         cleaned = cleanup_extracted_files(project_id, user_workspace)
         
         if cleaned:

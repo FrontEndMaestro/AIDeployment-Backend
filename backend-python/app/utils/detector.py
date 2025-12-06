@@ -607,6 +607,153 @@ def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
     return structure
 
 
+def _infer_service_type(name: str, framework: str, language: str, static_only: bool) -> str:
+    n = name.lower()
+    if static_only or framework in ["React", "Next.js"]:
+        return "frontend"
+    if any(k in n for k in ["front", "client", "web", "ui"]):
+        return "frontend"
+    if any(k in n for k in ["worker", "queue", "job"]):
+        return "worker"
+    if any(k in n for k in ["back", "api", "server", "app"]):
+        return "backend"
+    if language in ["Python", "Go", "Java", "PHP", "Ruby"] and framework not in ["React", "Next.js"]:
+        return "backend"
+    return "other"
+
+
+def _normalize_service_path(project_path: str, service_path: str) -> str:
+    rel = os.path.relpath(service_path, project_path)
+    rel = "." if rel in [".", ""] else rel.replace("\\", "/")
+    if rel != "." and not rel.endswith("/"):
+        rel += "/"
+    return rel
+
+
+def infer_services(
+    project_path: str,
+    language: str,
+    framework: str,
+    metadata: Dict
+) -> List[Dict[str, str]]:
+    """
+    Return a list of services, each with:
+      - name: str
+      - path: str (build context relative to project root)
+      - type: one of {"backend", "frontend", "worker", "other"}
+    """
+    services: List[Dict[str, str]] = []
+    static_only = metadata.get("static_only", False)
+
+    # Primary inference from file tree/metadata
+    fullstack = _detect_fullstack_structure(project_path)
+    if fullstack.get("is_fullstack"):
+        backend_path = fullstack.get("backend_path")
+        frontend_path = fullstack.get("frontend_path")
+        if backend_path:
+            services.append({
+                "name": "backend",
+                "path": _normalize_service_path(project_path, backend_path),
+                "type": "backend"
+            })
+        if frontend_path:
+            services.append({
+                "name": "frontend",
+                "path": _normalize_service_path(project_path, frontend_path),
+                "type": "frontend"
+            })
+    else:
+        # Single service inference
+        if static_only:
+            services.append({"name": "frontend", "path": ".", "type": "frontend"})
+        else:
+            svc_name = "frontend" if framework in ["React", "Next.js"] else "app"
+            svc_type = "frontend" if framework in ["React", "Next.js"] else "backend"
+            services.append({"name": svc_name, "path": ".", "type": svc_type})
+
+    # Compose hints (optional refinement)
+    compose_path = None
+    for fname in ("docker-compose.yml", "docker-compose.yaml"):
+        candidate = os.path.join(project_path, fname)
+        if os.path.exists(candidate):
+            compose_path = candidate
+            break
+
+    if compose_path and yaml is not None:
+        try:
+            with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
+                compose_data = yaml.safe_load(f) or {}
+            compose_services = compose_data.get("services") or {}
+
+            for svc_name, svc_def in compose_services.items():
+                build_ctx = None
+                build_field = svc_def.get("build")
+                if isinstance(build_field, str):
+                    build_ctx = build_field
+                elif isinstance(build_field, dict):
+                    build_ctx = build_field.get("context") or "."
+
+                if not build_ctx:
+                    continue
+
+                abs_ctx = os.path.abspath(os.path.join(project_path, build_ctx))
+                if not os.path.isdir(abs_ctx):
+                    # invalid context; treat as warning, do not create service
+                    continue
+
+                rel_ctx = _normalize_service_path(project_path, abs_ctx)
+                svc_type = _infer_service_type(svc_name, framework, language, static_only)
+
+                # Try to match by path
+                matched = False
+                for svc in services:
+                    if svc.get("path") == rel_ctx:
+                        svc["name"] = svc_name  # align name to compose
+                        svc.setdefault("type", svc_type)
+                        matched = True
+                        break
+
+                if matched:
+                    continue
+
+                # Match by name
+                for svc in services:
+                    if svc.get("name") == svc_name:
+                        svc["path"] = rel_ctx
+                        svc.setdefault("type", svc_type)
+                        matched = True
+                        break
+
+                if not matched:
+                    services.append({
+                        "name": svc_name,
+                        "path": rel_ctx,
+                        "type": svc_type
+                    })
+        except Exception:
+            pass
+
+    # Database service (from detection)
+    db_name = (metadata.get("database") or "").lower()
+    db_map = {
+        "postgresql": "postgres",
+        "postgres": "postgres",
+        "mysql": "mysql",
+        "mongodb": "mongo",
+        "mongo": "mongo",
+        "redis": "redis",
+    }
+    db_service_name = db_map.get(db_name)
+    if db_service_name:
+        if not any(svc.get("type") == "database" for svc in services):
+            services.append({"name": db_service_name, "path": ".", "type": "database"})
+
+    if not services:
+        services.append({"name": "app", "path": ".", "type": "backend"})
+
+    return services
+
+
 def _scan_js_for_port_hint(service_path: str, max_files: int = 50) -> Optional[int]:
     """
     Scan JS/TS files under service_path for typical port patterns like:
@@ -1720,6 +1867,17 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             results["docker_other_container_ports"] = ports_info.get("docker_other_container_ports")
         if "docker_expose_ports" in ports_info:
             results["docker_expose_ports"] = ports_info.get("docker_expose_ports")
+
+        # Service inference (uses file tree + metadata; compose only as hints)
+        try:
+            results["services"] = infer_services(
+                actual_path,
+                results.get("language", "Unknown"),
+                results.get("framework", "Unknown"),
+                results
+            )
+        except Exception:
+            results["services"] = [{"name": "app", "path": ".", "type": "backend"}]
         
         # Deduplicate detected_files
         results["detected_files"] = list(set(results["detected_files"]))

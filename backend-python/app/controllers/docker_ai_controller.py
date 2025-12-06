@@ -170,22 +170,25 @@ async def docker_chat_handler(
 
     dockerfiles, compose_files = _collect_docker_files(project_root)
     file_tree_text, _ = _build_file_tree(project_root)
+    metadata = project.get("metadata", {}) or {}
+    services = metadata.get("services")
 
     reply = run_docker_deploy_chat(
         project_name=project.get("project_name", "project"),
-        metadata=project.get("metadata", {}),
+        metadata=metadata,
         dockerfiles=dockerfiles,
         compose_files=compose_files,
         file_tree=file_tree_text,
         user_message=user_message,
         logs=logs,
         extra_instructions=instructions,
+        services=services,
     )
 
     return {
         "success": True,
         "reply": reply,
-        "model": "llama3.1",
+        "model": "qwen2.5-coder",
         "dockerfiles_found": bool(dockerfiles),
         # Frontend should append ?action=build|run|push as needed
         "log_stream_base_url": f"/api/docker/{project_id}/logs",
@@ -326,13 +329,21 @@ async def stream_docker_logs_handler(
     # Build a canonical image repo for this project, namespaced by Docker Hub username if available
     hub_user = settings.DOCKER_HUB_USERNAME
     repo_prefix = settings.APP_REGISTRY_PREFIX or "devops-autopilot"
+    
+    # Use project_name instead of project_id for better readability
+    # Sanitize project_name for Docker tag compatibility (lowercase, alphanumeric, dashes, underscores)
+    project_name = project.get("project_name", "unnamed")
+    import re
+    sanitized_name = re.sub(r'[^a-z0-9_-]', '-', project_name.lower()).strip('-')
+    # Limit length to avoid overly long image names
+    sanitized_name = sanitized_name[:50] if len(sanitized_name) > 50 else sanitized_name
 
     if hub_user:
-        # e.g. abdul/devops-autopilot-<project_id>
-        image_repo = f"{hub_user}/{repo_prefix}-{project_id}"
+        # e.g. abdul/devops-autopilot-simplecart-js-master
+        image_repo = f"{hub_user}/{repo_prefix}-{sanitized_name}"
     else:
         # fallback (local only)
-        image_repo = f"{repo_prefix}-{project_id}"
+        image_repo = f"{repo_prefix}-{sanitized_name}"
 
     if action == "build":
         generator = build_project_stream(project_root, image_repo)
