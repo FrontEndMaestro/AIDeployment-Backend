@@ -5,6 +5,7 @@ import yaml
 from collections import Counter
 from typing import Dict, List, Tuple, Optional
 from .ml_analyzer import get_ml_analyzer
+from .command_extractor import extract_nodejs_commands, extract_python_commands
 
 
 # Concrete detection rules (these are highly reliable)
@@ -657,19 +658,44 @@ def infer_services(
                 "type": "backend"
             })
         if frontend_path:
+            # Extract build_output specifically for this frontend service
+            frontend_cmds = extract_nodejs_commands(frontend_path)
+            frontend_build_output = frontend_cmds.get("build_output", "dist")
+            print(f"📦 Frontend service build_output: {frontend_build_output}")
+            
             services.append({
                 "name": "frontend",
                 "path": _normalize_service_path(project_path, frontend_path),
-                "type": "frontend"
+                "type": "frontend",
+                "build_output": frontend_build_output  # CRA -> "build", Vite -> "dist"
             })
     else:
         # Single service inference
         if static_only:
-            services.append({"name": "frontend", "path": ".", "type": "frontend"})
+            # Extract build_output for static frontend
+            single_cmds = extract_nodejs_commands(project_path)
+            single_build_output = single_cmds.get("build_output", "dist")
+            services.append({
+                "name": "frontend", 
+                "path": ".", 
+                "type": "frontend",
+                "build_output": single_build_output
+            })
         else:
             svc_name = "frontend" if framework in ["React", "Next.js"] else "app"
             svc_type = "frontend" if framework in ["React", "Next.js"] else "backend"
-            services.append({"name": svc_name, "path": ".", "type": svc_type})
+            if svc_type == "frontend":
+                # Extract build_output for frontend
+                single_cmds = extract_nodejs_commands(project_path)
+                single_build_output = single_cmds.get("build_output", "dist")
+                services.append({
+                    "name": svc_name, 
+                    "path": ".", 
+                    "type": svc_type,
+                    "build_output": single_build_output
+                })
+            else:
+                services.append({"name": svc_name, "path": ".", "type": svc_type})
 
     # Compose hints (optional refinement)
     compose_path = None
@@ -1732,6 +1758,26 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         runtime_info = get_runtime_info(results["language"], results["framework"])
         results.update(runtime_info)
 
+        # --- Smart command extraction from actual project files ---
+        # Override generic defaults with actual commands from package.json or Python entry points
+        if results["language"] in ("JavaScript", "TypeScript") or results["framework"] in ("Express.js", "Next.js", "React"):
+            nodejs_cmds = extract_nodejs_commands(actual_path)
+            if nodejs_cmds.get("start_command"):
+                results["start_command"] = nodejs_cmds["start_command"]
+                print(f"📦 Overriding start_command with: {results['start_command']}")
+            if nodejs_cmds.get("entry_point"):
+                results["entry_point"] = nodejs_cmds["entry_point"]
+            if nodejs_cmds.get("build_command"):
+                results["build_command"] = nodejs_cmds["build_command"]
+            if nodejs_cmds.get("build_output"):
+                results["build_output"] = nodejs_cmds["build_output"]
+                print(f"📦 Detected build_output: {results['build_output']}")
+        
+        elif results["language"] == "Python":
+            python_cmds = extract_python_commands(actual_path)
+            if python_cmds.get("start_command"):
+                results["start_command"] = python_cmds["start_command"]
+                print(f"🐍 Overriding start_command with: {results['start_command']}")
         # --- Lightweight presence flags for key files ---
         has_package_json = False
         has_requirements_txt = False

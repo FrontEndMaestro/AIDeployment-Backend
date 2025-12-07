@@ -60,17 +60,45 @@ Every service in docker-compose MUST have image: <project>-<service>:latest
 Example: image: myproject-backend:latest
 Multi-Stage Builds:
 
-Frontend (React/Vue/Angular): Build → nginx:alpine
+Frontend (React/Vue/Angular): Build → use 'serve' package (NOT nginx!)
+⚠️ NEVER USE nginx for React/Vue/Angular SPAs - use 'serve' with -s flag for SPA routing
 Go: Build → alpine runtime
+
+⚠️⚠️⚠️ CRITICAL: BUILD OUTPUT DIRECTORY DETECTION ⚠️⚠️⚠️
+This is the #1 cause of frontend Docker build failures!
+
+MUST READ SERVICE DEFINITIONS for build_output field:
+- If Service has "build_output: build" → use /app/build in COPY --from=build
+- If Service has "build_output: dist" → use /app/dist in COPY --from=build
+
+ERROR PATTERN RECOGNITION (READ LOGS CAREFULLY):
+1. If logs contain "cra.link/deployment" or "react-scripts build" → It's CRA → use /app/build (NOT /app/dist!)
+2. If logs contain "vite" → It's Vite → use /app/dist
+3. If error is "/app/dist: not found" and logs show CRA → The fix is to use /app/build instead!
+
+EXAMPLE ERROR AND FIX:
+Error: COPY --from=build /app/dist → "not found"
+Logs show: "https://cra.link/deployment"
+FIX: Change to COPY --from=build /app/build
+
 LANGUAGE-SPECIFIC PATTERNS
 
-CRITICAL: Verification headers MUST be Dockerfile comments starting with #
-INVALID: runtime=node:20-alpine (this causes Docker parse errors!)
-VALID: # VERIFICATION: runtime=node:20-alpine, port=8888
+CRITICAL DOCKERFILE SYNTAX RULES:
+1. Verification headers MUST be on ONE LINE - NO LINE BREAKS!
+2. MUST start with # symbol
+3. MUST be followed immediately by FROM instruction on next line
+
+INVALID (causes Docker parse error):
+# VERIFICATION: runtime=node:20-alpine,
+port=8888                               <-- LINE BREAK CAUSES ERROR!
+
+VALID (single line):
+# VERIFICATION: runtime=node:20-alpine, port=8888
+FROM node:20-alpine
 
 Node.js Backend:
 
-# VERIFICATION: runtime=node:20-alpine, port=8888
+# VERIFICATION: runtime=node:20-alpine, port=8888, start_cmd=from_metadata
 FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
@@ -79,20 +107,30 @@ COPY . .
 ENV NODE_ENV=production
 ENV PORT=8888
 EXPOSE 8888
-CMD ["node", "server.js"]
-React/Vite Frontend (Multi-Stage):
+# CRITICAL: Get the actual start command from metadata.start_command
+# Common values: "node server.js", "node app.js", "node src/index.js", "npm start"
+# DO NOT assume "server.js" - check metadata!
+CMD ["node", "app.js"]  # REPLACE with actual entry from metadata.start_command
+React/Vite/CRA Frontend (Multi-Stage with SPA routing):
 
-# VERIFICATION: runtime=node:20-alpine, build_output=/app/dist
+# VERIFICATION: runtime=node:20-alpine, build_output=from_metadata
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build
-FROM nginx:alpine
-COPY --from=build /app/dist /usr/share/nginx/html
+
+# Use 'serve' for SPA routing (handles client-side routes automatically)
+FROM node:20-alpine
+WORKDIR /app
+RUN npm install -g serve
+# CRITICAL: Use metadata.build_output - CRA uses "build/", Vite uses "dist/"
+# Example: COPY --from=build /app/build ./ for CRA, /app/dist ./ for Vite
+COPY --from=build /app/{metadata.build_output} ./static
 EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+# The -s flag enables SPA mode (redirects all routes to index.html)
+CMD ["serve", "-s", "static", "-l", "80"]
 Python Backend:
 
 # VERIFICATION: runtime=python:3.11-slim, port=8000
@@ -146,7 +184,11 @@ LOG ANALYSIS:
 
 Summarize key issues from logs or "No logs provided"
 FINAL EXECUTION CHECKLIST (Run before responding)
-Before generating, verify you extracted: ☑ Runtime from metadata.runtime (NOT node:14 default) ☑ Backend port from metadata.backend_port (NOT 3000 default) ☑ Frontend port from metadata.frontend_port (NOT 3000 default) ☑ Database port from metadata.database_port ☑ Build command from metadata.build_command ☑ Start command from metadata.start_command ☑ Service paths from Service Definitions ☑ Added image: field to ALL compose services ☑ Used official images for databases (no Dockerfile) ☑ Added verification comments to all files
+Before generating, verify you extracted: ☑ Runtime from metadata.runtime (NOT node:14 default) ☑ Backend port from metadata.backend_port (NOT 3000 default) ☑ Frontend port from metadata.frontend_port (NOT 3000 default) ☑ Database port from metadata.database_port ☑ Build command from metadata.build_command ☑ Start command from metadata.start_command ☑ Service paths from Service Definitions ☑ Added image: field to ALL compose services ☑ Used official images for databases (no Dockerfile) ☑ Added verification comments to all files ☑ ALL verification comments are on SINGLE LINE (no line breaks!) ☑ For React/Vue/Angular frontends, used 'serve -s' NOT nginx! ☑ For frontend COPY --from=build: Used SERVICE'S build_output (CRA→/app/build, Vite→/app/dist)
+
+⚠️ CRITICAL: Verification comments with line breaks cause Docker parse errors!
+⚠️ CRITICAL: For SPAs (React/Vue/Angular), you MUST use 'serve -s' package, NOT nginx!
+⚠️ CRITICAL: If logs show 'cra.link/deployment' or 'react-scripts', use /app/build NOT /app/dist!
 
 If ANY checklist item fails, STOP and re-extract from metadata.
 
@@ -173,10 +215,17 @@ def _format_metadata(metadata: Dict) -> str:
 
     build_cmd = metadata.get("build_command")
     start_cmd = metadata.get("start_command")
+    entry_point = metadata.get("entry_point")
+    build_output = metadata.get("build_output")
+    
     if build_cmd:
         lines.append(f"metadata.build_command = {build_cmd}")
     if start_cmd:
         lines.append(f"metadata.start_command = {start_cmd}")
+    if entry_point:
+        lines.append(f"metadata.entry_point = {entry_point}  # CRITICAL: Use this in Dockerfile CMD, NOT server.js")
+    if build_output:
+        lines.append(f"metadata.build_output = {build_output}  # CRITICAL: Use /app/{build_output} in COPY --from=build, NOT /app/dist!")
 
     env_vars = metadata.get("env_variables") or []
     if env_vars:
@@ -270,7 +319,11 @@ def build_deploy_message(
     if services:
         lines = ["Service Definitions:"]
         for svc in services:
-            lines.append(f"- name: {svc.get('name', 'unknown')}, path: {svc.get('path', '.')}, type: {svc.get('type', 'unknown')}")
+            svc_line = f"- name: {svc.get('name', 'unknown')}, path: {svc.get('path', '.')}, type: {svc.get('type', 'unknown')}"
+            # Include build_output for frontend services (CRITICAL for correct COPY path)
+            if svc.get('build_output'):
+                svc_line += f", build_output: {svc.get('build_output')} (USE /app/{svc.get('build_output')} in COPY --from=build, NOT /app/dist!)"
+            lines.append(svc_line)
         sections.append("\n".join(lines))
 
     # Enhance user_message for GENERATE_MISSING mode if it's generic
