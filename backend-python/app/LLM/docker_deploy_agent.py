@@ -98,7 +98,7 @@ FROM node:20-alpine
 
 Node.js Backend:
 
-# VERIFICATION: runtime=node:20-alpine, port=8888, start_cmd=from_metadata
+# VERIFICATION: runtime=node:20-alpine, port=8888, start_cmd=node src/index.js
 FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
@@ -107,13 +107,18 @@ COPY . .
 ENV NODE_ENV=production
 ENV PORT=8888
 EXPOSE 8888
-# CRITICAL: Get the actual start command from metadata.start_command
-# Common values: "node server.js", "node app.js", "node src/index.js", "npm start"
-# DO NOT assume "server.js" - check metadata!
-CMD ["node", "app.js"]  # REPLACE with actual entry from metadata.start_command
-React/Vite/CRA Frontend (Multi-Stage with SPA routing):
+CMD ["node", "src/index.js"]
 
-# VERIFICATION: runtime=node:20-alpine, build_output=from_metadata
+⚠️ NEVER LEAVE PLACEHOLDER COMMENTS in your generated Dockerfiles!
+BAD: CMD ["node", "app.js"]  # REPLACE with actual entry
+GOOD: CMD ["node", "src/index.js"]  (just the actual value from metadata)
+
+You MUST read metadata.start_command and use it directly. Example:
+- If metadata.start_command = "node server/index.js" → CMD ["node", "server/index.js"]
+
+React/CRA Frontend (build/ output):
+
+# VERIFICATION: runtime=node:20-alpine, build_output=build
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package*.json ./
@@ -121,15 +126,28 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# Use 'serve' for SPA routing (handles client-side routes automatically)
 FROM node:20-alpine
 WORKDIR /app
 RUN npm install -g serve
-# CRITICAL: Use metadata.build_output - CRA uses "build/", Vite uses "dist/"
-# Example: COPY --from=build /app/build ./ for CRA, /app/dist ./ for Vite
-COPY --from=build /app/{metadata.build_output} ./static
+COPY --from=build /app/build ./static
 EXPOSE 80
-# The -s flag enables SPA mode (redirects all routes to index.html)
+CMD ["serve", "-s", "static", "-l", "80"]
+
+Vite Frontend (dist/ output):
+
+# VERIFICATION: runtime=node:20-alpine, build_output=dist
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine
+WORKDIR /app
+RUN npm install -g serve
+COPY --from=build /app/dist ./static
+EXPOSE 80
 CMD ["serve", "-s", "static", "-l", "80"]
 Python Backend:
 
