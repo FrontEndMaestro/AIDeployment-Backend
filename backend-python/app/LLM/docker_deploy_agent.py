@@ -50,10 +50,55 @@ Add verification comment header to EVERY generated file
 Generate: backend/Dockerfile, frontend/Dockerfile, docker-compose.yml (as needed)
 CRITICAL RULES:
 
-Database Services (mongo, postgres, redis, mysql):
+Database Services (SMART CLOUD VS LOCAL DETECTION):
+
+CHECK SERVICE DEFINITIONS for database info:
+- If is_cloud=True → DO NOT add database container, pass env vars to backend
+- If is_cloud=False (needs_container=True) → Add database container to compose
+
+CLOUD DATABASE (e.g., MongoDB Atlas, AWS RDS, Supabase):
+  - NO database service in docker-compose
+  - DO NOT add mongo/postgres/redis service
+  - ENV VAR INJECTION (choose based on service definition):
+  
+    1. If service has "env_file: ./backend/.env" → USE THIS:
+       ```yaml
+       backend:
+         env_file:
+           - ./backend/.env  # PREFERRED - loads all vars!
+       ```
+    
+    2. If NO env_file detected → USE THIS (user provides at runtime):
+       ```yaml
+       backend:
+         environment:
+           - DB_URL=${DB_URL}  # User must export DB_URL before docker compose
+       ```
+
+LOCAL DATABASE (e.g., mongodb://localhost):
+  - CHECK service definitions for database service with is_cloud: False
+  - Add database service with docker_image from service definition
+  - Backend MUST have depends_on: [db_service_name]
+  - Backend gets: environment: - MONGO_URI=mongodb://mongo:27017/dbname
+  
+  EXAMPLE LOCAL DB docker-compose.yml:
+  ```yaml
+  services:
+    backend:
+      depends_on:
+        - mongo
+      environment:
+        - MONGO_URI=mongodb://mongo:27017/dbname
+    
+    mongo:
+      image: mongo:latest  # Use docker_image from service definition
+      ports:
+        - "27017:27017"
+  ```
 
 Use official images in compose (e.g., image: mongo:latest)
 DO NOT create Dockerfile for databases
+
 Image Field (REQUIRED):
 
 Every service in docker-compose MUST have image: <project>-<service>:latest
@@ -230,6 +275,17 @@ def _format_metadata(metadata: Dict) -> str:
         f"metadata.database = {metadata.get('database', 'Unknown')}",
         f"metadata.database_port = {metadata.get('database_port', 'Unknown')}",
     ]
+    
+    # Add database cloud/local info (CRITICAL for compose generation)
+    if metadata.get("database_is_cloud") is not None:
+        is_cloud = metadata.get("database_is_cloud")
+        env_var = metadata.get("database_env_var", "DB_URL")
+        if is_cloud:
+            lines.append(f"metadata.database_is_cloud = True  # ⚠️ DO NOT add database container! Just pass {env_var} to backend")
+        else:
+            lines.append(f"metadata.database_is_cloud = False  # Add database container to compose")
+        if env_var:
+            lines.append(f"metadata.database_env_var = {env_var}")
 
     build_cmd = metadata.get("build_command")
     start_cmd = metadata.get("start_command")
@@ -335,12 +391,32 @@ def build_deploy_message(
 
     # Add service definitions if present
     if services:
-        lines = ["Service Definitions:"]
+        lines = ["Service Definitions (USE THESE VALUES, NOT DEFAULTS!):"]
         for svc in services:
             svc_line = f"- name: {svc.get('name', 'unknown')}, path: {svc.get('path', '.')}, type: {svc.get('type', 'unknown')}"
+            
+            # Include port for all services (CRITICAL for correct EXPOSE and ports)
+            if svc.get('port'):
+                port_src = svc.get('port_source', 'default')
+                svc_line += f", PORT: {svc.get('port')} (from {port_src} - USE THIS VALUE!)"
+            
             # Include build_output for frontend services (CRITICAL for correct COPY path)
             if svc.get('build_output'):
-                svc_line += f", build_output: {svc.get('build_output')} (USE /app/{svc.get('build_output')} in COPY --from=build, NOT /app/dist!)"
+                svc_line += f", build_output: {svc.get('build_output')} (USE /app/{svc.get('build_output')})"
+            
+            # Include env_file for services with .env (CRITICAL for docker-compose env injection)
+            if svc.get('env_file'):
+                svc_line += f", env_file: {svc.get('env_file')} (ADD TO COMPOSE: env_file: ['{svc.get('env_file')}'])"
+            
+            # Include database cloud/local info (CRITICAL for compose generation)
+            if svc.get('type') == 'database':
+                is_cloud = svc.get('is_cloud', False)
+                if is_cloud:
+                    svc_line += f", is_cloud: True (DO NOT ADD THIS TO COMPOSE - use backend env var instead!)"
+                else:
+                    docker_image = svc.get('docker_image', 'mongo:latest')
+                    svc_line += f", is_cloud: False, docker_image: {docker_image} (ADD TO COMPOSE!)"
+            
             lines.append(svc_line)
         sections.append("\n".join(lines))
 

@@ -5,7 +5,13 @@ import yaml
 from collections import Counter
 from typing import Dict, List, Tuple, Optional
 from .ml_analyzer import get_ml_analyzer
-from .command_extractor import extract_nodejs_commands, extract_python_commands
+from .command_extractor import (
+    extract_nodejs_commands, 
+    extract_python_commands,
+    extract_port_from_project,
+    extract_frontend_port,
+    extract_database_info
+)
 
 
 # Concrete detection rules (these are highly reliable)
@@ -652,25 +658,67 @@ def infer_services(
         backend_path = fullstack.get("backend_path")
         frontend_path = fullstack.get("frontend_path")
         if backend_path:
+            # Extract port from backend directory
+            backend_port_info = extract_port_from_project(backend_path, framework, language)
+            backend_port = backend_port_info.get("port", 3000)
+            
+            # Check for .env file in backend directory
+            backend_env_file = None
+            for env_name in [".env", ".env.local", ".env.production"]:
+                env_path = os.path.join(backend_path, env_name)
+                if os.path.exists(env_path):
+                    backend_env_file = f"./{_normalize_service_path(project_path, backend_path)}/{env_name}"
+                    print(f"📄 Found backend env file: {backend_env_file}")
+                    break
+            
             services.append({
                 "name": "backend",
                 "path": _normalize_service_path(project_path, backend_path),
-                "type": "backend"
+                "type": "backend",
+                "port": backend_port,  # Actual port from .env or source
+                "port_source": backend_port_info.get("source", "default"),
+                "env_file": backend_env_file  # Path to .env for docker-compose
             })
         if frontend_path:
             # Extract build_output specifically for this frontend service
             frontend_cmds = extract_nodejs_commands(frontend_path)
             frontend_build_output = frontend_cmds.get("build_output", "dist")
-            print(f"📦 Frontend service build_output: {frontend_build_output}")
+            
+            # Extract frontend port
+            frontend_port_info = extract_frontend_port(frontend_path)
+            frontend_port = frontend_port_info.get("port", 5173)
+            
+            # Check for .env file in frontend directory
+            frontend_env_file = None
+            for env_name in [".env", ".env.local", ".env.production"]:
+                env_path = os.path.join(frontend_path, env_name)
+                if os.path.exists(env_path):
+                    frontend_env_file = f"./{_normalize_service_path(project_path, frontend_path)}/{env_name}"
+                    print(f"📄 Found frontend env file: {frontend_env_file}")
+                    break
+            
+            print(f"📦 Frontend service build_output: {frontend_build_output}, port: {frontend_port}")
             
             services.append({
                 "name": "frontend",
                 "path": _normalize_service_path(project_path, frontend_path),
                 "type": "frontend",
-                "build_output": frontend_build_output  # CRA -> "build", Vite -> "dist"
+                "build_output": frontend_build_output,  # CRA -> "build", Vite -> "dist"
+                "port": frontend_port,
+                "port_source": frontend_port_info.get("source", "default"),
+                "env_file": frontend_env_file  # Path to .env for docker-compose
             })
     else:
         # Single service inference
+        # Check for .env file at project root (for single-service projects)
+        root_env_file = None
+        for env_name in [".env", ".env.local", ".env.production"]:
+            env_path = os.path.join(project_path, env_name)
+            if os.path.exists(env_path):
+                root_env_file = f"./{env_name}"
+                print(f"📄 Found root env file: {root_env_file}")
+                break
+        
         if static_only:
             # Extract build_output for static frontend
             single_cmds = extract_nodejs_commands(project_path)
@@ -679,7 +727,8 @@ def infer_services(
                 "name": "frontend", 
                 "path": ".", 
                 "type": "frontend",
-                "build_output": single_build_output
+                "build_output": single_build_output,
+                "env_file": root_env_file
             })
         else:
             svc_name = "frontend" if framework in ["React", "Next.js"] else "app"
@@ -692,10 +741,16 @@ def infer_services(
                     "name": svc_name, 
                     "path": ".", 
                     "type": svc_type,
-                    "build_output": single_build_output
+                    "build_output": single_build_output,
+                    "env_file": root_env_file
                 })
             else:
-                services.append({"name": svc_name, "path": ".", "type": svc_type})
+                services.append({
+                    "name": svc_name, 
+                    "path": ".", 
+                    "type": svc_type,
+                    "env_file": root_env_file
+                })
 
     # Compose hints (optional refinement)
     compose_path = None
@@ -759,20 +814,48 @@ def infer_services(
         except Exception:
             pass
 
-    # Database service (from detection)
-    db_name = (metadata.get("database") or "").lower()
-    db_map = {
-        "postgresql": "postgres",
-        "postgres": "postgres",
-        "mysql": "mysql",
-        "mongodb": "mongo",
-        "mongo": "mongo",
-        "redis": "redis",
-    }
-    db_service_name = db_map.get(db_name)
-    if db_service_name:
-        if not any(svc.get("type") == "database" for svc in services):
-            services.append({"name": db_service_name, "path": ".", "type": "database"})
+    # Database service detection (smart cloud vs local)
+    # Check backend path first for database info (it's where .env usually is)
+    backend_path = None
+    for svc in services:
+        if svc.get("type") == "backend":
+            backend_path = os.path.join(project_path, svc.get("path", "."))
+            break
+    
+    if not backend_path:
+        backend_path = project_path
+    
+    # Use new extract_database_info for smart detection
+    db_info = extract_database_info(backend_path, metadata.get("database"))
+    
+    if db_info.get("db_type"):
+        # Update metadata with database info
+        metadata["database_is_cloud"] = db_info["is_cloud"]
+        metadata["database_env_var"] = db_info.get("env_var_name")
+        
+        if db_info.get("needs_container"):
+            # LOCAL database - add container service
+            db_service_name = {
+                "mongodb": "mongo",
+                "postgresql": "postgres",
+                "mysql": "mysql",
+                "redis": "redis"
+            }.get(db_info["db_type"], "database")
+            
+            if not any(svc.get("type") == "database" for svc in services):
+                services.append({
+                    "name": db_service_name,
+                    "path": ".",
+                    "type": "database",
+                    "port": db_info.get("default_port"),
+                    "docker_image": db_info.get("docker_image"),
+                    "is_cloud": False
+                })
+                print(f"🏠 Adding LOCAL {db_service_name} container to services")
+        else:
+            # CLOUD database - just pass env var, no container
+            print(f"☁️ Cloud database detected ({db_info['db_type']}), no container needed")
+            print(f"   Backend should use env var: {db_info.get('env_var_name')}")
 
     if not services:
         services.append({"name": "app", "path": ".", "type": "backend"})
@@ -1231,11 +1314,14 @@ def detect_ports_for_project(
                 backend_env_kv = _read_env_key_values(backend_path)
                 b_backend_env_port, _, b_generic_env_port = _extract_env_ports(backend_env_kv)
 
+
                 if b_backend_env_port is not None:
                     backend_env_port = b_backend_env_port
-                if b_generic_env_port is not None:
-                    # generic PORT from backend/.env overrides root generic PORT
-                    generic_env_port = b_generic_env_port
+                elif b_generic_env_port is not None:
+                    # FIX: In fullstack project, treat backend/.env PORT as backend port
+                    # (not just generic fallback). This ensures PORT=4000 from backend/.env
+                    # takes priority over package.json default of 3000.
+                    backend_env_port = b_generic_env_port
 
             # Frontend-specific env: frontend/.env overrides root .env
             if frontend_path:
@@ -1483,8 +1569,9 @@ def _infer_database_port(
                         continue
             continue
         
-        # Generic PORT keys
-        if "PORT" in key_upper:
+        # Generic DB PORT keys (NOT plain "PORT" which is for backend!)
+        # Only use DB_PORT or DATABASE_PORT for database port inference
+        if key_upper in ("DB_PORT", "DATABASE_PORT"):
             if val.isdigit():
                 generic_ports.append(int(val))
             else:
@@ -1885,7 +1972,14 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         results["database"] = db_info.get("primary", "Unknown")
         results["databases"] = db_info.get("all", [])
         results["database_detection"] = db_info.get("details", {})
-        results["database_port"] = db_info.get("port")
+        
+        # IMPORTANT: Only set database_port if database is LOCAL (needs container)
+        # Cloud databases (is_cloud=True) should have NO port to avoid confusing LLM
+        if results.get("database_is_cloud"):
+            results["database_port"] = None  # Cloud DB - no container needed
+            print(f"☁️ Database is cloud - clearing database_port")
+        else:
+            results["database_port"] = db_info.get("port")
         
         if ports_info.get("backend_port") is not None:
             results["backend_port"] = ports_info["backend_port"]
@@ -1924,6 +2018,43 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             )
         except Exception:
             results["services"] = [{"name": "app", "path": ".", "type": "backend"}]
+        
+        # =======================================================================
+        # PORT CONSOLIDATION: Copy service ports to metadata for consistency
+        # The per-service ports (from extract_port_from_project) are authoritative
+        # because they check the actual service directory's .env and source files.
+        # =======================================================================
+        for svc in results.get("services", []):
+            svc_type = svc.get("type")
+            svc_port = svc.get("port")
+            svc_port_source = svc.get("port_source", "unknown")
+            
+            if svc_type == "backend" and svc_port:
+                # Only override if service port came from a reliable source
+                if svc_port_source in ("env", "source"):
+                    print(f"🔧 Consolidating: backend_port = {svc_port} (from {svc_port_source})")
+                    results["backend_port"] = svc_port
+                    results["port"] = svc_port  # backwards compat
+                elif results.get("backend_port") is None:
+                    # Use service port as fallback if no port detected yet
+                    results["backend_port"] = svc_port
+                    results["port"] = svc_port
+            
+            elif svc_type == "frontend" and svc_port:
+                if svc_port_source in ("env", "source", "vite_default", "cra_default"):
+                    print(f"🔧 Consolidating: frontend_port = {svc_port} (from {svc_port_source})")
+                    results["frontend_port"] = svc_port
+                elif results.get("frontend_port") is None:
+                    results["frontend_port"] = svc_port
+        
+        # =======================================================================
+        # CLOUD DATABASE: Clear database_port if database is cloud
+        # database_is_cloud is set by infer_services -> extract_database_info()
+        # This ensures LLM doesn't add a database container for cloud DBs
+        # =======================================================================
+        if results.get("database_is_cloud"):
+            results["database_port"] = None
+            print(f"☁️ Cloud database detected - clearing database_port (no container needed)")
         
         # Deduplicate detected_files
         results["detected_files"] = list(set(results["detected_files"]))

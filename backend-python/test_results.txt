@@ -1,0 +1,178 @@
+﻿================================================================================
+MERN PROJECT METADATA DETECTION TEST RESULTS
+================================================================================
+
+
+============================================================
+TEST: MERN Memories - CRA Frontend
+Description: Create React App frontend with react-scripts
+Type: frontend
+------------------------------------------------------------
+≡ƒôª Detected Create React App (CRA) -> build output: build/
+≡ƒôª package.json analysis: entry=None, start=npm start, build_output=build
+≡ƒöî Frontend port: 3000 (source: cra_default)
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+RESULTS:
+  [PASS] build_output: build
+  [PASS] port: 3000
+  [PASS] port_source: cra_default
+  [PASS] start_command: npm start
+  [PASS] has_start_script: True
+
+============================================================
+TEST: IDURAR ERP - Vite Frontend
+Description: Vite-based React frontend
+Type: frontend
+------------------------------------------------------------
+≡ƒôª Detected Vite -> build output: dist/
+≡ƒôª package.json analysis: entry=None, start=None, build_output=dist
+≡ƒöî Frontend port: 5173 (source: vite_default)
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+RESULTS:
+  [PASS] build_output: dist
+  [PASS] port: 5173
+  [PASS] port_source: vite_default
+  [PASS] start_command: None
+  [PASS] has_start_script: False
+
+============================================================
+TEST: MERN Memories - Express Backend
+Description: Express backend with mongoose, nodemon start, hardcoded port
+Type: backend
+------------------------------------------------------------
+≡ƒôª package.json analysis: entry=index.js, start=node index.js, build_output=None
+≡ƒöî Found port 5000 in index.js
+≡ƒöî Port detected from source code: 5000
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+RESULTS:
+  [PASS] build_output: None
+  [PASS] port: 5000
+  [PASS] port_source: source
+  [PASS] start_command: node index.js
+  [PASS] entry_point: index.js
+  [PASS] has_start_script: True
+  [PASS] db_type: mongodb
+  [FAIL] needs_container: expected=False, actual=True
+
+============================================================
+TEST: IDURAR ERP - Express Backend
+Description: Express backend with node start script
+Type: backend
+------------------------------------------------------------
+≡ƒôª package.json analysis: entry=src/server.js, start=node src/server.js, build_output=None
+≡ƒöî Found PORT=8888 in .env
+≡ƒöî Port detected from .env: 8888
+≡ƒÅá Detected LOCAL database: mongodb (from .env)
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+RESULTS:
+  [PASS] build_output: None
+  [PASS] port: 8888
+  [PASS] port_source: env
+  [PASS] start_command: node src/server.js
+  [PASS] entry_point: src/server.js
+  [PASS] has_start_script: True
+  [PASS] db_type: mongodb
+  [PASS] is_cloud: False
+  [PASS] needs_container: True
+
+============================================================
+TEST: Next.js Frontend
+Description: Next.js with static export
+Type: frontend
+------------------------------------------------------------
+≡ƒôª Detected Next.js -> build output: out/
+≡ƒôª package.json analysis: entry=None, start=npm start, build_output=out
+≡ƒöî Frontend port: 3000 (source: next_default)
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+RESULTS:
+  [PASS] build_output: out
+  [PASS] port: 3000
+  [PASS] port_source: next_default
+  [PASS] start_command: npm start
+  [PASS] has_start_script: True
+
+============================================================
+TEST: Vite React with Custom Port
+Description: Vite frontend with custom port in config
+Type: frontend
+------------------------------------------------------------
+≡ƒôª Detected Vite -> build output: dist/
+≡ƒôª Found custom outDir in vite.config.js: public
+≡ƒôª Config override: vite.config -> public
+≡ƒôª package.json analysis: entry=None, start=None, build_output=public
+≡ƒöî Frontend port from vite.config.js: 3001
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+RESULTS:
+  [PASS] build_output: public
+  [PASS] port: 3001
+  [PASS] port_source: vite.config.js
+  [PASS] start_command: None
+  [PASS] has_start_script: False
+
+============================================================
+TEST: Express with Cloud MongoDB
+Description: Express backend with MongoDB Atlas connection
+Type: backend
+------------------------------------------------------------
+≡ƒôª package.json analysis: entry=server.js, start=node server.js, build_output=None
+≡ƒöî Found port 4000 in server.js
+≡ƒöî Port detected from source code: 4000
+Γÿü∩╕Å Detected CLOUD database: mongodb (from .env)
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=True, needs_container=False
+
+RESULTS:
+  [PASS] port: 4000
+  [PASS] port_source: source
+  [PASS] start_command: node server.js
+  [PASS] entry_point: server.js
+  [PASS] db_type: mongodb
+  [PASS] is_cloud: True
+  [PASS] needs_container: False
+
+============================================================
+TEST: Express with PostgreSQL
+Description: Express backend with PostgreSQL
+Type: backend
+------------------------------------------------------------
+≡ƒôª package.json analysis: entry=app.js, start=node app.js, build_output=None
+≡ƒöî Found port 5432 in app.js
+≡ƒöî Port detected from source code: 5432
+≡ƒÅá Detected LOCAL database: postgresql (from .env)
+≡ƒùä∩╕Å Database detection: type=postgresql, cloud=False, needs_container=True
+
+RESULTS:
+  [PASS] port: 5432
+  [PASS] port_source: source
+  [PASS] db_type: postgresql
+  [PASS] is_cloud: False
+  [PASS] needs_container: True
+
+================================================================================
+SUMMARY
+================================================================================
+Total checks: 49
+Passed: 48
+Failed: 1
+Success rate: 98.0%
+
+----------------------------------------
+ISSUES TO ADDRESS:
+
+MERN Memories - Express Backend:
+  [FAIL] needs_container: expected=False, actual=True
+
+================================================================================
+SUGGESTIONS FOR METADATA LOGIC IMPROVEMENTS
+================================================================================
+No major improvements needed based on test results.

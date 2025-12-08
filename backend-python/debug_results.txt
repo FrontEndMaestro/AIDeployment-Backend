@@ -1,0 +1,27 @@
+﻿============================================================
+TESTING detect_ports_for_project FROM detector.py
+============================================================
+
+Result from detect_ports_for_project():
+  backend_port: None
+  frontend_port: None
+  docker_backend_ports: None
+  docker_frontend_ports: None
+  docker_database_ports: None
+  docker_other_ports: None
+  docker_backend_container_ports: None
+  docker_frontend_container_ports: None
+  docker_database_container_ports: None
+  docker_other_container_ports: None
+  docker_expose_ports: None
+
+============================================================
+TESTING detect_databases FROM detector.py
+============================================================
+   Detected databases (best first): ['MongoDB']
+
+Result from detect_databases():
+  primary: MongoDB
+  all: ['MongoDB']
+  details: {'MongoDB': {'score': 1.8, 'evidence': ['dependency:mongoose', 'env:MONGO_URI']}}
+  port: 27017

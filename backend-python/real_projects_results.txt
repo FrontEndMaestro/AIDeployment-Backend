@@ -1,0 +1,595 @@
+﻿======================================================================
+REAL-WORLD DETECTION TEST
+======================================================================
+
+============================================================
+PROJECT: react-job-portal-main
+============================================================
+
+Starting Hybrid Framework Detection
+Project Path: uploads/user_abdulahadabbassi2@gmail.com/extracted\project-6936a751db124936ffee4d35\react-job-portal-main
+ML Mode: Disabled
+
+Running heuristic detection (fast & reliable)...
+   Heuristic Language: JavaScript (score: 20.00)
+   Heuristic Framework: Express.js (score: 0.50)
+≡ƒôª package.json analysis: entry=server.js, start=node server.js, build_output=None
+≡ƒôª Overriding start_command with: node server.js
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+   Detected databases (best first): ['MongoDB']
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+≡ƒöî Found PORT=4000 in .env
+≡ƒöî Port detected from .env: 4000
+≡ƒôª Detected Vite -> build output: dist/
+≡ƒôª Found build output in .gitignore: dist
+≡ƒôª package.json analysis: entry=None, start=None, build_output=dist
+≡ƒöî Frontend port: 5173 (source: vite_default)
+≡ƒôª Frontend service build_output: dist, port: 5173
+Γÿü∩╕Å Detected CLOUD database: mongodb (from .env)
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=True, needs_container=False
+Γÿü∩╕Å Cloud database detected (mongodb), no container needed
+   Backend should use env var: DB_URL
+Here are all the results:
+{
+  "framework": "Express.js",
+  "language": "JavaScript",
+  "runtime": "node:20-alpine",
+  "dependencies": [
+    "bcrypt",
+    "cloudinary",
+    "cookie-parser",
+    "cors",
+    "dotenv",
+    "express",
+    "express-fileupload",
+    "jsonwebtoken",
+    "mongoose",
+    "validator",
+    "nodemon",
+    "axios",
+    "react",
+    "react-dom",
+    "react-hot-toast",
+    "react-icons",
+    "react-router-dom",
+    "@types/react",
+    "@types/react-dom",
+    "@vitejs/plugin-react-swc",
+    "eslint",
+    "eslint-plugin-react",
+    "eslint-plugin-react-hooks",
+    "eslint-plugin-react-refresh",
+    "vite"
+  ],
+  "port": 4000,
+  "build_command": "npm install",
+  "start_command": "node server.js",
+  "env_variables": [],
+  "dockerfile": false,
+  "docker_compose": false,
+  "detected_files": [
+    "package.json"
+  ],
+  "detection_confidence": {
+    "language": 1.0,
+    "framework": 0.25,
+    "method": "heuristic"
+  },
+  "has_package_json": true,
+  "has_requirements_txt": false,
+  "has_manage_py": false,
+  "static_only": false,
+  "database": "MongoDB",
+  "databases": [
+    "MongoDB"
+  ],
+  "database_detection": {
+    "MongoDB": {
+      "score": 1.0,
+      "evidence": [
+        "dependency:mongoose"
+      ]
+    }
+  },
+  "database_port": 27017,
+  "backend_port": 4000,
+  "frontend_port": 5173,
+  "docker_backend_ports": null,
+  "docker_frontend_ports": null,
+  "docker_database_ports": null,
+  "docker_other_ports": null,
+  "docker_backend_container_ports": null,
+  "docker_frontend_container_ports": null,
+  "docker_database_container_ports": null,
+  "docker_other_container_ports": null,
+  "docker_expose_ports": null,
+  "entry_point": "server.js",
+  "database_is_cloud": true,
+  "database_env_var": "DB_URL",
+  "services": [
+    {
+      "name": "backend",
+      "path": "backend/",
+      "type": "backend",
+      "port": 4000,
+      "port_source": "env"
+    },
+    {
+      "name": "frontend",
+      "path": "frontend/",
+      "type": "frontend",
+      "build_output": "dist",
+      "port": 5173,
+      "port_source": "vite_default"
+    }
+  ]
+}
+
+Detection Complete!
+   Language: JavaScript (confidence: 1.00)
+   Framework: Express.js (confidence: 0.25)
+   Method: heuristic
+
+
+  Framework: Express.js
+  Language: JavaScript
+  Backend Port: 4000
+  Frontend Port: 5173
+  Database: MongoDB
+  Database Port: 27017
+  Start Command: node server.js
+  Build Output: None
+
+  Γ£ô Detection looks correct
+
+============================================================
+PROJECT: idurar-erp-crm-master
+============================================================
+
+Starting Hybrid Framework Detection
+Project Path: uploads/user_abdulahadabbassi2@gmail.com/extracted\project-69348ddbf77662b34a43c036\idurar-erp-crm-master
+ML Mode: Disabled
+
+Running heuristic detection (fast & reliable)...
+   Heuristic Language: JavaScript (score: 165.30)
+   Heuristic Framework: Express.js (score: 3.50)
+≡ƒôª package.json analysis: entry=src/server.js, start=node src/server.js, build_output=None
+≡ƒôª Overriding start_command with: node src/server.js
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+   Detected databases (best first): ['MongoDB']
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+≡ƒöî Found port 8888 in src/server.js
+≡ƒöî Port detected from source code: 8888
+≡ƒôª Detected Vite -> build output: dist/
+≡ƒôª Found build output in .gitignore: dist
+≡ƒôª package.json analysis: entry=None, start=None, build_output=dist
+≡ƒöî Frontend port from vite.config.js: 3000
+≡ƒôª Frontend service build_output: dist, port: 3000
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+≡ƒÅá Adding LOCAL mongo container to services
+Here are all the results:
+{
+  "framework": "Express.js",
+  "language": "JavaScript",
+  "runtime": "node:20-alpine",
+  "dependencies": [
+    "@aws-sdk/client-s3",
+    "bcryptjs",
+    "compression",
+    "cookie-parser",
+    "cors",
+    "currency.js",
+    "dotenv",
+    "express",
+    "express-fileupload",
+    "express-rate-limit",
+    "glob",
+    "html-pdf",
+    "joi",
+    "jsonwebtoken",
+    "lodash",
+    "module-alias",
+    "moment",
+    "mongoose",
+    "mongoose-autopopulate",
+    "multer",
+    "node-cache",
+    "openai",
+    "pug",
+    "resend",
+    "shortid",
+    "transliteration",
+    "nodemon",
+    "@ant-design/icons",
+    "@ant-design/pro-layout",
+    "@reduxjs/toolkit",
+    "@vitejs/plugin-react",
+    "antd",
+    "axios",
+    "cross-env",
+    "currency.js",
+    "dayjs",
+    "just-compare",
+    "react",
+    "react-dom",
+    "react-quill",
+    "react-redux",
+    "react-router-dom",
+    "redux",
+    "reselect",
+    "shortid",
+    "vite",
+    "@types/react",
+    "@types/react-dom",
+    "eslint",
+    "eslint-plugin-react",
+    "eslint-plugin-react-hooks",
+    "eslint-plugin-react-refresh",
+    "prettier"
+  ],
+  "port": 8888,
+  "build_command": "npm install",
+  "start_command": "node src/server.js",
+  "env_variables": [],
+  "dockerfile": true,
+  "docker_compose": true,
+  "detected_files": [
+    "Dockerfile",
+    "package.json",
+    "docker-compose.yml"
+  ],
+  "detection_confidence": {
+    "language": 1.0,
+    "framework": 1.0,
+    "method": "heuristic"
+  },
+  "has_package_json": true,
+  "has_requirements_txt": false,
+  "has_manage_py": false,
+  "static_only": false,
+  "database": "MongoDB",
+  "databases": [
+    "MongoDB"
+  ],
+  "database_detection": {
+    "MongoDB": {
+      "score": 1.7,
+      "evidence": [
+        "dependency:mongoose",
+        "compose:mongo"
+      ]
+    }
+  },
+  "database_port": 27017,
+  "backend_port": 8888,
+  "frontend_port": 5173,
+  "docker_backend_ports": [
+    8888
+  ],
+  "docker_frontend_ports": [
+    5173
+  ],
+  "docker_database_ports": [
+    27017
+  ],
+  "docker_other_ports": null,
+  "docker_backend_container_ports": [
+    8888
+  ],
+  "docker_frontend_container_ports": [
+    80
+  ],
+  "docker_database_container_ports": [
+    27017
+  ],
+  "docker_other_container_ports": null,
+  "docker_expose_ports": [
+    80,
+    8888
+  ],
+  "entry_point": "src/server.js",
+  "database_is_cloud": false,
+  "database_env_var": null,
+  "services": [
+    {
+      "name": "backend",
+      "path": "backend/",
+      "type": "backend",
+      "port": 8888,
+      "port_source": "source"
+    },
+    {
+      "name": "frontend",
+      "path": "frontend/",
+      "type": "frontend",
+      "build_output": "dist",
+      "port": 3000,
+      "port_source": "vite.config.js"
+    },
+    {
+      "name": "mongo",
+      "path": ".",
+      "type": "database",
+      "port": 27017,
+      "docker_image": "mongo:latest",
+      "is_cloud": false
+    }
+  ]
+}
+
+Detection Complete!
+   Language: JavaScript (confidence: 1.00)
+   Framework: Express.js (confidence: 1.00)
+   Method: heuristic
+
+
+  Framework: Express.js
+  Language: JavaScript
+  Backend Port: 8888
+  Frontend Port: 5173
+  Database: MongoDB
+  Database Port: 27017
+  Start Command: node src/server.js
+  Build Output: None
+
+  Γ£ô Detection looks correct
+
+============================================================
+PROJECT: project-management-master
+============================================================
+
+Starting Hybrid Framework Detection
+Project Path: uploads/user_abdulahadabbassi2@gmail.com/extracted\project-6936a785db124936ffee4d36\project-management-master
+ML Mode: Disabled
+
+Running heuristic detection (fast & reliable)...
+   Heuristic Language: JavaScript (score: 22.60)
+   Heuristic Framework: React (score: 1.50)
+≡ƒôª Unknown build tool -> defaulting to: dist/
+≡ƒôª Found build output in .gitignore: build
+≡ƒôª .gitignore suggests different output: build (current: dist)
+≡ƒôª package.json analysis: entry=server/index.js, start=node server/index.js, build_output=dist
+≡ƒôª Overriding start_command with: node server/index.js
+≡ƒôª Detected build_output: dist
+≡ƒöì Fullstack: found frontend folder 'client'
+≡ƒöì Fullstack: found backend folder 'server'
+   Detected databases (best first): ['MongoDB']
+≡ƒöì Fullstack: found frontend folder 'client'
+≡ƒöì Fullstack: found backend folder 'server'
+≡ƒöì Fullstack: found frontend folder 'client'
+≡ƒöì Fullstack: found backend folder 'server'
+≡ƒöî Found port 5000 in index.js
+≡ƒöî Port detected from source code: 5000
+≡ƒôª Detected Create React App (CRA) -> build output: build/
+≡ƒôª Found build output in .gitignore: build
+≡ƒôª package.json analysis: entry=src/index.js, start=npm start, build_output=build
+≡ƒöî Frontend port: 3000 (source: cra_default)
+≡ƒôª Frontend service build_output: build, port: 3000
+Γÿü∩╕Å Detected database (assuming cloud): mongodb (from .env)
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=True, needs_container=False
+Γÿü∩╕Å Cloud database detected (mongodb), no container needed
+   Backend should use env var: MONGO_URI
+Here are all the results:
+{
+  "framework": "React",
+  "language": "JavaScript",
+  "runtime": "node:20-alpine",
+  "dependencies": [
+    "colors",
+    "concurrently",
+    "cors",
+    "dotenv",
+    "express",
+    "express-graphql",
+    "graphql",
+    "mongoose",
+    "nodemon",
+    "@apollo/client",
+    "@testing-library/jest-dom",
+    "@testing-library/react",
+    "@testing-library/user-event",
+    "graphql",
+    "react",
+    "react-dom",
+    "react-icons",
+    "react-router-dom",
+    "react-scripts",
+    "web-vitals",
+    "colors",
+    "cors",
+    "express",
+    "express-graphql",
+    "graphql",
+    "mongoose",
+    "dotenv",
+    "nodemon",
+    "@docusaurus/core",
+    "@docusaurus/preset-classic",
+    "@mdx-js/react",
+    "clsx",
+    "prism-react-renderer",
+    "react",
+    "react-dom",
+    "@docusaurus/module-type-aliases"
+  ],
+  "port": 5000,
+  "build_command": "npm run build",
+  "start_command": "node server/index.js",
+  "env_variables": [],
+  "dockerfile": true,
+  "docker_compose": true,
+  "detected_files": [
+    "Dockerfile",
+    "package.json",
+    "docker-compose.yml"
+  ],
+  "detection_confidence": {
+    "language": 1.0,
+    "framework": 0.75,
+    "method": "heuristic"
+  },
+  "has_package_json": true,
+  "has_requirements_txt": false,
+  "has_manage_py": false,
+  "static_only": false,
+  "database": "MongoDB",
+  "databases": [
+    "MongoDB"
+  ],
+  "database_detection": {
+    "MongoDB": {
+      "score": 2.5,
+      "evidence": [
+        "dependency:mongoose",
+        "env:MONGO_URI",
+        "compose:mongo"
+      ]
+    }
+  },
+  "database_port": 27017,
+  "backend_port": 5000,
+  "frontend_port": 3000,
+  "docker_backend_ports": [
+    5000
+  ],
+  "docker_frontend_ports": [
+    3000
+  ],
+  "docker_database_ports": null,
+  "docker_other_ports": null,
+  "docker_backend_container_ports": [
+    5000
+  ],
+  "docker_frontend_container_ports": [
+    3000
+  ],
+  "docker_database_container_ports": null,
+  "docker_other_container_ports": null,
+  "docker_expose_ports": [
+    3000
+  ],
+  "entry_point": "server/index.js",
+  "build_output": "dist",
+  "database_is_cloud": true,
+  "database_env_var": "MONGO_URI",
+  "services": [
+    {
+      "name": "backend",
+      "path": "server/",
+      "type": "backend",
+      "port": 5000,
+      "port_source": "source"
+    },
+    {
+      "name": "frontend",
+      "path": "client/",
+      "type": "frontend",
+      "build_output": "build",
+      "port": 3000,
+      "port_source": "cra_default"
+    }
+  ]
+}
+
+Detection Complete!
+   Language: JavaScript (confidence: 1.00)
+   Framework: React (confidence: 0.75)
+   Method: heuristic
+
+
+  Framework: React
+  Language: JavaScript
+  Backend Port: 5000
+  Frontend Port: 3000
+  Database: MongoDB
+  Database Port: 27017
+  Start Command: node server/index.js
+  Build Output: None
+
+  Γ£ô Detection looks correct
+
+============================================================
+PROJECT: MERN_Notes_App
+============================================================
+
+Starting Hybrid Framework Detection
+Project Path: uploads/user_abdulahadabbassi2@gmail.com/extracted\project-692d81872ac6786ca08b6071\MERN_Notes_App
+ML Mode: Disabled
+
+Running heuristic detection (fast & reliable)...
+≡ƒùä∩╕Å Database detection: type=None, cloud=False, needs_container=False
+Here are all the results:
+{
+  "framework": "Unknown",
+  "language": "Unknown",
+  "runtime": "alpine:latest",
+  "dependencies": [],
+  "port": 8000,
+  "build_command": null,
+  "start_command": null,
+  "env_variables": [],
+  "dockerfile": false,
+  "docker_compose": false,
+  "detected_files": [],
+  "detection_confidence": {
+    "language": 0.0,
+    "framework": 0.0,
+    "method": "heuristic"
+  },
+  "has_package_json": false,
+  "has_requirements_txt": false,
+  "has_manage_py": false,
+  "static_only": false,
+  "database": "Unknown",
+  "databases": [],
+  "database_detection": {},
+  "database_port": null,
+  "backend_port": 8000,
+  "frontend_port": null,
+  "docker_backend_ports": null,
+  "docker_frontend_ports": null,
+  "docker_database_ports": null,
+  "docker_other_ports": null,
+  "docker_backend_container_ports": null,
+  "docker_frontend_container_ports": null,
+  "docker_database_container_ports": null,
+  "docker_other_container_ports": null,
+  "docker_expose_ports": null,
+  "services": [
+    {
+      "name": "app",
+      "path": ".",
+      "type": "backend"
+    }
+  ]
+}
+
+Detection Complete!
+   Language: Unknown (confidence: 0.00)
+   Framework: Unknown (confidence: 0.00)
+   Method: heuristic
+
+
+  Framework: Unknown
+  Language: Unknown
+  Backend Port: 8000
+  Frontend Port: None
+  Database: Unknown
+  Database Port: None
+  Start Command: None
+  Build Output: None
+
+  Γ£ô Detection looks correct
+
+======================================================================
+TEST COMPLETE
+======================================================================

@@ -1,0 +1,97 @@
+[
+  {
+    "scenario": "CRA Frontend + Express Backend (Cloud MongoDB)",
+    "output_preview": "### backend/Dockerfile\n```Dockerfile\n# Use the official Node.js 20-alpine image as a parent image\nFROM node:20-alpine\n\n# Set the working directory in the container\nWORKDIR /app\n\n# Copy package.json and package-lock.json to the working directory\nCOPY package*.json ./\n\n# Install dependencies\nRUN npm i",
+    "checks": [
+      {
+        "id": "backend_port_4000",
+        "passed": true,
+        "description": "Backend should expose port 4000",
+        "found": true,
+        "expected": true
+      },
+      {
+        "id": "/app/build",
+        "passed": true,
+        "description": "Frontend should use /app/build for CRA",
+        "found": true,
+        "expected": true
+      },
+      {
+        "id": "no_mongo_service",
+        "passed": true,
+        "description": "Should NOT have mongo service (cloud DB)",
+        "found": false,
+        "expected": false
+      },
+      {
+        "id": "serve",
+        "passed": true,
+        "description": "Frontend should use serve",
+        "found": true,
+        "expected": true
+      }
+    ]
+  },
+  {
+    "scenario": "Vite Frontend + Express Backend (Local MongoDB)",
+    "output_preview": "### backend/Dockerfile\n```Dockerfile\n# Use the official Node.js 20-alpine image as a parent image\nFROM node:20-alpine\n\n# Set the working directory in the container\nWORKDIR /app\n\n# Copy package.json and package-lock.json\nCOPY package*.json ./\n\n# Install dependencies\nRUN npm install\n\n# Copy project fi",
+    "checks": [
+      {
+        "id": "backend_port_8888",
+        "passed": true,
+        "description": "Backend should expose port 8888",
+        "found": true,
+        "expected": true
+      },
+      {
+        "id": "/app/dist",
+        "passed": true,
+        "description": "Frontend should use /app/dist for Vite",
+        "found": true,
+        "expected": true
+      },
+      {
+        "id": "has_mongo",
+        "passed": true,
+        "description": "Should have mongo service (local DB)",
+        "found": true,
+        "expected": true
+      },
+      {
+        "id": "src/server.js",
+        "passed": true,
+        "description": "Should use correct entry point",
+        "found": true,
+        "expected": true
+      }
+    ]
+  },
+  {
+    "scenario": "Next.js Static Export",
+    "output_preview": "```Dockerfile\n# Use the official Node.js 20 image as the base image\nFROM node:20-alpine\n\n# Set the working directory in the container\nWORKDIR /app\n\n# Copy package.json and package-lock.json to install dependencies\nCOPY package*.json ./\n\n# Install dependencies\nRUN npm install\n\n# Build the Next.js app",
+    "checks": [
+      {
+        "id": "/app/out",
+        "passed": false,
+        "description": "Should use /app/out for Next.js export",
+        "found": false,
+        "expected": true
+      },
+      {
+        "id": "serve",
+        "passed": true,
+        "description": "Should use serve",
+        "found": true,
+        "expected": true
+      },
+      {
+        "id": "not_dist",
+        "passed": true,
+        "description": "Should NOT use /app/dist for Next.js export",
+        "found": false,
+        "expected": false
+      }
+    ]
+  }
+]

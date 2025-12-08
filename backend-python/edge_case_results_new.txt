@@ -1,0 +1,223 @@
+﻿================================================================================
+MERN METADATA DETECTION - EDGE CASE TESTS
+================================================================================
+
+============================================================
+TEST: TypeScript Backend (ts-node)
+Type: backend
+Potential Issue: Port detection may miss .ts files, entry_point may not be detected
+------------------------------------------------------------
+≡ƒôª Unknown build tool -> defaulting to: dist/
+≡ƒôª package.json analysis: entry=dist/index.js, start=npm start, build_output=dist
+≡ƒöî Found port 3001 in src/index.ts
+≡ƒöî Port detected from source code: 3001
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] start_command: expected=npm start, actual=npm start
+  [FAIL] entry_point: expected=None, actual=dist/index.js
+  [PASS] build_output: expected=dist, actual=dist
+  [PASS] port: expected=3001, actual=3001
+
+============================================================
+TEST: Monorepo Structure
+Type: backend
+Potential Issue: Detection may pick up root package.json instead of backend/
+------------------------------------------------------------
+  [SKIPPED] Complex structure test
+
+============================================================
+TEST: Complex Start Script
+Type: backend
+Potential Issue: Entry point extraction may fail with env vars prefix
+------------------------------------------------------------
+≡ƒôª package.json analysis: entry=server/index.js, start=npm start, build_output=None
+≡ƒöî Found port 8080 in server/index.js
+≡ƒöî Port detected from source code: 8080
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] start_command: expected=npm start, actual=npm start
+  [PASS] entry_point: expected=server/index.js, actual=server/index.js
+  [PASS] port: expected=8080, actual=8080
+
+============================================================
+TEST: Port Only From process.env
+Type: backend
+Potential Issue: .env.example may not be checked, would fall back to default
+------------------------------------------------------------
+≡ƒôª package.json analysis: entry=index.js, start=node index.js, build_output=None
+≡ƒöî Found PORT=3000 in .env.example
+≡ƒöî Port detected from .env: 3000
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] port: expected=3000, actual=3000
+  [PASS] port_source: expected=env, actual=env
+
+============================================================
+TEST: Remix Framework
+Type: frontend
+Potential Issue: Remix not detected, will default to 'dist' for build_output
+------------------------------------------------------------
+≡ƒôª Detected Remix -> build output: build/
+≡ƒôª package.json analysis: entry=None, start=npm start, build_output=build
+≡ƒöî Frontend port: 3000 (source: default)
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] build_output: expected=build, actual=build
+  [PASS] port: expected=3000, actual=3000
+  [PASS] has_start_script: expected=True, actual=True
+
+============================================================
+TEST: SvelteKit Project
+Type: frontend
+Potential Issue: SvelteKit builds to .svelte-kit/output, not dist
+------------------------------------------------------------
+≡ƒôª Detected Vite -> build output: dist/
+≡ƒôª package.json analysis: entry=None, start=None, build_output=dist
+≡ƒöî Frontend port: 5173 (source: vite_default)
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] build_output: expected=dist, actual=dist
+  [PASS] port: expected=5173, actual=5173
+
+============================================================
+TEST: Webpack Without Config
+Type: frontend
+Potential Issue: Config in nested folder won't be detected
+------------------------------------------------------------
+≡ƒôª Unknown build tool -> defaulting to: dist/
+≡ƒôª Found custom output.path in configs/webpack.prod.js: public
+≡ƒôª Config override: webpack.config -> public
+≡ƒôª package.json analysis: entry=None, start=None, build_output=public
+≡ƒöî Frontend port: 3000 (source: default)
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] build_output: expected=public, actual=public
+  [PASS] port: expected=3000, actual=3000
+
+============================================================
+TEST: Backend No Start Script
+Type: backend
+Potential Issue: lib/ folder not in source scan list
+------------------------------------------------------------
+≡ƒôª package.json analysis: entry=lib/cli.js, start=node lib/cli.js, build_output=None
+≡ƒöî Using framework default port: 3000
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] start_command: expected=node lib/cli.js, actual=node lib/cli.js
+  [PASS] entry_point: expected=lib/cli.js, actual=lib/cli.js
+  [FAIL] port: expected=9000, actual=3000
+  [PASS] has_start_script: expected=False, actual=False
+
+============================================================
+TEST: Multiple Databases
+Type: backend
+Potential Issue: Only one database detected, Redis container won't be added
+------------------------------------------------------------
+≡ƒôª package.json analysis: entry=server.js, start=node server.js, build_output=None
+≡ƒöî Found port 4000 in server.js
+≡ƒöî Port detected from source code: 4000
+≡ƒÅá Detected LOCAL database: mongodb (from .env)
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] db_type: expected=mongodb, actual=mongodb
+  [PASS] needs_container: expected=True, actual=True
+
+============================================================
+TEST: Gatsby Static Site
+Type: frontend
+Potential Issue: Gatsby not detected, defaults to dist
+------------------------------------------------------------
+≡ƒôª Detected Gatsby -> build output: public/
+≡ƒôª package.json analysis: entry=None, start=None, build_output=public
+≡ƒöî Frontend port: 3000 (source: default)
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] build_output: expected=public, actual=public
+  [FAIL] port: expected=8000, actual=3000
+  [PASS] has_start_script: expected=False, actual=False
+
+============================================================
+TEST: Express with PM2
+Type: backend
+Potential Issue: PM2 ecosystem config not parsed for port
+------------------------------------------------------------
+≡ƒôª package.json analysis: entry=ecosystem.config.js, start=npm start, build_output=None
+≡ƒöî Found port 3000 in src/app.js
+≡ƒöî Port detected from source code: 3000
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] start_command: expected=npm start, actual=npm start
+  [PASS] port: expected=3000, actual=3000
+  [FAIL] entry_point: expected=src/app.js, actual=ecosystem.config.js
+
+============================================================
+TEST: Port in Config File
+Type: backend
+Potential Issue: Port in JSON config files is not detected
+------------------------------------------------------------
+≡ƒôª package.json analysis: entry=index.js, start=node index.js, build_output=None
+≡ƒöî Using framework default port: 3000
+≡ƒÅá No DB URL in .env, assuming LOCAL mongodb container needed
+≡ƒùä∩╕Å Database detection: type=mongodb, cloud=False, needs_container=True
+
+Results:
+  [PASS] port: expected=3000, actual=3000
+  [PASS] port_source: expected=default, actual=default
+
+================================================================================
+EDGE CASE TEST SUMMARY
+================================================================================
+Total checks: 30
+Passed: 26
+Failed: 4
+Skipped: 1
+Success rate: 86.7%
+
+----------------------------------------
+IDENTIFIED GAPS IN DETECTION LOGIC:
+----------------------------------------
+
+TypeScript Backend (ts-node):
+  Reason: Port detection may miss .ts files, entry_point may not be detected
+    - entry_point: expected=None, actual=dist/index.js
+
+Backend No Start Script:
+  Reason: lib/ folder not in source scan list
+    - port: expected=9000, actual=3000
+
+Gatsby Static Site:
+  Reason: Gatsby not detected, defaults to dist
+    - port: expected=8000, actual=3000
+
+Express with PM2:
+  Reason: PM2 ecosystem config not parsed for port
+    - entry_point: expected=src/app.js, actual=ecosystem.config.js
+
+================================================================================
+RECOMMENDATIONS FOR METADATA LOGIC EXTENSION
+================================================================================
+
+Based on edge case failures, consider these extensions:
+  1. Add TypeScript source file scanning (.ts, .tsx)
+  2. Add detection for Remix (build/), Gatsby (public/), SvelteKit (.svelte-kit/)
+  3. Check for config files in subdirectories (configs/, config/)
+  5. Parse PM2 ecosystem.config.js for port
