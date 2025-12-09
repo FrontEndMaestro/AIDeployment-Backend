@@ -48,6 +48,18 @@ MODE = GENERATE_MISSING
 MUST generate files for ALL services in Service Definitions
 Add verification comment header to EVERY generated file
 Generate: backend/Dockerfile, frontend/Dockerfile, docker-compose.yml (as needed)
+
+⚠️⚠️⚠️ CRITICAL: env_file DIRECTIVE ⚠️⚠️⚠️
+CHECK Service Definitions for "env_file:" field!
+If a service has env_file (e.g., "env_file: ./backend/.env"), you MUST use:
+```yaml
+backend:
+  env_file:
+    - ./backend/.env
+```
+DO NOT use "environment: - DB_URL=${DB_URL}" when env_file is present!
+The env_file directive loads ALL variables from the .env file automatically.
+
 CRITICAL RULES:
 
 Database Services (SMART CLOUD VS LOCAL DETECTION):
@@ -147,7 +159,7 @@ Node.js Backend:
 FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev
 COPY . .
 ENV NODE_ENV=production
 ENV PORT=8888
@@ -158,8 +170,19 @@ CMD ["node", "src/index.js"]
 BAD: CMD ["node", "app.js"]  # REPLACE with actual entry
 GOOD: CMD ["node", "src/index.js"]  (just the actual value from metadata)
 
-You MUST read metadata.start_command and use it directly. Example:
-- If metadata.start_command = "node server/index.js" → CMD ["node", "server/index.js"]
+⚠️⚠️⚠️ CRITICAL: PATH CONTEXT FOR MULTI-SERVICE PROJECTS ⚠️⚠️⚠️
+When docker-compose uses "build: ./api", the Dockerfile is built from INSIDE the api/ directory!
+The CMD path must be RELATIVE TO THE SERVICE DIRECTORY, not the project root!
+
+Example:
+- Project structure: api/index.js
+- docker-compose: build: ./api
+- WRONG: CMD ["node", "api/index.js"]  ← This looks for /app/api/index.js (doesn't exist!)
+- CORRECT: CMD ["node", "index.js"]    ← This looks for /app/index.js (correct!)
+
+Check Service Definitions for the service "path" field:
+- If path = "api/" and entry is "index.js" → CMD ["node", "index.js"]
+- If path = "." and entry is "api/index.js" → CMD ["node", "api/index.js"]
 
 React/CRA Frontend (build/ output):
 
@@ -167,7 +190,7 @@ React/CRA Frontend (build/ output):
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 COPY . .
 RUN npm run build
 
@@ -205,7 +228,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 EXPOSE 8000
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
-Docker Compose (Multi-Service MERN):
+Docker Compose (Multi-Service MERN with env_file):
 
 # VERIFICATION: backend_port=8888, frontend_port=5173, db_port=27017
 version: '3.9'
@@ -215,8 +238,8 @@ services:
     build: ./backend
     ports:
       - "8888:8888"  # Use metadata.backend_port
-    environment:
-      - MONGO_URI=mongodb://mongo:27017/dbname
+    env_file:
+      - ./backend/.env  # ← USE THIS when service has env_file defined
     depends_on:
       - mongo
   
@@ -295,9 +318,9 @@ def _format_metadata(metadata: Dict) -> str:
     if build_cmd:
         lines.append(f"metadata.build_command = {build_cmd}")
     if start_cmd:
-        lines.append(f"metadata.start_command = {start_cmd}")
+        lines.append(f"metadata.start_command = {start_cmd}  # ⚠️ FOR SINGLE-SERVICE ONLY! For multi-service, use Service Definitions entry_point instead!")
     if entry_point:
-        lines.append(f"metadata.entry_point = {entry_point}  # CRITICAL: Use this in Dockerfile CMD, NOT server.js")
+        lines.append(f"metadata.entry_point = {entry_point}  # ⚠️ FOR SINGLE-SERVICE ONLY! For multi-service (build: ./api), use Service Definitions entry_point!")
     if build_output:
         lines.append(f"metadata.build_output = {build_output}  # CRITICAL: Use /app/{build_output} in COPY --from=build, NOT /app/dist!")
 
@@ -391,7 +414,8 @@ def build_deploy_message(
 
     # Add service definitions if present
     if services:
-        lines = ["Service Definitions (USE THESE VALUES, NOT DEFAULTS!):"]
+        lines = ["⚠️⚠️⚠️ SERVICE DEFINITIONS (OVERRIDES metadata for multi-service!) ⚠️⚠️⚠️", 
+                 "For each service, use ITS entry_point (relative to service dir), NOT metadata.entry_point!"]
         for svc in services:
             svc_line = f"- name: {svc.get('name', 'unknown')}, path: {svc.get('path', '.')}, type: {svc.get('type', 'unknown')}"
             
@@ -399,6 +423,10 @@ def build_deploy_message(
             if svc.get('port'):
                 port_src = svc.get('port_source', 'default')
                 svc_line += f", PORT: {svc.get('port')} (from {port_src} - USE THIS VALUE!)"
+            
+            # Include entry_point for backend services (CRITICAL for correct CMD path)
+            if svc.get('entry_point'):
+                svc_line += f", entry_point: {svc.get('entry_point')} (USE THIS IN CMD: node {svc.get('entry_point')})"
             
             # Include build_output for frontend services (CRITICAL for correct COPY path)
             if svc.get('build_output'):

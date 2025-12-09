@@ -171,7 +171,36 @@ async def docker_chat_handler(
     dockerfiles, compose_files = _collect_docker_files(project_root)
     file_tree_text, _ = _build_file_tree(project_root)
     metadata = project.get("metadata", {}) or {}
-    services = metadata.get("services")
+    services = metadata.get("services") or []
+
+    # Dynamic env_file detection to ensure it's always up-to-date
+    # (handles projects analyzed before env_file detection was implemented)
+    for svc in services:
+        svc_path = svc.get("path", ".").rstrip("/\\")  # Remove trailing slashes
+        if svc_path == "." or not svc_path:
+            svc_dir = project_root
+        else:
+            svc_dir = os.path.join(project_root, svc_path)
+        
+        # Dynamic env_file detection
+        if not svc.get("env_file"):
+            for env_name in [".env", ".env.local", ".env.production"]:
+                env_path = os.path.join(svc_dir, env_name)
+                if os.path.exists(env_path):
+                    svc["env_file"] = f"./{svc_path}/{env_name}" if svc_path and svc_path != "." else f"./{env_name}"
+                    print(f"🔧 Dynamic env_file detected for {svc.get('name')}: {svc['env_file']}")
+                    break
+        
+        # Dynamic entry_point detection for backend services
+        if svc.get("type") == "backend" and not svc.get("entry_point"):
+            from ..utils.command_extractor import extract_nodejs_commands
+            backend_cmds = extract_nodejs_commands(svc_dir)
+            entry_point = backend_cmds.get("entry_point", "index.js")
+            svc["entry_point"] = entry_point
+            print(f"🔧 Dynamic entry_point detected for {svc.get('name')}: {entry_point}")
+    
+    # Debug: Print services to verify env_file and entry_point are present
+    print(f"📦 Services being sent to LLM: {services}")
 
     reply = run_docker_deploy_chat(
         project_name=project.get("project_name", "project"),
@@ -346,7 +375,7 @@ async def stream_docker_logs_handler(
         image_repo = f"{repo_prefix}-{sanitized_name}"
 
     if action == "build":
-        generator = build_project_stream(project_root, image_repo)
+        generator = build_project_stream(project_root, image_repo, metadata)
     elif action == "run":
         generator = run_project_stream(project_root, image_repo, backend_host_port, metadata)
     elif action == "push":

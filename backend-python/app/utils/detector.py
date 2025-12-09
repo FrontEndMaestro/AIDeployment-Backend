@@ -662,6 +662,12 @@ def infer_services(
             backend_port_info = extract_port_from_project(backend_path, framework, language)
             backend_port = backend_port_info.get("port", 3000)
             
+            # Extract start command from BACKEND's package.json (not root!)
+            backend_cmds = extract_nodejs_commands(backend_path)
+            backend_entry = backend_cmds.get("entry_point", "index.js")
+            backend_start_cmd = backend_cmds.get("start_command", f"node {backend_entry}")
+            print(f"📦 Backend service entry_point: {backend_entry}, start_command: {backend_start_cmd}")
+            
             # Check for .env file in backend directory
             backend_env_file = None
             for env_name in [".env", ".env.local", ".env.production"]:
@@ -677,6 +683,8 @@ def infer_services(
                 "type": "backend",
                 "port": backend_port,  # Actual port from .env or source
                 "port_source": backend_port_info.get("source", "default"),
+                "entry_point": backend_entry,  # Entry point relative to service dir
+                "start_command": backend_start_cmd,  # Start command relative to service dir
                 "env_file": backend_env_file  # Path to .env for docker-compose
             })
         if frontend_path:

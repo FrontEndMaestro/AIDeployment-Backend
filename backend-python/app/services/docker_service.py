@@ -5,6 +5,7 @@ import yaml
 import json 
 
 from ..LLM.llm_client import call_llama 
+from ..LLM.docker_deploy_agent import run_docker_deploy_chat
 
 from ..config.settings import settings
 
@@ -235,6 +236,7 @@ def ensure_external_networks(compose_path: str, stage: str) -> List[Dict]:
 def build_project_stream(
     project_root: str,
     image_repo: str,  # e.g. "devops-autopilot-<project_id>" or "abdul/devops-autopilot-<project_id>"
+    metadata: Optional[Dict] = None,
 ) -> Generator[Dict, None, None]:
     """
     High-level build for the whole project.
@@ -297,15 +299,146 @@ def build_project_stream(
     # ---- No compose: build all Dockerfiles ----
     dockerfiles = _find_all_dockerfiles(project_root)
     if not dockerfiles:
-        msg = "ERROR: No docker-compose.yml and no Dockerfiles found in project."
-        yield {
-            "line": msg,
-            "stage": "build",
-            "exit_code": 1,
-            "complete": True,
-            "tail": [msg],
-        }
-        return
+        # Check if we can auto-generate Dockerfiles using the Agent
+        services = (metadata or {}).get("services", [])
+        if services:
+            yield {
+                "line": f"No Dockerfiles found. Auto-generating for {len(services)} detected service(s) via Agent...",
+                "stage": "build",
+            }
+            
+            try:
+                # Collect file tree for context
+                file_tree = _build_file_tree_text(project_root)
+                project_name = os.path.basename(project_root) or "project"
+                
+                # Call Agent in GENERATE_MISSING mode
+                llm_response = run_docker_deploy_chat(
+                    project_name=project_name,
+                    metadata=metadata or {},
+                    dockerfiles=[],  # None exist
+                    compose_files=[],  # None exist
+                    file_tree=file_tree,
+                    user_message="Generate ALL Docker files: Dockerfile for each service AND docker-compose.yml. Use metadata for ports and commands.",
+                    logs=None,
+                    extra_instructions=None,
+                    services=services,
+                )
+                
+                # Parse and write generated files
+                import re
+                
+                # Extract Dockerfiles from response
+                dockerfile_pattern = r'\*\*(?:backend/|frontend/)?Dockerfile\*\*\s*```(?:dockerfile)?\s*([\s\S]*?)```'
+                dockerfile_matches = re.findall(dockerfile_pattern, llm_response, re.IGNORECASE)
+                
+                # Also try extracting docker-compose.yml
+                compose_yaml = _extract_compose_yaml_from_agent_response(llm_response)
+                
+                files_written = 0
+                
+                # Write Dockerfiles to service directories
+                for i, svc in enumerate(services):
+                    svc_path = svc.get("path", ".")
+                    if svc_path == ".":
+                        dockerfile_dir = project_root
+                    else:
+                        dockerfile_dir = os.path.join(project_root, svc_path)
+                    
+                    os.makedirs(dockerfile_dir, exist_ok=True)
+                    dockerfile_path = os.path.join(dockerfile_dir, "Dockerfile")
+                    
+                    # Use matched content or generate a basic one
+                    if i < len(dockerfile_matches):
+                        content = dockerfile_matches[i].strip()
+                    else:
+                        # Generate basic Dockerfile based on service type
+                        svc_type = svc.get("type", "backend")
+                        if svc_type == "frontend":
+                            build_output = svc.get("build_output", "dist")
+                            content = f"""FROM node:20-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=build /app/{build_output} /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+"""
+                        else:
+                            port = svc.get("port", 8000)
+                            content = f"""FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+EXPOSE {port}
+CMD ["npm", "start"]
+"""
+                    
+                    with open(dockerfile_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    files_written += 1
+                    yield {
+                        "line": f"Generated Dockerfile at {dockerfile_path}",
+                        "stage": "build",
+                    }
+                
+                # Write docker-compose.yml if we got one
+                if compose_yaml and "services:" in compose_yaml:
+                    compose_path = os.path.join(project_root, "docker-compose.yml")
+                    with open(compose_path, "w", encoding="utf-8") as f:
+                        f.write(compose_yaml + "\n")
+                    files_written += 1
+                    yield {
+                        "line": f"Generated docker-compose.yml at {compose_path}",
+                        "stage": "build",
+                    }
+                    
+                    # Now use compose build
+                    yield {
+                        "line": "Using generated docker-compose.yml for build...",
+                        "stage": "build",
+                    }
+                    compose_dir = project_root
+                    cmd = ["docker", "compose", "-f", "docker-compose.yml", "build"]
+                    for event in _stream_command(cmd, cwd=compose_dir, stage="build"):
+                        yield event
+                    return
+                
+                if files_written == 0:
+                    yield {
+                        "line": "WARNING: Agent did not generate usable Docker files. Check LLM response.",
+                        "stage": "build",
+                    }
+                
+                # Refresh dockerfiles list after generation
+                dockerfiles = _find_all_dockerfiles(project_root)
+                
+            except Exception as e:
+                yield {
+                    "line": f"ERROR: Auto-generation failed: {e}",
+                    "stage": "build",
+                    "exit_code": 1,
+                    "complete": True,
+                    "tail": [str(e)],
+                }
+                return
+        
+        # If still no dockerfiles after trying to generate
+        if not dockerfiles:
+            msg = "ERROR: No docker-compose.yml and no Dockerfiles found. Auto-generation could not produce valid files."
+            yield {
+                "line": msg,
+                "stage": "build",
+                "exit_code": 1,
+                "complete": True,
+                "tail": [msg],
+            }
+            return
 
     yield {
         "line": f"No docker-compose.yml found. Building all Dockerfiles ({len(dockerfiles)}) sequentially.",
@@ -770,6 +903,106 @@ def _extract_yaml_from_response(text: str) -> str:
     return body.strip()
 
 
+def _extract_compose_yaml_from_agent_response(text: str) -> str:
+    """
+    Extract docker-compose.yml YAML from the agent's structured response.
+    The agent returns: STATUS/REASON/FIXES/GENERATED DOCKERFILES format.
+    We need to find the docker-compose.yml section and extract just the YAML.
+    """
+    import re
+    
+    # Look for docker-compose.yml section in agent response
+    # Pattern: **docker-compose.yml** followed by ```yaml block
+    compose_pattern = r'\*\*docker-compose\.yml\*\*\s*```(?:yaml)?\s*([\s\S]*?)```'
+    match = re.search(compose_pattern, text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    
+    # Alternative pattern: docker-compose.yml header followed by yaml block
+    alt_pattern = r'docker-compose\.yml[^\n]*\n\s*```(?:yaml)?\s*([\s\S]*?)```'
+    match = re.search(alt_pattern, text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    
+    # Fallback: try to extract any yaml block that looks like compose
+    yaml_blocks = re.findall(r'```(?:yaml)?\s*([\s\S]*?)```', text)
+    for block in yaml_blocks:
+        if 'services:' in block and ('build:' in block or 'image:' in block):
+            return block.strip()
+    
+    # Last resort: use the old extraction method
+    return _extract_yaml_from_response(text)
+
+
+def _collect_docker_files_for_agent(project_root: str) -> tuple:
+    """
+    Collect Dockerfiles and compose files in the format expected by the agent.
+    Returns (dockerfiles, compose_files) where each is a list of {path, content}.
+    """
+    dockerfiles = []
+    compose_files = []
+    
+    targets = ["Dockerfile", "dockerfile"]
+    compose_targets = ["docker-compose.yml", "docker-compose.yaml"]
+    
+    for root, _, files in os.walk(project_root):
+        for name in files:
+            full_path = os.path.join(root, name)
+            rel_path = os.path.relpath(full_path, project_root).replace("\\", "/")
+            
+            if name in targets:
+                try:
+                    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                    dockerfiles.append({"path": rel_path, "content": content})
+                except Exception:
+                    dockerfiles.append({"path": rel_path, "content": ""})
+            
+            if name in compose_targets:
+                try:
+                    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                    compose_files.append({"path": rel_path, "content": content})
+                except Exception:
+                    compose_files.append({"path": rel_path, "content": ""})
+    
+    return dockerfiles, compose_files
+
+
+def _build_file_tree_text(project_root: str, max_depth: int = 4, max_entries: int = 200) -> str:
+    """
+    Build a simple text representation of the file tree for the agent.
+    """
+    lines = []
+    count = 0
+    
+    def walk(current: str, depth: int):
+        nonlocal count
+        if depth > max_depth or count >= max_entries:
+            return
+        
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    if count >= max_entries:
+                        break
+                    if entry.name.startswith(".") and entry.name not in [".env", ".env.example"]:
+                        continue
+                    if entry.name in ["node_modules", "__pycache__", ".git", "venv", ".venv"]:
+                        continue
+                    count += 1
+                    rel_path = os.path.relpath(entry.path, project_root)
+                    prefix = "  " * depth + ("[dir] " if entry.is_dir() else "[file] ")
+                    lines.append(f"{prefix}{rel_path}")
+                    if entry.is_dir():
+                        walk(entry.path, depth + 1)
+        except Exception:
+            pass
+    
+    walk(project_root, 0)
+    return "\n".join(lines)
+
+
 # --------- RUN: compose-aware runner ---------
 
 
@@ -803,30 +1036,33 @@ def run_project_stream(
             yield {
                 "line": (
                     f"Detected {len(dockerfiles)} Dockerfiles and no docker-compose.yml. "
-                    "Generating docker-compose.yml via Llama 3.1..."
+                    "Generating docker-compose.yml via Docker Deploy Agent..."
                 ),
                 "stage": "run",
             }
 
             try:
-                prompt = _build_compose_generation_prompt(
-                    project_root=project_root,
-                    dockerfile_rel_paths=dockerfiles,
-                    backend_host_port=host_port,
+                # Collect docker files in the format expected by the agent
+                dockerfile_data, _ = _collect_docker_files_for_agent(project_root)
+                file_tree = _build_file_tree_text(project_root)
+                
+                # Get project name from path
+                project_name = os.path.basename(project_root) or "project"
+                
+                # Get services from metadata (contains env_file, is_cloud, build_output)
+                services = (metadata or {}).get("services", [])
+                
+                # Use the sophisticated agent to generate docker-compose
+                llm_response = run_docker_deploy_chat(
+                    project_name=project_name,
                     metadata=metadata or {},
-                )
-
-                llm_response = call_llama(
-                    [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a precise DevOps assistant. "
-                                "You ONLY output valid docker-compose.yml YAML as requested."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ]
+                    dockerfiles=dockerfile_data,
+                    compose_files=[],  # We're generating because none exists
+                    file_tree=file_tree,
+                    user_message="Generate a docker-compose.yml for all detected services. Use env_file if detected in service definitions.",
+                    logs=None,
+                    extra_instructions=None,
+                    services=services,
                 )
             except Exception as e:
                 msg = f"ERROR: LLM call for compose generation failed: {e}"
@@ -839,7 +1075,8 @@ def run_project_stream(
                 }
                 return
 
-            compose_yaml = _extract_yaml_from_response(llm_response)
+            # Extract just the docker-compose.yml YAML from the agent's structured response
+            compose_yaml = _extract_compose_yaml_from_agent_response(llm_response)
             compose_path = os.path.join(project_root, "docker-compose.yml")
 
             try:
@@ -988,8 +1225,19 @@ def run_project_stream(
         "--rm",
         "-p",
         f"{host_port}:{container_port}",
-        image_tag,
+        "--add-host", "host.docker.internal:host-gateway",  # Allow access to host services
     ]
+
+    # Inject .env file if it exists (CRITICAL for single-service backends)
+    env_path = os.path.join(project_root, ".env")
+    if os.path.exists(env_path):
+        cmd.extend(["--env-file", ".env"])
+        yield {
+            "line": "Injecting environment variables from .env file",
+            "stage": "run"
+        }
+
+    cmd.append(image_tag)
     yield {
         "line": (
             f"Running single container {image_tag} with port mapping "
