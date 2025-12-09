@@ -674,14 +674,40 @@ export const DeployPage: React.FC = () => {
                 <h3 className="text-sm font-semibold text-white">Docker Actions</h3>
                 <span className="text-xs text-gray-400">Build & Run</span>
               </div>
+              
+              {/* Deploy blocked warning */}
+              {context.metadata.deploy_blocked && (
+                <div className="mb-3 p-3 bg-yellow-500/10 border border-yellow-500/50 rounded-lg">
+                  <p className="text-xs text-yellow-400 font-medium mb-1">⚠️ Deployment Blocked</p>
+                  <p className="text-xs text-yellow-300/80">
+                    {context.metadata.deploy_blocked_reason || "Backend .env file is required for Docker deployment."}
+                  </p>
+                </div>
+              )}
+              
               <div className="flex flex-wrap gap-2 mb-3">
-                <Button variant="secondary" size="sm" onClick={() => startStream("build")}>
+                <Button 
+                  variant="secondary" 
+                  size="sm" 
+                  onClick={() => startStream("build")}
+                  disabled={context.metadata.deploy_blocked}
+                >
                   Build Image
                 </Button>
-                <Button variant="secondary" size="sm" onClick={() => startStream("run")}>
+                <Button 
+                  variant="secondary" 
+                  size="sm" 
+                  onClick={() => startStream("run")}
+                  disabled={context.metadata.deploy_blocked}
+                >
                   Run Container
                 </Button>
-                <Button variant="secondary" size="sm" onClick={() => startStream("push")}>
+                <Button 
+                  variant="secondary" 
+                  size="sm" 
+                  onClick={() => startStream("push")}
+                  disabled={context.metadata.deploy_blocked}
+                >
                   Push Image
                 </Button>
               </div>
@@ -753,7 +779,11 @@ export const DeployPage: React.FC = () => {
                 />
 
                 <div className="flex justify-end">
-                  <Button onClick={handleSend} loading={sending} disabled={!input}>
+                  <Button 
+                    onClick={handleSend} 
+                    loading={sending} 
+                    disabled={!input || context.metadata.deploy_blocked}
+                  >
                     Send to Llama 3.1
                   </Button>
                 </div>

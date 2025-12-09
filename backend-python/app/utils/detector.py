@@ -2064,6 +2064,30 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             results["database_port"] = None
             print(f"☁️ Cloud database detected - clearing database_port (no container needed)")
         
+        # =======================================================================
+        # DEPLOY BLOCKED CHECK: Backend service requires .env file
+        # If backend exists but has no .env, block deployment and notify user
+        # =======================================================================
+        backend_services = [s for s in results.get("services", []) if s.get("type") == "backend"]
+        backend_missing_env = any(
+            svc.get("type") == "backend" and not svc.get("env_file")
+            for svc in results.get("services", [])
+        )
+        
+        if backend_services and backend_missing_env:
+            results["deploy_blocked"] = True
+            results["deploy_blocked_reason"] = (
+                "Backend .env file is required for Docker deployment. "
+                "Please add a .env file to your backend directory with your environment variables "
+                "(e.g., DATABASE_URL, PORT, JWT_SECRET)."
+            )
+            results["backend_env_missing"] = True
+            print(f"⚠️ Deploy blocked: Backend .env file missing")
+        else:
+            results["deploy_blocked"] = False
+            results["deploy_blocked_reason"] = None
+            results["backend_env_missing"] = False
+        
         # Deduplicate detected_files
         results["detected_files"] = list(set(results["detected_files"]))
 

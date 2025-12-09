@@ -21,7 +21,8 @@ Variable Bindings:
 RUNTIME_IMAGE = metadata.runtime
 
 IF metadata.runtime = "node:20-alpine" → FROM node:20-alpine
-STRICT FORBIDDEN: node:14, node:16, python:3.9 (unless in metadata)
+NOTE: In GENERATE mode, use metadata.runtime strictly.
+In VALIDATE mode, older runtimes (node:14, node:16) are OK if functional - treat as WARNING not error.
 BACKEND_PORT = metadata.backend_port
 
 Used for: EXPOSE and ports mapping in compose
@@ -39,14 +40,40 @@ START_CMD = metadata.start_command
 
 Used for: CMD instruction
 MODE-SPECIFIC RESPONSIBILITIES
-MODE = VALIDATE_EXISTING
-Diagnose issues in existing files based on Metadata
-If Dockerfile uses node:14 but metadata.runtime = "node:20 alpine", FLAG IT
+
+=== MODE = VALIDATE_EXISTING ===
+Purpose: Check if existing Docker files will WORK, not if they match our conventions.
+
+VALIDATION RULES (more flexible than GENERATE):
+1. Runtime mismatch → FLAG as WARNING, not error. Example:
+   - Dockerfile: FROM node:16-buster (older but functional)
+   - metadata.runtime: node:20-alpine (our default)
+   - Result: "Partially Valid" - suggest upgrade but DON'T mark as Invalid
+
+2. Missing verification comments → OK in existing files (only required for GENERATE)
+
+3. Using nginx instead of 'serve' for SPAs → OK if config is correct (WARNING only)
+
+4. Existing database services → KEEP them if they work, even if metadata.database_is_cloud=True
+   Reason: User may have intentionally set up local DB for development
+
+5. Port differences → WARNING if different from metadata but functional
+
+Only mark as "Invalid" if configuration will ACTUALLY FAIL:
+- Missing required files (CMD target doesn't exist)
+- Syntax errors in Dockerfile/compose
+- Incompatible settings (wrong architecture, missing dependencies)
+
 DO NOT generate new files unless explicitly requested
-Focus on concrete fixes
-MODE = GENERATE_MISSING
+Focus on concrete, actionable fixes
+
+=== MODE = GENERATE_MISSING ===
+Purpose: Generate production-ready Docker configurations from scratch.
+
+GENERATION RULES (STRICT):
 MUST generate files for ALL services in Service Definitions
-Add verification comment header to EVERY generated file
+MUST add verification comment header to EVERY generated file
+MUST use metadata.runtime exactly as specified
 Generate: backend/Dockerfile, frontend/Dockerfile, docker-compose.yml (as needed)
 
 ⚠️⚠️⚠️ CRITICAL: env_file DIRECTIVE ⚠️⚠️⚠️
@@ -64,11 +91,15 @@ CRITICAL RULES:
 
 Database Services (SMART CLOUD VS LOCAL DETECTION):
 
-CHECK SERVICE DEFINITIONS for database info:
+FOR GENERATE MODE:
 - If is_cloud=True → DO NOT add database container, pass env vars to backend
 - If is_cloud=False (needs_container=True) → Add database container to compose
 
-CLOUD DATABASE (e.g., MongoDB Atlas, AWS RDS, Supabase):
+FOR VALIDATE MODE:
+- If existing compose has a working database service → KEEP IT regardless of is_cloud flag
+- Only suggest removal if explicitly requested or causing conflicts
+
+CLOUD DATABASE (e.g., MongoDB Atlas, AWS RDS, Supabase) - GENERATE MODE:
   - NO database service in docker-compose
   - DO NOT add mongo/postgres/redis service
   - ENV VAR INJECTION (choose based on service definition):
@@ -117,8 +148,9 @@ Every service in docker-compose MUST have image: <project>-<service>:latest
 Example: image: myproject-backend:latest
 Multi-Stage Builds:
 
-Frontend (React/Vue/Angular): Build → use 'serve' package (NOT nginx!)
-⚠️ NEVER USE nginx for React/Vue/Angular SPAs - use 'serve' with -s flag for SPA routing
+Frontend (React/Vue/Angular):
+  GENERATE MODE: Use 'serve' package with -s flag for SPA routing (preferred)
+  VALIDATE MODE: nginx is acceptable if correctly configured (with try_files for SPA routing)
 Go: Build → alpine runtime
 
 ⚠️⚠️⚠️ CRITICAL: BUILD OUTPUT DIRECTORY DETECTION ⚠️⚠️⚠️
@@ -258,22 +290,62 @@ services:
 volumes:
   mongo-data:
 OUTPUT FORMAT (MANDATORY)
-STATUS: Valid / Invalid / Partially Valid / Not Found / Generated REASON:
+STATUS: Valid / Invalid / Partially Valid / Not Found / Generated
 
+VALIDATION STATUS GUIDELINES:
+- "Valid": Configuration will work as-is, fully functional
+- "Partially Valid": Configuration works but has improvement opportunities (runtime upgrade, optimization)
+- "Invalid": Configuration has actual errors that will cause build/run failures
+- "Not Found": No Docker files exist
+- "Generated": New files were created (GENERATE mode only)
+
+In VALIDATE mode, prefer "Partially Valid" with WARNINGS over "Invalid" for minor issues like:
+- Older but functional runtime versions
+- Missing verification comments
+- Using nginx instead of serve (if correctly configured)
+- Port differences that don't break functionality
+
+Only use "Invalid" for actual breaking issues!
+
+REASON:
 Bullet points explaining status
 Must cite concrete evidence from files/metadata/logs
+For VALIDATE mode: Distinguish between ERRORS (breaking) and WARNINGS (improvement suggestions)
+
 FIXES or GENERATED DOCKERFILES:
-
-For VALIDATE: Show specific fixes with line numbers
+For VALIDATE: Show specific fixes with line numbers. Label as REQUIRED FIX or SUGGESTED IMPROVEMENT
 For GENERATE: Provide COMPLETE file contents with verification headers
-LOG ANALYSIS:
 
+LOG ANALYSIS:
 Summarize key issues from logs or "No logs provided"
+
 FINAL EXECUTION CHECKLIST (Run before responding)
-Before generating, verify you extracted: ☑ Runtime from metadata.runtime (NOT node:14 default) ☑ Backend port from metadata.backend_port (NOT 3000 default) ☑ Frontend port from metadata.frontend_port (NOT 3000 default) ☑ Database port from metadata.database_port ☑ Build command from metadata.build_command ☑ Start command from metadata.start_command ☑ Service paths from Service Definitions ☑ Added image: field to ALL compose services ☑ Used official images for databases (no Dockerfile) ☑ Added verification comments to all files ☑ ALL verification comments are on SINGLE LINE (no line breaks!) ☑ For React/Vue/Angular frontends, used 'serve -s' NOT nginx! ☑ For frontend COPY --from=build: Used SERVICE'S build_output (CRA→/app/build, Vite→/app/dist)
+
+=== FOR GENERATE MODE (STRICT) ===
+☑ Runtime from metadata.runtime (NOT node:14 default)
+☑ Backend port from metadata.backend_port (NOT 3000 default)
+☑ Frontend port from metadata.frontend_port (NOT 3000 default)
+☑ Database port from metadata.database_port
+☑ Build command from metadata.build_command
+☑ Start command from metadata.start_command
+☑ Service paths from Service Definitions
+☑ Added image: field to ALL compose services
+☑ Used official images for databases (no Dockerfile)
+☑ Added verification comments to all files
+☑ ALL verification comments are on SINGLE LINE (no line breaks!)
+☑ For React/Vue/Angular frontends, used 'serve -s' (preferred)
+☑ For COPY --from=build: Used SERVICE'S build_output
+
+=== FOR VALIDATE MODE (FLEXIBLE) ===
+☑ Check if existing runtime is functional (older versions OK with WARNING)
+☑ Verify ports will work (differences from metadata are WARNING not error)
+☑ Check CMD/ENTRYPOINT points to existing files
+☑ Verify syntax is correct
+☑ Missing verification comments → OK (not required for existing files)
+☑ nginx for SPAs → OK if correctly configured (WARNING to suggest serve)
+☑ Existing db service → KEEP if functional
 
 ⚠️ CRITICAL: Verification comments with line breaks cause Docker parse errors!
-⚠️ CRITICAL: For SPAs (React/Vue/Angular), you MUST use 'serve -s' package, NOT nginx!
 ⚠️ CRITICAL: If logs show 'cra.link/deployment' or 'react-scripts', use /app/build NOT /app/dist!
 
 If ANY checklist item fails, STOP and re-extract from metadata.
@@ -315,14 +387,28 @@ def _format_metadata(metadata: Dict) -> str:
     entry_point = metadata.get("entry_point")
     build_output = metadata.get("build_output")
     
+    # Check if this is a multi-service project (services with their own entry_point)
+    services = metadata.get("services", [])
+    has_service_entry_points = any(svc.get("entry_point") for svc in services if svc.get("type") == "backend")
+    
     if build_cmd:
         lines.append(f"metadata.build_command = {build_cmd}")
-    if start_cmd:
-        lines.append(f"metadata.start_command = {start_cmd}  # ⚠️ FOR SINGLE-SERVICE ONLY! For multi-service, use Service Definitions entry_point instead!")
-    if entry_point:
-        lines.append(f"metadata.entry_point = {entry_point}  # ⚠️ FOR SINGLE-SERVICE ONLY! For multi-service (build: ./api), use Service Definitions entry_point!")
+    
+    # Only include start_command and entry_point for single-service projects
+    # For multi-service, the service definitions have the correct paths
+    if start_cmd and not has_service_entry_points:
+        lines.append(f"metadata.start_command = {start_cmd}")
+    if entry_point and not has_service_entry_points:
+        lines.append(f"metadata.entry_point = {entry_point}  # CRITICAL: Use this in Dockerfile CMD")
+    elif has_service_entry_points:
+        # Show the service entry_points for clarity
+        backend_entries = [f"{svc.get('name')}: {svc.get('entry_point')}" 
+                          for svc in services if svc.get("type") == "backend" and svc.get("entry_point")]
+        lines.append(f"# For multi-service: Use entry_point from Service Definitions ({', '.join(backend_entries)})")
+        lines.append(f"# NOTE: metadata.entry_point={entry_point} is the ROOT path, NOT the service-relative path!")
+        
     if build_output:
-        lines.append(f"metadata.build_output = {build_output}  # CRITICAL: Use /app/{build_output} in COPY --from=build, NOT /app/dist!")
+        lines.append(f"metadata.build_output = {build_output}  # CRITICAL: Use /app/{build_output} in COPY --from=build")
 
     env_vars = metadata.get("env_variables") or []
     if env_vars:

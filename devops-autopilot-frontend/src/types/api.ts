@@ -86,6 +86,11 @@ export interface ProjectMetadata {
   docker_frontend_container_ports?: number[] | null;
   docker_database_container_ports?: number[] | null;
   docker_other_container_ports?: { [serviceName: string]: number[] } | null;
+
+  // DEPLOY BLOCKED FLAGS (backend .env missing)
+  deploy_blocked?: boolean;
+  deploy_blocked_reason?: string | null;
+  backend_env_missing?: boolean;
 }
 
 export interface LogEntry {
@@ -249,3 +254,4 @@ export interface ApiError {
   message: string;
   error?: string;
 }
+

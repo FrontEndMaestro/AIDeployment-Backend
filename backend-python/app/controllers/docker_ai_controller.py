@@ -10,6 +10,7 @@ from ..config.database import get_projects_collection
 from ..config.settings import settings
 from ..utils.auth import decode_access_token
 from ..utils.file_system import read_file
+from ..utils.detector import find_project_root
 
 from ..services.docker_service import (
     build_project_stream,
@@ -134,10 +135,67 @@ def _ensure_analyzed(project: Dict):
 async def get_docker_context_handler(project_id: str, current_user: dict) -> Dict:
     project = await _validate_project(project_id, current_user)
     _ensure_analyzed(project)
-    project_root = _safe_project_path(project)
+    extracted_path = _safe_project_path(project)
+    
+    # Find the actual project root (handles subfolder structure like project-xxx/mern-blog-main)
+    project_root = find_project_root(extracted_path)
 
-    dockerfiles, compose_files = _collect_docker_files(project_root)
-    file_tree_text, file_tree_struct = _build_file_tree(project_root)
+    dockerfiles, compose_files = _collect_docker_files(extracted_path)
+    file_tree_text, file_tree_struct = _build_file_tree(extracted_path)
+    
+    # Get stored metadata
+    metadata = dict(project.get("metadata", {}))
+    services = metadata.get("services", [])
+    
+    # =======================================================================
+    # DYNAMIC ENV FILE DETECTION
+    # Re-check for .env files on every page load to handle newly added files
+    # =======================================================================
+    print(f"🔍 Dynamic env_file check - project_root: {project_root}")
+    print(f"🔍 Services to check: {services}")
+    
+    for svc in services:
+        svc_path = svc.get("path", ".").rstrip("/\\")
+        if svc_path == "." or not svc_path:
+            svc_dir = project_root
+        else:
+            svc_dir = os.path.join(project_root, svc_path)
+        
+        print(f"🔍 Checking service '{svc.get('name')}' (type: {svc.get('type')}) at path: {svc_dir}")
+        print(f"🔍   Current env_file value: {svc.get('env_file')}")
+        
+        # Check for .env file - always re-check even if previously None
+        for env_name in [".env", ".env.local", ".env.production"]:
+            env_path = os.path.join(svc_dir, env_name)
+            exists = os.path.exists(env_path)
+            print(f"🔍   Checking {env_path}: exists={exists}")
+            if exists:
+                svc["env_file"] = f"./{svc_path}/{env_name}" if svc_path and svc_path != "." else f"./{env_name}"
+                print(f"✅ Dynamic env_file detected for {svc.get('name')}: {svc['env_file']}")
+                break
+    
+    # Recalculate deploy_blocked based on current env_file status
+    backend_services = [s for s in services if s.get("type") == "backend"]
+    backend_missing_env = any(
+        svc.get("type") == "backend" and not svc.get("env_file")
+        for svc in services
+    )
+    
+    if backend_services and backend_missing_env:
+        metadata["deploy_blocked"] = True
+        metadata["deploy_blocked_reason"] = (
+            "Backend .env file is required for Docker deployment. "
+            "Please add a .env file to your backend directory with your environment variables "
+            "(e.g., DATABASE_URL, PORT, JWT_SECRET)."
+        )
+        metadata["backend_env_missing"] = True
+    else:
+        metadata["deploy_blocked"] = False
+        metadata["deploy_blocked_reason"] = None
+        metadata["backend_env_missing"] = False
+    
+    # Update services in metadata
+    metadata["services"] = services
 
     return {
         "success": True,
@@ -146,7 +204,7 @@ async def get_docker_context_handler(project_id: str, current_user: dict) -> Dic
             "project_name": project.get("project_name"),
             "status": project.get("status"),
         },
-        "metadata": project.get("metadata", {}),
+        "metadata": metadata,
         "dockerfiles": dockerfiles,
         "compose_files": compose_files,
         "file_tree": {
