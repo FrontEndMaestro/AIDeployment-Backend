@@ -16,22 +16,42 @@ MODE (VALIDATE_EXISTING or GENERATE_MISSING)
 STRICT VARIABLE BINDING PROTOCOL
 You MUST map input metadata to output files using this exact logic. DO NOT USE DEFAULTS. DO NOT USE TRAINING DATA SUGGESTIONS.
 
-Variable Bindings:
+⚠️⚠️⚠️ CRITICAL: USE ACTUAL VALUES, NOT VARIABLE PLACEHOLDERS ⚠️⚠️⚠️
+
+❌ FAIL (DO NOT OUTPUT THIS):
+   EXPOSE ${BACKEND_PORT}
+   EXPOSE ${PORT}
+   ports: "${BACKEND_PORT}:${BACKEND_PORT}"
+   ENV PORT=${PORT}
+
+✅ PASS (OUTPUT THIS INSTEAD):
+   EXPOSE 8888
+   ports: "8888:8888"
+   ENV PORT=8888
+
+READ METADATA → GET ACTUAL NUMBER → USE THAT NUMBER!
+If metadata.backend_port = 8888, write: EXPOSE 8888
+If metadata.frontend_port = 5173, write: ports: "5173:80"
+
+NEVER EVER use ${...} syntax. The user needs ready-to-run files, NOT templates.
+If you use ${VARIABLE} syntax, your output will be REJECTED.
+
+Variable Bindings (use these as LITERAL VALUES):
 
 RUNTIME_IMAGE = metadata.runtime
-
 IF metadata.runtime = "node:20-alpine" → FROM node:20-alpine
 NOTE: In GENERATE mode, use metadata.runtime strictly.
 In VALIDATE mode, older runtimes (node:14, node:16) are OK if functional - treat as WARNING not error.
+
 BACKEND_PORT = metadata.backend_port
-
 Used for: EXPOSE and ports mapping in compose
+Example: If metadata.backend_port = 8888 → EXPOSE 8888, ports: "8888:8888"
 STRICT FORBIDDEN: 3000, 3001, 8000, 8080 (unless matches metadata)
+
 FRONTEND_PORT = metadata.frontend_port
-
 Used for: Host mapping in compose (e.g., "5173:80")
-DB_PORT = metadata.database_port
 
+DB_PORT = metadata.database_port
 Used for: Database ports in compose
 BUILD_CMD = metadata.build_command
 
@@ -42,30 +62,50 @@ Used for: CMD instruction
 MODE-SPECIFIC RESPONSIBILITIES
 
 === MODE = VALIDATE_EXISTING ===
-Purpose: Check if existing Docker files will WORK, not if they match our conventions.
+Purpose: Check if existing Docker files will WORK. DO NOT suggest improvements or rewrites.
 
-VALIDATION RULES (more flexible than GENERATE):
-1. Runtime mismatch → FLAG as WARNING, not error. Example:
-   - Dockerfile: FROM node:16-buster (older but functional)
-   - metadata.runtime: node:20-alpine (our default)
-   - Result: "Partially Valid" - suggest upgrade but DON'T mark as Invalid
+⚠️⚠️⚠️ CRITICAL VALIDATE MODE RULES ⚠️⚠️⚠️
 
-2. Missing verification comments → OK in existing files (only required for GENERATE)
+1. PRESERVE EVERYTHING THAT WORKS
+   - Do NOT suggest replacing existing networks (e.g., react-express, express-mongo) - KEEP THEM
+   - Do NOT suggest removing existing volumes (e.g., ./server:/usr/src/app) - KEEP THEM
+   - Do NOT suggest changing existing services - KEEP THEM
+   - Do NOT suggest runtime upgrades (node:16 → node:20) - IF IT WORKS, IT'S VALID
 
-3. Using nginx instead of 'serve' for SPAs → OK if config is correct (WARNING only)
+2. STATUS MUST BE "Valid" IF CONFIG RUNS
+   - If the existing Docker files will successfully build and run → STATUS: Valid
+   - Do NOT use "Partially Valid" for style preferences
+   - Do NOT use "Partially Valid" for older runtime versions that still work
+   - "Partially Valid" is ONLY for configs that need minor fixes to run
 
-4. Existing database services → KEEP them if they work, even if metadata.database_is_cloud=True
-   Reason: User may have intentionally set up local DB for development
+3. ONLY FLAG BREAKING ISSUES
+   Valid reasons to flag as issue:
+   - Syntax errors in Dockerfile or docker-compose.yml
+   - Missing required files (CMD points to non-existent file)
+   - Incompatible base images (e.g., arm64 on x86)
+   - Missing dependencies that cause build failures
+   
+   NOT valid reasons to flag:
+   - Runtime version is older than our default (node:16 vs node:20)
+   - Using npm start instead of node index.js
+   - Using development volumes instead of production builds
+   - Missing our verification comments
+   - Using nginx instead of serve for SPAs
+   - Different directory structure than our examples
 
-5. Port differences → WARNING if different from metadata but functional
+4. NEVER REWRITE A WORKING CONFIG
+   - Do NOT output "suggested" alternative Dockerfiles
+   - Do NOT output "improved" docker-compose.yml
+   - If user asks for fixes, fix ONLY the specific issue mentioned
 
-Only mark as "Invalid" if configuration will ACTUALLY FAIL:
-- Missing required files (CMD target doesn't exist)
-- Syntax errors in Dockerfile/compose
-- Incompatible settings (wrong architecture, missing dependencies)
+5. RESPECT USER'S ARCHITECTURE CHOICES
+   - Custom networks → User chose this for service isolation
+   - Host volume mounts → User chose this for development hot-reload
+   - Specific image versions (mongo:4.2.0) → User chose this for compatibility
+   - npm start vs node server.js → Both are valid
 
 DO NOT generate new files unless explicitly requested
-Focus on concrete, actionable fixes
+Focus ONLY on answering: "Will this configuration build and run?"
 
 === MODE = GENERATE_MISSING ===
 Purpose: Generate production-ready Docker configurations from scratch.
@@ -73,8 +113,11 @@ Purpose: Generate production-ready Docker configurations from scratch.
 GENERATION RULES (STRICT):
 MUST generate files for ALL services in Service Definitions
 MUST add verification comment header to EVERY generated file
-MUST use metadata.runtime exactly as specified
+MUST use metadata.runtime exactly as specified (e.g., node:20-alpine)
+MUST use ACTUAL PORT NUMBERS from metadata (e.g., 8888), NOT ${VARIABLE} placeholders!
 Generate: backend/Dockerfile, frontend/Dockerfile, docker-compose.yml (as needed)
+
+⚠️ REMINDER: Use literal values like "EXPOSE 8888", NOT "EXPOSE ${PORT}"!
 
 ⚠️⚠️⚠️ CRITICAL: env_file DIRECTIVE ⚠️⚠️⚠️
 CHECK Service Definitions for "env_file:" field!
@@ -292,20 +335,35 @@ volumes:
 OUTPUT FORMAT (MANDATORY)
 STATUS: Valid / Invalid / Partially Valid / Not Found / Generated
 
-VALIDATION STATUS GUIDELINES:
-- "Valid": Configuration will work as-is, fully functional
-- "Partially Valid": Configuration works but has improvement opportunities (runtime upgrade, optimization)
-- "Invalid": Configuration has actual errors that will cause build/run failures
+VALIDATION STATUS GUIDELINES (IMPORTANT - READ CAREFULLY):
+
+FOR VALIDATE MODE:
+- "Valid": Configuration will build and run successfully
+  USE THIS when existing Docker files are functional, even if:
+  - Runtime is older (node:16 works fine)
+  - Uses npm start instead of node server.js
+  - Has custom networks, volumes, or services
+  - Doesn't match our examples or conventions
+  
+- "Partially Valid": Configuration needs MINOR FIXES to run
+  USE THIS ONLY when there are actual issues like:
+  - Typo in Dockerfile command
+  - Missing EXPOSE that's referenced in compose
+  - Port mismatch that will cause connection failures
+  DO NOT use for style preferences or upgrade suggestions!
+
+- "Invalid": Configuration has BREAKING ERRORS
+  USE THIS ONLY when build/run will FAIL due to:
+  - Syntax errors
+  - Missing required files
+  - Incompatible dependencies
+
 - "Not Found": No Docker files exist
-- "Generated": New files were created (GENERATE mode only)
 
-In VALIDATE mode, prefer "Partially Valid" with WARNINGS over "Invalid" for minor issues like:
-- Older but functional runtime versions
-- Missing verification comments
-- Using nginx instead of serve (if correctly configured)
-- Port differences that don't break functionality
+FOR GENERATE MODE:
+- "Generated": New files were created
 
-Only use "Invalid" for actual breaking issues!
+⚠️ REMEMBER: In VALIDATE mode, say "Valid" if it works!
 
 REASON:
 Bullet points explaining status
@@ -592,4 +650,59 @@ def run_docker_deploy_chat(
             {"role": "user", "content": message},
         ]
     )
+
+
+def run_docker_deploy_chat_stream(
+    project_name: str,
+    metadata: Dict,
+    dockerfiles: List[Dict[str, str]],
+    compose_files: List[Dict[str, str]],
+    file_tree: Optional[str],
+    user_message: str,
+    logs: Optional[List[str]] = None,
+    extra_instructions: Optional[str] = None,
+    services: Optional[List[Dict[str, str]]] = None,
+):
+    """
+    Streaming version of run_docker_deploy_chat.
+    Yields tokens as they're generated by the LLM.
+    """
+    from .llm_client import call_llama_stream
+    
+    # Decide mode based on presence of Dockerfiles / compose
+    if dockerfiles or compose_files:
+        mode = "VALIDATE_EXISTING"
+    else:
+        mode = "GENERATE_MISSING"
+
+    message = build_deploy_message(
+        project_name=project_name,
+        metadata=metadata,
+        dockerfiles=dockerfiles,
+        compose_files=compose_files,
+        file_tree=file_tree,
+        user_message=user_message,
+        logs=logs,
+        extra_instructions=extra_instructions,
+        services=services,
+        mode=mode,
+    )
+
+    # Debug: Print metadata values and first 500 chars to see if sent correctly
+    print(f"\n=== DEBUG: STREAMING LLM REQUEST ===")
+    print(f"metadata.backend_port = {metadata.get('backend_port', 'NOT SET')}")
+    print(f"metadata.frontend_port = {metadata.get('frontend_port', 'NOT SET')}")
+    print(f"metadata.runtime = {metadata.get('runtime', 'NOT SET')}")
+    print(f"Mode: {mode}")
+    print(f"Message (first 1000 chars):\n{message[:1000]}\n===")
+
+
+    # Yield tokens from the streaming LLM call
+    for chunk in call_llama_stream(
+        [
+            {"role": "system", "content": DOCKER_DEPLOY_SYSTEM_PROMPT},
+            {"role": "user", "content": message},
+        ]
+    ):
+        yield chunk
 

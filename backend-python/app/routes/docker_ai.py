@@ -8,12 +8,14 @@ from ..controllers.docker_ai_controller import (
     create_project_folder_handler,
     delete_project_path_handler,
     docker_chat_handler,
+    docker_chat_stream_setup,
+    docker_chat_stream_generator,
     get_docker_context_handler,
     read_project_file_handler,
     stream_docker_logs_handler,
     write_project_file_handler,
 )
-from ..utils.auth import get_current_active_user
+from ..utils.auth import get_current_active_user, decode_access_token
 
 router = APIRouter(prefix="/api/docker", tags=["Docker Deploy (Llama 3.1)"])
 
@@ -61,6 +63,69 @@ async def docker_chat(
         logs=payload.logs,
         instructions=payload.instructions,
     )
+
+
+@router.get("/{project_id}/chat/stream")
+async def docker_chat_stream(
+    project_id: str,
+    request: Request,
+    message: str = Query(..., description="User message for the Docker deploy chat"),
+    logs: Optional[str] = Query(None, description="Newline-separated build/run logs"),
+    instructions: Optional[str] = Query(None, description="Optional high-level deployment instructions"),
+    token: Optional[str] = Query(None, description="Bearer token for EventSource auth"),
+):
+    """
+    Stream LLM response as Server-Sent Events (SSE).
+    Tokens are sent as they're generated for real-time display.
+    """
+    import json
+    
+    # Handle authentication (similar to logs endpoint)
+    auth_header = request.headers.get("authorization")
+    actual_token = token  # From query param (EventSource can't set headers)
+    if auth_header and auth_header.startswith("Bearer "):
+        actual_token = auth_header.split(" ")[1]
+    
+    if not actual_token:
+        def error_stream():
+            yield f"data: {json.dumps({'error': 'Authentication required', 'done': True})}\n\n"
+        return StreamingResponse(error_stream(), media_type="text/event-stream")
+    
+    # Decode token to get user
+    payload = decode_access_token(actual_token)
+    if not payload:
+        def error_stream():
+            yield f"data: {json.dumps({'error': 'Invalid token', 'done': True})}\n\n"
+        return StreamingResponse(error_stream(), media_type="text/event-stream")
+    
+    current_user = {"_id": payload.get("sub"), "email": payload.get("email")}
+    
+    # Parse logs from query string (newline-separated)
+    logs_list = logs.split("\n") if logs else None
+    
+    # First: run async setup (validation, data preparation)
+    try:
+        prepared_data = await docker_chat_stream_setup(
+            project_id=project_id,
+            current_user=current_user,
+            user_message=message,
+            logs=logs_list,
+            instructions=instructions,
+        )
+    except Exception as e:
+        def error_stream():
+            yield f"data: {json.dumps({'token': f'Setup error: {str(e)}', 'done': True, 'error': True})}\n\n"
+        return StreamingResponse(error_stream(), media_type="text/event-stream")
+    
+    # Then: use sync generator for streaming
+    def event_stream():
+        try:
+            for chunk in docker_chat_stream_generator(prepared_data):
+                yield f"data: {json.dumps(chunk)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'token': f'Error: {str(e)}', 'done': True, 'error': True})}\n\n"
+    
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/{project_id}/file")

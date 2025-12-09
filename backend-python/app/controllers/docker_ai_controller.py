@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 from bson import ObjectId
 from fastapi import HTTPException
 
-from ..LLM.docker_deploy_agent import run_docker_deploy_chat
+from ..LLM.docker_deploy_agent import run_docker_deploy_chat, run_docker_deploy_chat_stream
 from ..config.database import get_projects_collection
 from ..config.settings import settings
 from ..utils.auth import decode_access_token
@@ -280,6 +280,145 @@ async def docker_chat_handler(
         # Frontend should append ?action=build|run|push as needed
         "log_stream_base_url": f"/api/docker/{project_id}/logs",
     }
+
+
+def docker_chat_stream_handler(
+    project_id: str,
+    current_user: dict,
+    user_message: str,
+    logs: Optional[List[str]] = None,
+    instructions: Optional[str] = None,
+):
+    """
+    Generator that yields SSE events with LLM tokens.
+    Synchronous generator for use with StreamingResponse.
+    """
+    import asyncio
+    
+    # We need to run async validation synchronously for the generator
+    loop = asyncio.new_event_loop()
+    try:
+        project = loop.run_until_complete(_validate_project(project_id, current_user))
+    finally:
+        loop.close()
+    
+    _ensure_analyzed(project)
+    project_root = _safe_project_path(project)
+
+    dockerfiles, compose_files = _collect_docker_files(project_root)
+    file_tree_text, _ = _build_file_tree(project_root)
+    metadata = project.get("metadata", {}) or {}
+    services = metadata.get("services") or []
+
+    # Dynamic env_file detection (same as non-streaming version)
+    for svc in services:
+        svc_path = svc.get("path", ".").rstrip("/\\")
+        if svc_path == "." or not svc_path:
+            svc_dir = project_root
+        else:
+            svc_dir = os.path.join(project_root, svc_path)
+        
+        if not svc.get("env_file"):
+            for env_name in [".env", ".env.local", ".env.production"]:
+                env_path = os.path.join(svc_dir, env_name)
+                if os.path.exists(env_path):
+                    svc["env_file"] = f"./{svc_path}/{env_name}" if svc_path and svc_path != "." else f"./{env_name}"
+                    break
+        
+        # Dynamic entry_point detection for backend services
+        if svc.get("type") == "backend" and not svc.get("entry_point"):
+            from ..utils.command_extractor import extract_nodejs_commands
+            backend_cmds = extract_nodejs_commands(svc_dir)
+            entry_point = backend_cmds.get("entry_point", "index.js")
+            svc["entry_point"] = entry_point
+
+    # Yield tokens from streaming LLM
+    for chunk in run_docker_deploy_chat_stream(
+        project_name=project.get("project_name", "project"),
+        metadata=metadata,
+        dockerfiles=dockerfiles,
+        compose_files=compose_files,
+        file_tree=file_tree_text,
+        user_message=user_message,
+        logs=logs,
+        extra_instructions=instructions,
+        services=services,
+    ):
+        yield chunk
+
+
+async def docker_chat_stream_setup(
+    project_id: str,
+    current_user: dict,
+    user_message: str,
+    logs: Optional[List[str]] = None,
+    instructions: Optional[str] = None,
+) -> Dict:
+    """
+    Async function to validate and prepare data for streaming.
+    Returns all the data needed by the sync generator.
+    """
+    project = await _validate_project(project_id, current_user)
+    _ensure_analyzed(project)
+    project_root = _safe_project_path(project)
+
+    dockerfiles, compose_files = _collect_docker_files(project_root)
+    file_tree_text, _ = _build_file_tree(project_root)
+    metadata = project.get("metadata", {}) or {}
+    services = metadata.get("services") or []
+
+    # Dynamic env_file detection
+    for svc in services:
+        svc_path = svc.get("path", ".").rstrip("/\\")
+        if svc_path == "." or not svc_path:
+            svc_dir = project_root
+        else:
+            svc_dir = os.path.join(project_root, svc_path)
+        
+        if not svc.get("env_file"):
+            for env_name in [".env", ".env.local", ".env.production"]:
+                env_path = os.path.join(svc_dir, env_name)
+                if os.path.exists(env_path):
+                    svc["env_file"] = f"./{svc_path}/{env_name}" if svc_path and svc_path != "." else f"./{env_name}"
+                    break
+        
+        # Dynamic entry_point detection for backend services
+        if svc.get("type") == "backend" and not svc.get("entry_point"):
+            from ..utils.command_extractor import extract_nodejs_commands
+            backend_cmds = extract_nodejs_commands(svc_dir)
+            entry_point = backend_cmds.get("entry_point", "index.js")
+            svc["entry_point"] = entry_point
+
+    return {
+        "project_name": project.get("project_name", "project"),
+        "metadata": metadata,
+        "dockerfiles": dockerfiles,
+        "compose_files": compose_files,
+        "file_tree": file_tree_text,
+        "user_message": user_message,
+        "logs": logs,
+        "instructions": instructions,
+        "services": services,
+    }
+
+
+def docker_chat_stream_generator(prepared_data: Dict):
+    """
+    Sync generator that yields SSE events with LLM tokens.
+    Takes pre-validated data from docker_chat_stream_setup.
+    """
+    for chunk in run_docker_deploy_chat_stream(
+        project_name=prepared_data["project_name"],
+        metadata=prepared_data["metadata"],
+        dockerfiles=prepared_data["dockerfiles"],
+        compose_files=prepared_data["compose_files"],
+        file_tree=prepared_data["file_tree"],
+        user_message=prepared_data["user_message"],
+        logs=prepared_data["logs"],
+        extra_instructions=prepared_data["instructions"],
+        services=prepared_data["services"],
+    ):
+        yield chunk
 
 
 async def read_project_file_handler(

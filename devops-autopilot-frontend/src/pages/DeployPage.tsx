@@ -101,35 +101,86 @@ export const DeployPage: React.FC = () => {
 
   const handleSend = async () => {
     if (!projectId || !input.trim()) return;
-    const userMsg: ChatMessage = { role: "user", content: input.trim() };
+    
+    // Save input value before clearing (must do this BEFORE setInput(""))
+    const messageText = input.trim();
+    const logsText = logInput.trim();
+    const instructionsText = instructions.trim();
+    
+    const userMsg: ChatMessage = { role: "user", content: messageText };
     setMessages((prev) => [...prev, userMsg]);
     setSending(true);
-    try {
-      const payload: { message: string; logs?: string[]; instructions?: string } =
-        { message: input.trim() };
-      if (logInput.trim()) {
-        payload.logs = logInput.split("\n").slice(-50);
-      }
-      if (instructions.trim()) {
-        payload.instructions = instructions.trim();
-      }
-      const resp = await apiClient.sendDockerChat(projectId, payload);
-      setMessages((prev) => [...prev, { role: "ai", content: resp.reply }]);
-    } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "ai",
-          content:
-            err instanceof Error
-              ? `Error contacting Llama 3.1: ${err.message}`
-              : "Error contacting Llama 3.1",
-        },
-      ]);
-    } finally {
-      setSending(false);
-      setInput("");
+    setInput("");
+
+    // Import streaming function
+    const { streamDockerChat } = await import("../api/client");
+
+    // Build params using saved values
+    const params: { message: string; logs?: string[]; instructions?: string } = {
+      message: messageText,
+    };
+    if (logsText) {
+      params.logs = logsText.split("\n").slice(-50);
     }
+    if (instructionsText) {
+      params.instructions = instructionsText;
+    }
+
+    // Use a local variable to accumulate content (avoids React state batching issues)
+    let accumulatedContent = "";
+    
+    // Add placeholder AI message for streaming content
+    setMessages((prev) => [...prev, { role: "ai", content: "" }]);
+    
+    // Get the index of the AI message we just added
+    // This will be used to update that specific message
+    const aiMessageIndex = { current: -1 };
+    setMessages((prev) => {
+      aiMessageIndex.current = prev.length - 1;
+      return prev;
+    });
+
+    // Start streaming
+    streamDockerChat(
+      projectId,
+      params,
+      // onToken: accumulate content and update the specific AI message
+      (token) => {
+        accumulatedContent += token;
+        // Update state with accumulated content (always update the last AI message)
+        setMessages((prev) => {
+          // Find the last AI message in the array
+          const newMessages = [...prev];
+          for (let i = newMessages.length - 1; i >= 0; i--) {
+            if (newMessages[i].role === "ai") {
+              newMessages[i] = { role: "ai", content: accumulatedContent };
+              break;
+            }
+          }
+          return newMessages;
+        });
+      },
+      // onDone: stream completed
+      () => {
+        setSending(false);
+      },
+      // onError: handle errors
+      (error) => {
+        setMessages((prev) => {
+          const newMessages = [...prev];
+          for (let i = newMessages.length - 1; i >= 0; i--) {
+            if (newMessages[i].role === "ai") {
+              if (newMessages[i].content === "") {
+                newMessages[i] = { role: "ai", content: `Error: ${error.message}` };
+              }
+              break;
+            }
+          }
+          return newMessages;
+        });
+        setSending(false);
+      }
+    );
   };
 
   const appendLogs = (incoming: LogLine) => {

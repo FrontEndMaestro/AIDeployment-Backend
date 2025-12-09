@@ -357,3 +357,76 @@ class ApiClient {
 }
 
 export const apiClient = new ApiClient();
+
+/**
+ * Stream Docker chat response using Server-Sent Events (SSE).
+ * Tokens are received incrementally as the LLM generates them.
+ * 
+ * @param projectId - Project ID
+ * @param params - Chat parameters (message, logs, instructions)
+ * @param onToken - Callback for each token received
+ * @param onDone - Callback when streaming completes
+ * @param onError - Callback for errors
+ * @returns EventSource instance (can be closed to cancel)
+ */
+export function streamDockerChat(
+  projectId: string,
+  params: { message: string; logs?: string[]; instructions?: string },
+  onToken: (token: string) => void,
+  onDone: () => void,
+  onError: (error: Error) => void
+): EventSource {
+  const rawApiBase =
+    (import.meta as any).env?.VITE_API_BASE_URL || "http://localhost:8000/api";
+  const apiBase = rawApiBase.endsWith("/api")
+    ? rawApiBase.replace(/\/+$/, "")
+    : `${rawApiBase.replace(/\/+$/, "")}/api`;
+
+  const token = apiClient.getToken();
+  const url = new URL(`${apiBase}/docker/${projectId}/chat/stream`);
+  
+  // Set query parameters
+  url.searchParams.set("message", params.message);
+  if (params.logs && params.logs.length > 0) {
+    url.searchParams.set("logs", params.logs.join("\n"));
+  }
+  if (params.instructions) {
+    url.searchParams.set("instructions", params.instructions);
+  }
+  if (token) {
+    url.searchParams.set("token", token);
+  }
+
+  const source = new EventSource(url.toString());
+
+  source.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      
+      if (data.error) {
+        onError(new Error(data.token || data.error));
+        source.close();
+        return;
+      }
+      
+      if (data.token) {
+        onToken(data.token);
+      }
+      
+      if (data.done) {
+        source.close();
+        onDone();
+      }
+    } catch (err) {
+      console.error("Error parsing SSE event:", err);
+    }
+  };
+
+  source.onerror = () => {
+    onError(new Error("LLM stream connection error"));
+    source.close();
+    onDone();
+  };
+
+  return source;
+}
