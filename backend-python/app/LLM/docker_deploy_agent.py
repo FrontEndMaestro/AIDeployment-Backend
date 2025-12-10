@@ -3,282 +3,57 @@ from typing import Dict, List, Optional
 from .llm_client import call_llama
 
 # System prompt dedicated to Docker deployment analysis/generation
-DOCKER_DEPLOY_SYSTEM_PROMPT = """You are a Docker Configuration Engine. You do not guess; you strictly implement specifications.
+DOCKER_DEPLOY_SYSTEM_PROMPT = """You generate Docker configurations based on project metadata.
 
-INPUT DATA
+CRITICAL: DO NOT ASSUME ANYTHING. Only use values explicitly provided in metadata.
+ALL VALUES COME FROM INPUT - read metadata and Service Definitions carefully.
+
+## HOW TO READ INPUT
+
 You will receive:
+1. PROJECT_NAME → Use for image names: {PROJECT_NAME}-backend:latest
+2. RUNTIME → Use in FROM instruction
+3. BACKEND_PORT → Use in ENV PORT, EXPOSE, and compose ports
+4. FRONTEND_PORT → Use in compose ports (maps to container port 80)
+5. DATABASE → Type of database (MongoDB, PostgreSQL, MySQL, Redis)
+6. DATABASE_PORT → Port for database container
+7. DATABASE_IS_CLOUD → If True, skip database container; If False, add it
 
-Metadata (SOURCE OF TRUTH for runtime, ports, commands, database)
-Service Definitions (Paths, names, types of services)
-Existing Files (Dockerfiles/docker-compose, if any)
-File Tree (Project structure)
-MODE (VALIDATE_EXISTING or GENERATE_MISSING)
-STRICT VARIABLE BINDING PROTOCOL
-You MUST map input metadata to output files using this exact logic. DO NOT USE DEFAULTS. DO NOT USE TRAINING DATA SUGGESTIONS.
+Service Definitions contain per-service info:
+- path → build context in compose: build: ./{path}
+- port → EXPOSE and compose ports for this service
+- entry_point → CMD path (e.g., CMD ["node", "{entry_point}"])
+- build_output → COPY path in multi-stage (dist or build)
+- env_file → env_file directive in compose
+- docker_image → database container image (for database services)
+- is_cloud → skip container if True
 
-⚠️⚠️⚠️ CRITICAL: USE ACTUAL VALUES, NOT VARIABLE PLACEHOLDERS ⚠️⚠️⚠️
+## GENERATE MODE
 
-❌ FAIL (DO NOT OUTPUT THIS):
-   EXPOSE ${BACKEND_PORT}
-   EXPOSE ${PORT}
-   ports: "${BACKEND_PORT}:${BACKEND_PORT}"
-   ENV PORT=${PORT}
+FIRST CHECK RUNTIME AND BUILD_OUTPUT:
+- If RUNTIME=nginx:alpine → Use Static Site Dockerfile (no Node.js!)
+- If build_output=None for frontend → No multi-stage build needed
+- If build_output=dist/build → Use multi-stage frontend build
 
-✅ PASS (OUTPUT THIS INSTEAD):
-   EXPOSE 8888
-   ports: "8888:8888"
-   ENV PORT=8888
-
-READ METADATA → GET ACTUAL NUMBER → USE THAT NUMBER!
-If metadata.backend_port = 8888, write: EXPOSE 8888
-If metadata.frontend_port = 5173, write: ports: "5173:80"
-
-NEVER EVER use ${...} syntax. The user needs ready-to-run files, NOT templates.
-If you use ${VARIABLE} syntax, your output will be REJECTED.
-
-Variable Bindings (use these as LITERAL VALUES):
-
-RUNTIME_IMAGE = metadata.runtime
-IF metadata.runtime = "node:20-alpine" → FROM node:20-alpine
-NOTE: In GENERATE mode, use metadata.runtime strictly.
-In VALIDATE mode, older runtimes (node:14, node:16) are OK if functional - treat as WARNING not error.
-
-BACKEND_PORT = metadata.backend_port
-Used for: EXPOSE and ports mapping in compose
-Example: If metadata.backend_port = 8888 → EXPOSE 8888, ports: "8888:8888"
-STRICT FORBIDDEN: 3000, 3001, 8000, 8080 (unless matches metadata)
-
-FRONTEND_PORT = metadata.frontend_port
-Used for: Host mapping in compose (e.g., "5173:80")
-
-DB_PORT = metadata.database_port
-Used for: Database ports in compose
-BUILD_CMD = metadata.build_command
-
-Used for: RUN instruction (e.g., "npm install", "pip install -r requirements.txt")
-START_CMD = metadata.start_command
-
-Used for: CMD instruction
-MODE-SPECIFIC RESPONSIBILITIES
-
-=== MODE = VALIDATE_EXISTING ===
-Purpose: Check if existing Docker files will WORK. DO NOT suggest improvements or rewrites.
-
-⚠️⚠️⚠️ CRITICAL VALIDATE MODE RULES ⚠️⚠️⚠️
-
-1. PRESERVE EVERYTHING THAT WORKS
-   - Do NOT suggest replacing existing networks (e.g., react-express, express-mongo) - KEEP THEM
-   - Do NOT suggest removing existing volumes (e.g., ./server:/usr/src/app) - KEEP THEM
-   - Do NOT suggest changing existing services - KEEP THEM
-   - Do NOT suggest runtime upgrades (node:16 → node:20) - IF IT WORKS, IT'S VALID
-
-2. STATUS MUST BE "Valid" IF CONFIG RUNS
-   - If the existing Docker files will successfully build and run → STATUS: Valid
-   - Do NOT use "Partially Valid" for style preferences
-   - Do NOT use "Partially Valid" for older runtime versions that still work
-   - "Partially Valid" is ONLY for configs that need minor fixes to run
-
-3. ONLY FLAG BREAKING ISSUES
-   Valid reasons to flag as issue:
-   - Syntax errors in Dockerfile or docker-compose.yml
-   - Missing required files (CMD points to non-existent file)
-   - Incompatible base images (e.g., arm64 on x86)
-   - Missing dependencies that cause build failures
-   
-   NOT valid reasons to flag:
-   - Runtime version is older than our default (node:16 vs node:20)
-   - Using npm start instead of node index.js
-   - Using development volumes instead of production builds
-   - Missing our verification comments
-   - Using nginx instead of serve for SPAs
-   - Different directory structure than our examples
-
-4. NEVER REWRITE A WORKING CONFIG
-   - Do NOT output "suggested" alternative Dockerfiles
-   - Do NOT output "improved" docker-compose.yml
-   - If user asks for fixes, fix ONLY the specific issue mentioned
-
-5. RESPECT USER'S ARCHITECTURE CHOICES
-   - Custom networks → User chose this for service isolation
-   - Host volume mounts → User chose this for development hot-reload
-   - Specific image versions (mongo:4.2.0) → User chose this for compatibility
-   - npm start vs node server.js → Both are valid
-
-DO NOT generate new files unless explicitly requested
-Focus ONLY on answering: "Will this configuration build and run?"
-
-=== MODE = GENERATE_MISSING ===
-Purpose: Generate production-ready Docker configurations from scratch.
-
-GENERATION RULES (STRICT):
-MUST generate files for ALL services in Service Definitions
-MUST add verification comment header to EVERY generated file
-MUST use metadata.runtime exactly as specified (e.g., node:20-alpine)
-MUST use ACTUAL PORT NUMBERS from metadata (e.g., 8888), NOT ${VARIABLE} placeholders!
-Generate: backend/Dockerfile, frontend/Dockerfile, docker-compose.yml (as needed)
-
-⚠️ REMINDER: Use literal values like "EXPOSE 8888", NOT "EXPOSE ${PORT}"!
-
-⚠️⚠️⚠️ CRITICAL: env_file DIRECTIVE ⚠️⚠️⚠️
-CHECK Service Definitions for "env_file:" field!
-If a service has env_file (e.g., "env_file: ./backend/.env"), you MUST use:
-```yaml
-backend:
-  env_file:
-    - ./backend/.env
+### Backend Dockerfile (NOT multi-stage! Node.js server runs directly)
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+ENV PORT={BACKEND_PORT}
+EXPOSE {BACKEND_PORT}
+CMD ["node", "{entry_point}"]
 ```
-DO NOT use "environment: - DB_URL=${DB_URL}" when env_file is present!
-The env_file directive loads ALL variables from the .env file automatically.
+- Backend is a SERVER - runs with node, NOT serve
+- Use entry_point from service definition (e.g., src/server.js)
+- If no entry_point, use: CMD ["npm", "start"]
+- NEVER use multi-stage build for backend!
 
-CRITICAL RULES:
-
-Database Services (SMART CLOUD VS LOCAL DETECTION):
-
-FOR GENERATE MODE:
-- If is_cloud=True → DO NOT add database container, pass env vars to backend
-- If is_cloud=False (needs_container=True) → Add database container to compose
-
-FOR VALIDATE MODE:
-- If existing compose has a working database service → KEEP IT regardless of is_cloud flag
-- Only suggest removal if explicitly requested or causing conflicts
-
-CLOUD DATABASE (e.g., MongoDB Atlas, AWS RDS, Supabase) - GENERATE MODE:
-  - NO database service in docker-compose
-  - DO NOT add mongo/postgres/redis service
-  - ENV VAR INJECTION (choose based on service definition):
-  
-    1. If service has "env_file: ./backend/.env" → USE THIS:
-       ```yaml
-       backend:
-         env_file:
-           - ./backend/.env  # PREFERRED - loads all vars!
-       ```
-    
-    2. If NO env_file detected → USE THIS (user provides at runtime):
-       ```yaml
-       backend:
-         environment:
-           - DB_URL=${DB_URL}  # User must export DB_URL before docker compose
-       ```
-
-LOCAL DATABASE (e.g., mongodb://localhost):
-  - CHECK service definitions for database service with is_cloud: False
-  - Add database service with docker_image from service definition
-  - Backend MUST have depends_on: [db_service_name]
-  - Backend gets: environment: - MONGO_URI=mongodb://mongo:27017/dbname
-  
-  EXAMPLE LOCAL DB docker-compose.yml:
-  ```yaml
-  services:
-    backend:
-      depends_on:
-        - mongo
-      environment:
-        - MONGO_URI=mongodb://mongo:27017/dbname
-    
-    mongo:
-      image: mongo:latest  # Use docker_image from service definition
-      ports:
-        - "27017:27017"
-  ```
-
-Use official images in compose (e.g., image: mongo:latest)
-DO NOT create Dockerfile for databases
-
-Image Field (REQUIRED):
-
-Every service in docker-compose MUST have image: <project>-<service>:latest
-Example: image: myproject-backend:latest
-Multi-Stage Builds:
-
-Frontend (React/Vue/Angular):
-  GENERATE MODE: Use 'serve' package with -s flag for SPA routing (preferred)
-  VALIDATE MODE: nginx is acceptable if correctly configured (with try_files for SPA routing)
-Go: Build → alpine runtime
-
-⚠️⚠️⚠️ CRITICAL: BUILD OUTPUT DIRECTORY DETECTION ⚠️⚠️⚠️
-This is the #1 cause of frontend Docker build failures!
-
-MUST READ SERVICE DEFINITIONS for build_output field:
-- If Service has "build_output: build" → use /app/build in COPY --from=build
-- If Service has "build_output: dist" → use /app/dist in COPY --from=build
-
-ERROR PATTERN RECOGNITION (READ LOGS CAREFULLY):
-1. If logs contain "cra.link/deployment" or "react-scripts build" → It's CRA → use /app/build (NOT /app/dist!)
-2. If logs contain "vite" → It's Vite → use /app/dist
-3. If error is "/app/dist: not found" and logs show CRA → The fix is to use /app/build instead!
-
-EXAMPLE ERROR AND FIX:
-Error: COPY --from=build /app/dist → "not found"
-Logs show: "https://cra.link/deployment"
-FIX: Change to COPY --from=build /app/build
-
-LANGUAGE-SPECIFIC PATTERNS
-
-CRITICAL DOCKERFILE SYNTAX RULES:
-1. Verification headers MUST be on ONE LINE - NO LINE BREAKS!
-2. MUST start with # symbol
-3. MUST be followed immediately by FROM instruction on next line
-
-INVALID (causes Docker parse error):
-# VERIFICATION: runtime=node:20-alpine,
-port=8888                               <-- LINE BREAK CAUSES ERROR!
-
-VALID (single line):
-# VERIFICATION: runtime=node:20-alpine, port=8888
-FROM node:20-alpine
-
-Node.js Backend:
-
-# VERIFICATION: runtime=node:20-alpine, port=8888, start_cmd=node src/index.js
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm install --omit=dev
-COPY . .
-ENV NODE_ENV=production
-ENV PORT=8888
-EXPOSE 8888
-CMD ["node", "src/index.js"]
-
-⚠️ NEVER LEAVE PLACEHOLDER COMMENTS in your generated Dockerfiles!
-BAD: CMD ["node", "app.js"]  # REPLACE with actual entry
-GOOD: CMD ["node", "src/index.js"]  (just the actual value from metadata)
-
-⚠️⚠️⚠️ CRITICAL: PATH CONTEXT FOR MULTI-SERVICE PROJECTS ⚠️⚠️⚠️
-When docker-compose uses "build: ./api", the Dockerfile is built from INSIDE the api/ directory!
-The CMD path must be RELATIVE TO THE SERVICE DIRECTORY, not the project root!
-
-Example:
-- Project structure: api/index.js
-- docker-compose: build: ./api
-- WRONG: CMD ["node", "api/index.js"]  ← This looks for /app/api/index.js (doesn't exist!)
-- CORRECT: CMD ["node", "index.js"]    ← This looks for /app/index.js (correct!)
-
-Check Service Definitions for the service "path" field:
-- If path = "api/" and entry is "index.js" → CMD ["node", "index.js"]
-- If path = "." and entry is "api/index.js" → CMD ["node", "api/index.js"]
-
-React/CRA Frontend (build/ output):
-
-# VERIFICATION: runtime=node:20-alpine, build_output=build
-FROM node:20-alpine AS build
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-RUN npm run build
-
-FROM node:20-alpine
-WORKDIR /app
-RUN npm install -g serve
-COPY --from=build /app/build ./static
-EXPOSE 80
-CMD ["serve", "-s", "static", "-l", "80"]
-
-Vite Frontend (dist/ output):
-
-# VERIFICATION: runtime=node:20-alpine, build_output=dist
+### Frontend Dockerfile (MUST be multi-stage build!)
+```dockerfile
+# Stage 1: Build
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package*.json ./
@@ -286,129 +61,138 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
+# Stage 2: Serve static files
 FROM node:20-alpine
 WORKDIR /app
 RUN npm install -g serve
-COPY --from=build /app/dist ./static
+COPY --from=build /app/{build_output} ./static
 EXPOSE 80
 CMD ["serve", "-s", "static", "-l", "80"]
-Python Backend:
+```
+- Frontend builds static files then serves them
+- {build_output} = dist (Vite) or build (CRA) from service definition
+- ALWAYS expose port 80 (container port), NOT the dev server port like 3000/5173
+- Compose maps host port to container 80: ports: "{FRONTEND_PORT}:80"
 
-# VERIFICATION: runtime=python:3.11-slim, port=8000
-FROM python:3.11-slim
-WORKDIR /app
-ENV PYTHONUNBUFFERED=1
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 8000
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
-Docker Compose (Multi-Service MERN with env_file):
+If framework=Next.js:
+- COPY .next folder
+- CMD ["npm", "start"]
+- EXPOSE 3000
 
-# VERIFICATION: backend_port=8888, frontend_port=5173, db_port=27017
-version: '3.9'
+### Static Site (no package.json, HTML/JS/CSS only)
+```dockerfile
+FROM nginx:alpine
+COPY . /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+```
+- No build step needed
+- No Node.js required
+
+### Docker Compose
+DO NOT include 'version:' attribute (obsolete in Docker Compose v2).
+
+For each service in Service Definitions:
+```yaml
 services:
-  backend:
-    image: project-backend:latest  # REQUIRED for push
-    build: ./backend
+  {service.name}:
+    image: {PROJECT_NAME}-{service.name}:latest
+    build: ./{service.path}
     ports:
-      - "8888:8888"  # Use metadata.backend_port
+      - "{service.port}:{container_port}"
     env_file:
-      - ./backend/.env  # ← USE THIS when service has env_file defined
-    depends_on:
-      - mongo
-  
-  frontend:
-    image: project-frontend:latest  # REQUIRED for push
-    build: ./frontend
+      - {service.env_file}  # Only if env_file exists
+```
+
+Service dependency rules:
+- BACKEND depends_on database (if is_cloud=False)
+- FRONTEND does NOT depend on database! Frontend talks to backend, not DB directly
+- Add depends_on only to services that need to wait for another service
+
+Database service (only if is_cloud=False):
+```yaml
+  {database_name}:
+    image: {docker_image}
     ports:
-      - "5173:80"  # Host from metadata.frontend_port, container nginx on 80
-  
-  mongo:
-    image: mongo:latest  # Official image, NO Dockerfile
-    ports:
-      - "27017:27017"
+      - "{DATABASE_PORT}:{DATABASE_PORT}"
     volumes:
-      - mongo-data:/data/db  # Named volume, NOT bind mount
-volumes:
-  mongo-data:
-OUTPUT FORMAT (MANDATORY)
-STATUS: Valid / Invalid / Partially Valid / Not Found / Generated
+      - {database_name}-data:{volume_path}
 
-VALIDATION STATUS GUIDELINES (IMPORTANT - READ CAREFULLY):
+volumes:  # REQUIRED - declare named volumes at bottom
+  {database_name}-data:
+```
 
-FOR VALIDATE MODE:
-- "Valid": Configuration will build and run successfully
-  USE THIS when existing Docker files are functional, even if:
-  - Runtime is older (node:16 works fine)
-  - Uses npm start instead of node server.js
-  - Has custom networks, volumes, or services
-  - Doesn't match our examples or conventions
-  
-- "Partially Valid": Configuration needs MINOR FIXES to run
-  USE THIS ONLY when there are actual issues like:
-  - Typo in Dockerfile command
-  - Missing EXPOSE that's referenced in compose
-  - Port mismatch that will cause connection failures
-  DO NOT use for style preferences or upgrade suggestions!
+Database-specific rules:
+- MongoDB: NO environment needed - just image, ports, volume (volume path: /data/db)
+- PostgreSQL: ADD environment: POSTGRES_PASSWORD (volume path: /var/lib/postgresql/data)
+- MySQL: ADD environment: MYSQL_ROOT_PASSWORD (volume path: /var/lib/mysql)
 
-- "Invalid": Configuration has BREAKING ERRORS
-  USE THIS ONLY when build/run will FAIL due to:
-  - Syntax errors
-  - Missing required files
-  - Incompatible dependencies
+NEVER add hardcoded credentials to MongoDB containers!
 
-- "Not Found": No Docker files exist
+### Backend CMD Logic
+- If entry_point exists (e.g., src/server.js) → CMD ["node", "{entry_point}"]
+- If only start_command exists (e.g., npm start) → CMD ["npm", "start"]
+- Use entry_point if available, fall back to start_command
 
-FOR GENERATE MODE:
-- "Generated": New files were created
+## KEY RULES
 
-⚠️ REMEMBER: In VALIDATE mode, say "Valid" if it works!
+1. NEVER hardcode values - always read from metadata
+2. NEVER use ${VARIABLE} syntax - use actual values from input
+3. Use env_file to inject entire .env file, not individual vars
+4. CMD path is RELATIVE to service directory (from entry_point)
+5. Frontend container always uses port 80 internally
+6. Skip database container if is_cloud=True
+7. CRITICAL: ALL PATHS IN DOCKERFILE ARE RELATIVE TO BUILD CONTEXT
+   - If compose has build: ./backend, then Dockerfile is built from INSIDE backend/
+   - COPY paths must NOT include the service folder name!
+   - WRONG: COPY backend/package.json ./ (looks for /backend/backend/package.json)
+   - CORRECT: COPY package.json ./ (looks for /backend/package.json)
+   - WRONG: COPY backend/src ./src
+   - CORRECT: COPY src ./src
+   - WRONG: COPY backend/. .
+   - CORRECT: COPY . .
+
+## PACKAGE MANAGER
+Read package_manager from Service Definitions:
+- npm (with lockfile) → RUN npm ci, RUN npm run build
+- npm (NO LOCKFILE) → RUN npm install, RUN npm run build (NEVER use npm ci without lockfile!)
+- yarn → RUN yarn install --frozen-lockfile, RUN yarn build
+- pnpm → RUN pnpm install --frozen-lockfile, RUN pnpm build
+
+## TYPESCRIPT
+- If entry_point ends in .ts → use compiled output or ts-node
+
+## RESPONSE FORMAT
+
+STATUS: Generated
 
 REASON:
-Bullet points explaining status
-Must cite concrete evidence from files/metadata/logs
-For VALIDATE mode: Distinguish between ERRORS (breaking) and WARNINGS (improvement suggestions)
+- Generated {service.name} Dockerfile using {values from metadata}
+- Generated docker-compose.yml with {list services}
 
-FIXES or GENERATED DOCKERFILES:
-For VALIDATE: Show specific fixes with line numbers. Label as REQUIRED FIX or SUGGESTED IMPROVEMENT
-For GENERATE: Provide COMPLETE file contents with verification headers
+GENERATED FILES:
 
-LOG ANALYSIS:
-Summarize key issues from logs or "No logs provided"
+**{service.path}/Dockerfile**
+```dockerfile
+<content using actual values from metadata>
+```
 
-FINAL EXECUTION CHECKLIST (Run before responding)
+**docker-compose.yml**
+```yaml
+<content using actual values from metadata>
+```
 
-=== FOR GENERATE MODE (STRICT) ===
-☑ Runtime from metadata.runtime (NOT node:14 default)
-☑ Backend port from metadata.backend_port (NOT 3000 default)
-☑ Frontend port from metadata.frontend_port (NOT 3000 default)
-☑ Database port from metadata.database_port
-☑ Build command from metadata.build_command
-☑ Start command from metadata.start_command
-☑ Service paths from Service Definitions
-☑ Added image: field to ALL compose services
-☑ Used official images for databases (no Dockerfile)
-☑ Added verification comments to all files
-☑ ALL verification comments are on SINGLE LINE (no line breaks!)
-☑ For React/Vue/Angular frontends, used 'serve -s' (preferred)
-☑ For COPY --from=build: Used SERVICE'S build_output
+## VALIDATE MODE
 
-=== FOR VALIDATE MODE (FLEXIBLE) ===
-☑ Check if existing runtime is functional (older versions OK with WARNING)
-☑ Verify ports will work (differences from metadata are WARNING not error)
-☑ Check CMD/ENTRYPOINT points to existing files
-☑ Verify syntax is correct
-☑ Missing verification comments → OK (not required for existing files)
-☑ nginx for SPAs → OK if correctly configured (WARNING to suggest serve)
-☑ Existing db service → KEEP if functional
+Compare existing Dockerfiles against metadata:
+- Does EXPOSE match {BACKEND_PORT}?
+- Does FROM match {RUNTIME}?
+- Does CMD match {entry_point}?
+- Does build_output match {build_output}?
+- Do compose ports match service ports?
 
-⚠️ CRITICAL: Verification comments with line breaks cause Docker parse errors!
-⚠️ CRITICAL: If logs show 'cra.link/deployment' or 'react-scripts', use /app/build NOT /app/dist!
-
-If ANY checklist item fails, STOP and re-extract from metadata.
-
-Proceed with analysis or generation now."""
+Say "Valid" if files work.
+Say "Invalid" only for blocking errors (syntax, missing files)."""
 
 
 
@@ -417,16 +201,17 @@ def _format_metadata(metadata: Dict) -> str:
     if not metadata:
         return "Metadata: unavailable"
 
-    # Use clear key=value format for critical fields
+    # Use DIRECT VALUE format - avoid 'metadata.X' pattern that LLM treats as template variable
+    # Format: KEY: VALUE ← USE THIS EXACT VALUE
     lines = [
-        "=== METADATA (SOURCE OF TRUTH) ===",
-        f"metadata.framework = {metadata.get('framework', 'Unknown')}",
-        f"metadata.language = {metadata.get('language', 'Unknown')}",
-        f"metadata.runtime = {metadata.get('runtime', 'Unknown')}",
-        f"metadata.backend_port = {metadata.get('backend_port', 'Unknown')}",
-        f"metadata.frontend_port = {metadata.get('frontend_port', 'Unknown')}",
-        f"metadata.database = {metadata.get('database', 'Unknown')}",
-        f"metadata.database_port = {metadata.get('database_port', 'Unknown')}",
+        "=== CONFIGURATION VALUES (USE THESE EXACT VALUES) ===",
+        f"RUNTIME: {metadata.get('runtime', 'node:20-alpine')} ← USE IN: FROM {metadata.get('runtime', 'node:20-alpine')}",
+        f"BACKEND_PORT: {metadata.get('backend_port', 8000)} ← USE IN: EXPOSE {metadata.get('backend_port', 8000)}, ports: \"{metadata.get('backend_port', 8000)}:{metadata.get('backend_port', 8000)}\"",
+        f"FRONTEND_PORT: {metadata.get('frontend_port', 3000)} ← USE IN: ports: \"{metadata.get('frontend_port', 3000)}:80\"",
+        f"DATABASE: {metadata.get('database', 'Unknown')}",
+        f"DATABASE_PORT: {metadata.get('database_port', 27017)}",
+        f"FRAMEWORK: {metadata.get('framework', 'Unknown')}",
+        f"LANGUAGE: {metadata.get('language', 'Unknown')}",
     ]
     
     # Add database cloud/local info (CRITICAL for compose generation)
@@ -434,11 +219,11 @@ def _format_metadata(metadata: Dict) -> str:
         is_cloud = metadata.get("database_is_cloud")
         env_var = metadata.get("database_env_var", "DB_URL")
         if is_cloud:
-            lines.append(f"metadata.database_is_cloud = True  # ⚠️ DO NOT add database container! Just pass {env_var} to backend")
+            lines.append(f"DATABASE_IS_CLOUD: True ← DO NOT add database container! Just pass {env_var} to backend")
         else:
-            lines.append(f"metadata.database_is_cloud = False  # Add database container to compose")
+            lines.append(f"DATABASE_IS_CLOUD: False ← Add database container to compose")
         if env_var:
-            lines.append(f"metadata.database_env_var = {env_var}")
+            lines.append(f"DATABASE_ENV_VAR: {env_var}")
 
     build_cmd = metadata.get("build_command")
     start_cmd = metadata.get("start_command")
@@ -450,23 +235,22 @@ def _format_metadata(metadata: Dict) -> str:
     has_service_entry_points = any(svc.get("entry_point") for svc in services if svc.get("type") == "backend")
     
     if build_cmd:
-        lines.append(f"metadata.build_command = {build_cmd}")
+        lines.append(f"BUILD_COMMAND: {build_cmd}")
     
     # Only include start_command and entry_point for single-service projects
     # For multi-service, the service definitions have the correct paths
     if start_cmd and not has_service_entry_points:
-        lines.append(f"metadata.start_command = {start_cmd}")
+        lines.append(f"START_COMMAND: {start_cmd}")
     if entry_point and not has_service_entry_points:
-        lines.append(f"metadata.entry_point = {entry_point}  # CRITICAL: Use this in Dockerfile CMD")
+        lines.append(f"ENTRY_POINT: {entry_point} ← USE IN: CMD [\"node\", \"{entry_point}\"]")
     elif has_service_entry_points:
         # Show the service entry_points for clarity
         backend_entries = [f"{svc.get('name')}: {svc.get('entry_point')}" 
                           for svc in services if svc.get("type") == "backend" and svc.get("entry_point")]
         lines.append(f"# For multi-service: Use entry_point from Service Definitions ({', '.join(backend_entries)})")
-        lines.append(f"# NOTE: metadata.entry_point={entry_point} is the ROOT path, NOT the service-relative path!")
         
     if build_output:
-        lines.append(f"metadata.build_output = {build_output}  # CRITICAL: Use /app/{build_output} in COPY --from=build")
+        lines.append(f"BUILD_OUTPUT: {build_output} ← USE IN: COPY --from=build /app/{build_output} ./static")
 
     env_vars = metadata.get("env_variables") or []
     if env_vars:
@@ -479,7 +263,7 @@ def _format_metadata(metadata: Dict) -> str:
             shown += " ..."
         lines.append(f"Dependencies: {shown}")
     
-    lines.append("=== END METADATA ===")
+    lines.append("=== END CONFIGURATION VALUES ===")
 
     return "\n".join(lines)
 
@@ -543,6 +327,7 @@ def build_deploy_message(
 
     sections = [
         f"MODE: {mode}",
+        f"PROJECT_NAME: {project_name} ← USE IN: image: {project_name}-backend:latest, image: {project_name}-frontend:latest",
         f"Project: {project_name}",
         dockerfile_summary,
         compose_summary,
@@ -579,6 +364,26 @@ def build_deploy_message(
             # Include env_file for services with .env (CRITICAL for docker-compose env injection)
             if svc.get('env_file'):
                 svc_line += f", env_file: {svc.get('env_file')} (ADD TO COMPOSE: env_file: ['{svc.get('env_file')}'])"
+            
+            # Include package_manager for correct install/build commands
+            if svc.get('package_manager'):
+                pm_info = svc.get('package_manager')
+                # Handle both old string format and new dict format
+                if isinstance(pm_info, dict):
+                    pm = pm_info.get('manager', 'npm')
+                    has_lock = pm_info.get('has_lockfile', True)
+                else:
+                    pm = pm_info
+                    has_lock = True
+                
+                if pm == 'yarn':
+                    svc_line += f", package_manager: yarn (USE: yarn install --frozen-lockfile, yarn build)"
+                elif pm == 'pnpm':
+                    svc_line += f", package_manager: pnpm (USE: pnpm install --frozen-lockfile, pnpm build)"
+                elif has_lock:
+                    svc_line += f", package_manager: npm (USE: npm ci, npm run build)"
+                else:
+                    svc_line += f", package_manager: npm, NO LOCKFILE (USE: npm install, npm run build)"
             
             # Include database cloud/local info (CRITICAL for compose generation)
             if svc.get('type') == 'database':

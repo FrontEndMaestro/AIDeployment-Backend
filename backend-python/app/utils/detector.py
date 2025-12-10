@@ -637,6 +637,24 @@ def _normalize_service_path(project_path: str, service_path: str) -> str:
     return rel
 
 
+def _detect_package_manager(service_path: str) -> dict:
+    """
+    Detect which package manager a Node.js service uses and if lock file exists.
+    Returns dict with:
+      - manager: 'yarn', 'pnpm', or 'npm'
+      - has_lockfile: True if lock file exists (needed for npm ci)
+    """
+    if os.path.exists(os.path.join(service_path, "yarn.lock")):
+        return {"manager": "yarn", "has_lockfile": True}
+    elif os.path.exists(os.path.join(service_path, "pnpm-lock.yaml")):
+        return {"manager": "pnpm", "has_lockfile": True}
+    elif os.path.exists(os.path.join(service_path, "package-lock.json")):
+        return {"manager": "npm", "has_lockfile": True}
+    else:
+        return {"manager": "npm", "has_lockfile": False}
+
+
+
 def infer_services(
     project_path: str,
     language: str,
@@ -685,7 +703,8 @@ def infer_services(
                 "port_source": backend_port_info.get("source", "default"),
                 "entry_point": backend_entry,  # Entry point relative to service dir
                 "start_command": backend_start_cmd,  # Start command relative to service dir
-                "env_file": backend_env_file  # Path to .env for docker-compose
+                "env_file": backend_env_file,  # Path to .env for docker-compose
+                "package_manager": _detect_package_manager(backend_path)  # npm/yarn/pnpm
             })
         if frontend_path:
             # Extract build_output specifically for this frontend service
@@ -714,7 +733,8 @@ def infer_services(
                 "build_output": frontend_build_output,  # CRA -> "build", Vite -> "dist"
                 "port": frontend_port,
                 "port_source": frontend_port_info.get("source", "default"),
-                "env_file": frontend_env_file  # Path to .env for docker-compose
+                "env_file": frontend_env_file,  # Path to .env for docker-compose
+                "package_manager": _detect_package_manager(frontend_path)  # npm/yarn/pnpm
             })
     else:
         # Single service inference
