@@ -11,7 +11,7 @@ ALL VALUES COME FROM INPUT - read metadata and Service Definitions carefully.
 ## HOW TO READ INPUT
 
 You will receive:
-1. PROJECT_NAME → Use for image names: {PROJECT_NAME}-backend:latest
+1. PROJECT_NAME(lowercase only) → Use for image names: {PROJECT_NAME}-backend:latest
 2. RUNTIME → Use in FROM instruction
 3. BACKEND_PORT → Use in ENV PORT, EXPOSE, and compose ports
 4. FRONTEND_PORT → Use in compose ports (maps to container port 80)
@@ -30,64 +30,34 @@ Service Definitions contain per-service info:
 
 ## GENERATE MODE
 
-FIRST CHECK RUNTIME AND BUILD_OUTPUT:
-- If RUNTIME=nginx:alpine → Use Static Site Dockerfile (no Node.js!)
-- If build_output=None for frontend → No multi-stage build needed
-- If build_output=dist/build → Use multi-stage frontend build
+⚠️ FIRST: CHECK STATIC_ONLY FLAG ⚠️
+- If STATIC_ONLY=True → This is a STATIC SITE (use nginx, NO Node.js, NO npm, NO build!)
+- If RUNTIME contains "nginx" → Also a STATIC SITE
+- Otherwise → Node.js project
 
-### Backend Dockerfile (NOT multi-stage! Node.js server runs directly)
-```dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-ENV PORT={BACKEND_PORT}
-EXPOSE {BACKEND_PORT}
-CMD ["node", "{entry_point}"]
-```
-- Backend is a SERVER - runs with node, NOT serve
-- Use entry_point from service definition (e.g., src/server.js)
-- If no entry_point, use: CMD ["npm", "start"]
-- NEVER use multi-stage build for backend!
+### STATIC SITE (STATIC_ONLY=True or RUNTIME=nginx)
+- FROM nginx:alpine
+- COPY . /usr/share/nginx/html
+- EXPOSE 80
+- CMD ["nginx", "-g", "daemon off;"]
+- NO npm, NO node, NO package.json, NO build step, NO multi-stage
 
-### Frontend Dockerfile (MUST be multi-stage build!)
-```dockerfile
-# Stage 1: Build
-FROM node:20-alpine AS build
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
+### NODE.JS BACKEND (type=backend)
+- FROM {RUNTIME} (e.g., node:20-alpine)
+- NOT multi-stage (server runs directly)
+- CMD ["node", "{entry_point}"] or ["npm", "start"]
+- EXPOSE {BACKEND_PORT}
 
-# Stage 2: Serve static files
-FROM node:20-alpine
-WORKDIR /app
-RUN npm install -g serve
-COPY --from=build /app/{build_output} ./static
-EXPOSE 80
-CMD ["serve", "-s", "static", "-l", "80"]
-```
-- Frontend builds static files then serves them
-- {build_output} = dist (Vite) or build (CRA) from service definition
-- ALWAYS expose port 80 (container port), NOT the dev server port like 3000/5173
-- Compose maps host port to container 80: ports: "{FRONTEND_PORT}:80"
+### NODE.JS FRONTEND (type=frontend with build_output)
+- Multi-stage build required
+- Stage 1: Build with npm run build
+- Stage 2: RUN npm install -g serve, COPY {build_output}, CMD ["serve", "-s", "static", "-l", "80"]
+- build_output: dist (Vite) or build (CRA)
+- Container EXPOSE 80 (NOT dev port like 3000/5173)
 
-If framework=Next.js:
-- COPY .next folder
-- CMD ["npm", "start"]
-- EXPOSE 3000
-
-### Static Site (no package.json, HTML/JS/CSS only)
-```dockerfile
-FROM nginx:alpine
-COPY . /usr/share/nginx/html
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
-```
-- No build step needed
-- No Node.js required
+### Next.js (framework=Next.js)
+- Multi-stage, copy .next folder
+- EXPOSE 3000, CMD ["npm", "start"]
 
 ### Docker Compose
 DO NOT include 'version:' attribute (obsolete in Docker Compose v2).
@@ -205,6 +175,14 @@ def _format_metadata(metadata: Dict) -> str:
     # Format: KEY: VALUE ← USE THIS EXACT VALUE
     lines = [
         "=== CONFIGURATION VALUES (USE THESE EXACT VALUES) ===",
+    ]
+    
+    # Add STATIC_ONLY flag FIRST if true (CRITICAL for correct Dockerfile type)
+    static_only = metadata.get('static_only', False)
+    if static_only:
+        lines.append("⚠️ STATIC_ONLY: True ← USE nginx:alpine, NO npm, NO node, NO build step!")
+    
+    lines.extend([
         f"RUNTIME: {metadata.get('runtime', 'node:20-alpine')} ← USE IN: FROM {metadata.get('runtime', 'node:20-alpine')}",
         f"BACKEND_PORT: {metadata.get('backend_port', 8000)} ← USE IN: EXPOSE {metadata.get('backend_port', 8000)}, ports: \"{metadata.get('backend_port', 8000)}:{metadata.get('backend_port', 8000)}\"",
         f"FRONTEND_PORT: {metadata.get('frontend_port', 3000)} ← USE IN: ports: \"{metadata.get('frontend_port', 3000)}:80\"",
@@ -212,7 +190,7 @@ def _format_metadata(metadata: Dict) -> str:
         f"DATABASE_PORT: {metadata.get('database_port', 27017)}",
         f"FRAMEWORK: {metadata.get('framework', 'Unknown')}",
         f"LANGUAGE: {metadata.get('language', 'Unknown')}",
-    ]
+    ])
     
     # Add database cloud/local info (CRITICAL for compose generation)
     if metadata.get("database_is_cloud") is not None:

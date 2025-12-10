@@ -1228,7 +1228,7 @@ def _classify_docker_service(name: str) -> str:
     """
     n = name.lower()
 
-    if any(k in n for k in ["front", "client", "web", "ui"]):
+    if any(k in n for k in ["front", "client", "web", "ui","public"]):
         return "frontend"
     if any(k in n for k in ["back", "api", "server", "app"]):
         return "backend"

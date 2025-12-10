@@ -1,0 +1,52 @@
+[
+  {
+    "project": "project_mern_memories",
+    "status": "COMPLETE",
+    "passed": 2,
+    "failed": 4,
+    "total": 6,
+    "issues": [],
+    "response_length": 968,
+    "time_seconds": 78.25998640060425
+  },
+  {
+    "project": "idurar_erp_crm",
+    "status": "COMPLETE",
+    "passed": 4,
+    "failed": 1,
+    "total": 5,
+    "issues": [],
+    "response_length": 1073,
+    "time_seconds": 54.38343524932861
+  },
+  {
+    "project": "nextjs_fullstack",
+    "status": "COMPLETE",
+    "passed": 3,
+    "failed": 1,
+    "total": 4,
+    "issues": [],
+    "response_length": 514,
+    "time_seconds": 28.175941228866577
+  },
+  {
+    "project": "express_api_only",
+    "status": "COMPLETE",
+    "passed": 5,
+    "failed": 0,
+    "total": 5,
+    "issues": [],
+    "response_length": 837,
+    "time_seconds": 38.25578308105469
+  },
+  {
+    "project": "ts_mern_postgres",
+    "status": "COMPLETE",
+    "passed": 5,
+    "failed": 0,
+    "total": 5,
+    "issues": [],
+    "response_length": 1102,
+    "time_seconds": 53.699525117874146
+  }
+]
