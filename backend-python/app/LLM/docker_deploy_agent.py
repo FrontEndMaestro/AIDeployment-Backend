@@ -5,8 +5,12 @@ from .llm_client import call_llama
 # System prompt dedicated to Docker deployment analysis/generation
 DOCKER_DEPLOY_SYSTEM_PROMPT = """You generate Docker configurations based on project metadata.
 
-CRITICAL: DO NOT ASSUME ANYTHING. Only use values explicitly provided in metadata.
-ALL VALUES COME FROM INPUT - read metadata and Service Definitions carefully.
+⚠️⚠️⚠️ CRITICAL RULES - READ FIRST ⚠️⚠️⚠️
+1. BACKEND = SINGLE-STAGE! Only ONE "FROM". NO "as builder". NO "COPY --from". NO nginx.
+2. FRONTEND = MULTI-STAGE! Use "FROM ... as builder", then "FROM nginx:alpine", then "COPY --from=builder".
+3. Backend does NOT need npm run build - just install and run directly.
+4. Only use values from metadata - never assume.
+⚠️⚠️⚠️ END CRITICAL RULES ⚠️⚠️⚠️
 
 ## HOW TO READ INPUT
 
@@ -44,13 +48,14 @@ Service Definitions contain per-service info:
 
 ### NODE.JS BACKEND (type=backend)
 - FROM {RUNTIME} (e.g., node:20-alpine)
-- NOT multi-stage (server runs directly)
+- ⚠️ NO MULTI-STAGE! Single FROM only. No nginx. No COPY --from.
 - CMD ["node", "{entry_point}"] or ["npm", "start"]
 - EXPOSE {BACKEND_PORT}
+- NO build step needed for backend (runs directly with node)
 
 ### NODE.JS FRONTEND (type=frontend with build_output)
 - Multi-stage build required
-- Stage 1: Build with npm run build
+- Stage 1: COPY package*.json, npm install, COPY . . (REQUIRED!), npm run build
 - Stage 2: RUN npm install -g serve, COPY {build_output}, CMD ["serve", "-s", "static", "-l", "80"]
 - build_output: dist (Vite) or build (CRA)
 - Container EXPOSE 80 (NOT dev port like 3000/5173)
@@ -71,8 +76,10 @@ services:
     ports:
       - "{service.port}:{container_port}"
     env_file:
-      - {service.env_file}  # Only if env_file exists
+      - {service.env_file}  # ⚠️ REQUIRED if env_file is defined! Check Service Definitions.
 ```
+
+⚠️ ENV_FILE RULE: If a service has env_file defined in Service Definitions, you MUST add it to compose!
 
 Service dependency rules:
 - BACKEND depends_on database (if is_cloud=False)
@@ -160,9 +167,19 @@ Compare existing Dockerfiles against metadata:
 - Does CMD match {entry_point}?
 - Does build_output match {build_output}?
 - Do compose ports match service ports?
-
+- Do compose volumes match service volumes?
+- Refer to Logs for Debugging (if any)
 Say "Valid" if files work.
-Say "Invalid" only for blocking errors (syntax, missing files)."""
+Say "Invalid" only for blocking errors (syntax, missing files).
+
+## FINAL CHECKLIST (verify before responding)
+☐ Every compose service has image: {PROJECT_NAME}-{service.name}:latest
+☐ Every Dockerfile has COPY . . before npm run build
+☐ env_file included if service has env_file defined
+☐ No database container if DATABASE_IS_CLOUD=True
+☐ Backend Dockerfile is SINGLE-STAGE (only one FROM, no nginx, no COPY --from)
+"""
+
 
 
 
@@ -228,7 +245,7 @@ def _format_metadata(metadata: Dict) -> str:
         lines.append(f"# For multi-service: Use entry_point from Service Definitions ({', '.join(backend_entries)})")
         
     if build_output:
-        lines.append(f"BUILD_OUTPUT: {build_output} ← USE IN: COPY --from=build /app/{build_output} ./static")
+        lines.append(f"BUILD_OUTPUT: {build_output} ← FRONTEND ONLY! NOT for backend!")
 
     env_vars = metadata.get("env_variables") or []
     if env_vars:
@@ -354,14 +371,29 @@ def build_deploy_message(
                     pm = pm_info
                     has_lock = True
                 
+                # Backend: install only, Frontend: install + build
+                is_backend = svc.get('type') == 'backend'
+                
                 if pm == 'yarn':
-                    svc_line += f", package_manager: yarn (USE: yarn install --frozen-lockfile, yarn build)"
+                    if is_backend:
+                        svc_line += f", package_manager: yarn (USE: yarn install --frozen-lockfile)"
+                    else:
+                        svc_line += f", package_manager: yarn (USE: yarn install --frozen-lockfile, yarn build)"
                 elif pm == 'pnpm':
-                    svc_line += f", package_manager: pnpm (USE: pnpm install --frozen-lockfile, pnpm build)"
+                    if is_backend:
+                        svc_line += f", package_manager: pnpm (USE: pnpm install --frozen-lockfile)"
+                    else:
+                        svc_line += f", package_manager: pnpm (USE: pnpm install --frozen-lockfile, pnpm build)"
                 elif has_lock:
-                    svc_line += f", package_manager: npm (USE: npm ci, npm run build)"
+                    if is_backend:
+                        svc_line += f", package_manager: npm (USE: npm ci)"
+                    else:
+                        svc_line += f", package_manager: npm (USE: npm ci, npm run build)"
                 else:
-                    svc_line += f", package_manager: npm, NO LOCKFILE (USE: npm install, npm run build)"
+                    if is_backend:
+                        svc_line += f", package_manager: npm, NO LOCKFILE (USE: npm install)"
+                    else:
+                        svc_line += f", package_manager: npm, NO LOCKFILE (USE: npm install, npm run build)"
             
             # Include database cloud/local info (CRITICAL for compose generation)
             if svc.get('type') == 'database':

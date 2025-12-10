@@ -1,0 +1,143 @@
+============================================================
+LLM RESPONSE:
+============================================================
+STATUS: Generated
+
+REASON:
+- Generated backend Dockerfile using provided metadata
+- Generated frontend Dockerfile using provided metadata
+- Generated docker-compose.yml with services for backend, frontend, and database
+
+GENERATED FILES:
+
+**backend/Dockerfile**
+```dockerfile
+# Use the official Node.js runtime as a parent image
+FROM node:20-alpine
+
+# Set environment variables
+ENV PORT=5000 \
+    NODE_ENV=production \
+    JWT_SECRET=your_jwt_secret \
+    MONGO_URI=mongodb://mongo:27017/ecommerce \
+    RAZORPAY_KEY_ID=your_razorpay_key_id \
+    RAZORPAY_KEY_SECRET=your_razorpay_key_secret \
+    PAGINATION_MAX_LIMIT=10 \
+    EMAIL_HOST=smtp.example.com \
+    EMAIL_PORT=587 \
+    EMAIL_USER=your_email_user \
+    EMAIL_PASS=your_email_pass \
+    EMAIL_FROM=no-reply@example.com
+
+# Set working directory
+WORKDIR /app
+
+# Copy package.json and package-lock.json
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci
+
+# Build the application
+RUN npm run build
+
+# Expose the port
+EXPOSE 5000
+
+# Command to run the application
+CMD ["node", "server.js"]
+```
+
+**frontend/Dockerfile**
+```dockerfile
+# Use the official Node.js runtime as a parent image
+FROM node:20-alpine
+
+# Set environment variables
+ENV PORT=3000 \
+    NODE_ENV=production
+
+# Set working directory
+WORKDIR /app
+
+# Copy package.json and package-lock.json
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci
+
+# Build the application
+RUN npm run build
+
+# Use multi-stage build to serve the static files
+FROM nginx:alpine as builder
+COPY --from=build /app/build ./static
+
+FROM nginx:alpine
+COPY --from=builder /static /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+**docker-compose.yml**
+```yaml
+services:
+  backend:
+    image: mern-ecommerce-main-backend:latest
+    build: .
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mongo
+
+  frontend:
+    image: mern-ecommerce-main-frontend:latest
+    build: ./frontend
+    ports:
+      - "3000:80"
+
+  mongo:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:
+```
+
+**Verification Comments**
+- **backend/Dockerfile**: 
+  - `FROM node:20-alpine`: Correct runtime specified.
+  - `ENV PORT=5000 ...`: Environment variables set correctly.
+  - `WORKDIR /app`: Working directory set.
+  - `COPY package*.json ./`: Copies package files.
+  - `RUN npm ci`: Installs dependencies using lockfile.
+  - `RUN npm run build`: Builds the application.
+  - `EXPOSE 5000`: Exposes port 5000.
+  - `CMD ["node", "server.js"]`: Command to run the backend.
+
+- **frontend/Dockerfile**:
+  - `FROM node:20-alpine`: Correct runtime specified.
+  - `ENV PORT=3000 ...`: Environment variables set correctly.
+  - `WORKDIR /app`: Working directory set.
+  - `COPY package*.json ./`: Copies package files.
+  - `RUN npm ci`: Installs dependencies using lockfile.
+  - `RUN npm run build`: Builds the application.
+  - `FROM nginx:alpine as builder ...`: Multi-stage build for serving static files.
+  - `COPY --from=builder /static /usr/share/nginx/html`: Copies built files to Nginx directory.
+  - `EXPOSE 80`: Exposes port 80.
+  - `CMD ["nginx", "-g", "daemon off;"]`: Command to run Nginx.
+
+- **docker-compose.yml**:
+  - `services.backend.image: mern-ecommerce-main-backend:latest`: Correct image specified.
+  - `build: .`: Build context set correctly.
+  - `ports: - "5000:5000"`: Port mapping correct.
+  - `depends_on: - mongo`: Depends on MongoDB service.
+  - `services.frontend.image: mern-ecommerce-main-frontend:latest`: Correct image specified.
+  - `build: ./frontend`: Build context set correctly.
+  - `ports: - "3000:80"`: Port mapping correct.
+  - `services.mongo.image: mongo:latest`: Correct image specified.
+  - `ports: - "27017:27017"`: Port mapping correct.
+  - `volumes: - mongo-data:/data/db`: Volume for MongoDB data.

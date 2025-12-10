@@ -40,7 +40,7 @@ def call_llama(messages: List[Dict[str, str]], custom_options: Optional[Dict] = 
         options = {
             "temperature": LLM_TEMPERATURE,
             "top_p": LLM_TOP_P,
-            "num_ctx": 8192,  # 8k context window
+            "num_ctx": 16384,  # 8k context window
         }
         
         # Merge custom options if provided

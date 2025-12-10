@@ -1,0 +1,319 @@
+
+======================================================================
+PROJECT: mern-memories
+======================================================================
+STATUS: Generated
+
+REASON:
+- Generated backend Dockerfile using provided metadata
+- Generated frontend Dockerfile using provided metadata
+- Generated docker-compose.yml with services for both backend and frontend
+
+GENERATED FILES:
+
+**server/Dockerfile**
+```dockerfile
+# Use the official Node.js runtime as a parent image
+FROM node:20-alpine
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy package.json and package-lock.json (if exists) to the working directory
+COPY package*.json ./
+
+# Install production dependencies
+RUN npm ci
+
+# Bundle app source inside Docker image
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Make port 5000 available to the world outside this container
+EXPOSE 5000
+
+# Define environment variable
+ENV PORT=5000
+
+# Run the application when the container launches
+CMD ["node", "index.js"]
+```
+
+**client/Dockerfile**
+```dockerfile
+# Use the official Node.js runtime as a parent image
+FROM node:20-alpine
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy package.json and package-lock.json (if exists) to the working directory
+COPY package*.json ./
+
+# Install production dependencies
+RUN npm ci
+
+# Bundle app source inside Docker image
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Make port 80 available to the world outside this container
+EXPOSE 80
+
+# Define environment variable
+ENV PORT=3000
+
+# Run the application when the container launches
+CMD ["npm", "start"]
+```
+
+**docker-compose.yml**
+```yaml
+services:
+  backend:
+    image: mern-memories-backend:latest
+    build: ./server
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./server/.env
+
+  frontend:
+    image: mern-memories-frontend:latest
+    build: ./client
+    ports:
+      - "3000:80"
+```
+
+**Verification Comments**
+1. **backend/Dockerfile**: 
+   - `FROM node:20-alpine`: Correct runtime specified.
+   - `COPY package*.json ./`: Correct path for package files.
+   - `RUN npm ci`: Correct command to install dependencies without lockfile.
+   - `COPY . .`: Correct path for copying application code.
+   - `RUN npm run build`: Correct command to build the application.
+   - `EXPOSE 5000`: Correct port exposed.
+   - `CMD ["node", "index.js"]`: Correct command to start the backend.
+
+2. **frontend/Dockerfile**: 
+   - `FROM node:20-alpine`: Correct runtime specified.
+   - `COPY package*.json ./`: Correct path for package files.
+   - `RUN npm ci`: Correct command to install dependencies without lockfile.
+   - `COPY . .`: Correct path for copying application code.
+   - `RUN npm run build`: Correct command to build the application.
+   - `EXPOSE 80`: Correct port exposed.
+   - `CMD ["npm", "start"]`: Correct command to start the frontend.
+
+3. **docker-compose.yml**: 
+   - Both services have correct image names (`mern-memories-backend:latest` and `mern-memories-frontend:latest`).
+   - Both services have correct build paths (`./server` for backend and `./client` for frontend).
+   - Both services expose the correct ports (`5000` for backend and `3000` for frontend).
+   - The frontend service does not depend on a database as specified.
+
+
+======================================================================
+PROJECT: mern-blog-app
+======================================================================
+STATUS: Generated
+
+REASON:
+- Generated backend Dockerfile using provided metadata
+- Generated frontend Dockerfile using provided metadata
+- Generated docker-compose.yml with services for backend, frontend, and MongoDB
+
+GENERATED FILES:
+
+**backend/Dockerfile**
+```dockerfile
+# Use the official Node.js runtime as a parent image
+FROM node:20-alpine
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy package.json and package-lock.json (if exists) to install dependencies
+COPY package*.json ./
+
+# Install production dependencies
+RUN npm ci
+
+# Bundle app source inside Docker image
+COPY . .
+
+# Make port 3000 available to the world outside this container
+EXPOSE 3000
+
+# Define environment variable
+ENV PORT=3000
+
+# Run server.js when the container launches
+CMD ["node", "src/server.js"]
+```
+
+**frontend/Dockerfile**
+```dockerfile
+# Use the official Node.js runtime as a parent image
+FROM node:20-alpine
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy package.json and package-lock.json (if exists) to install dependencies
+COPY package*.json ./
+
+# Install production dependencies
+RUN npm ci
+
+# Bundle app source inside Docker image
+COPY . .
+
+# Build the frontend application
+RUN npm run build
+
+# Use a multi-stage build for serving the static files
+FROM nginx:alpine as builder
+WORKDIR /usr/share/nginx/html
+COPY --from=0 /app/dist .
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+**docker-compose.yml**
+```yaml
+services:
+  backend:
+    image: mern-blog-app-backend:latest
+    build: ./backend
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./backend/.env
+
+  frontend:
+    image: mern-blog-app-frontend:latest
+    build: ./frontend
+    ports:
+      - "5173:80"
+
+  mongo:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:
+```
+
+**Verification Comments**
+- The backend Dockerfile uses `node:20-alpine` as the runtime and exposes port 3000.
+- The frontend Dockerfile uses a multi-stage build, copying the built static files from the first stage to an Nginx container.
+- The docker-compose.yml file defines services for backend, frontend, and MongoDB. The backend service depends on the MongoDB service if `DATABASE_IS_CLOUD=False`.
+- All paths in Dockerfiles are relative to the build context.
+
+
+======================================================================
+PROJECT: react-job-portal
+======================================================================
+STATUS: Generated
+
+REASON:
+- Generated backend Dockerfile using provided metadata
+- Generated frontend Dockerfile using provided metadata
+- Generated docker-compose.yml with services for both backend and frontend
+
+GENERATED FILES:
+
+**backend/Dockerfile**
+```dockerfile
+# Use the official Node.js runtime as a parent image
+FROM node:20-alpine
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy package.json and package-lock.json (if exists) to install dependencies
+COPY package*.json ./
+
+# Install production dependencies
+RUN npm ci
+
+# Bundle app source inside Docker image
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Make port 4000 available to the world outside this container
+EXPOSE 4000
+
+# Define environment variable
+ENV PORT=4000
+
+# Run server.js when the container launches
+CMD ["node", "server.js"]
+```
+
+**frontend/Dockerfile**
+```dockerfile
+# Use the official Node.js runtime as a parent image
+FROM node:20-alpine
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy package.json and package-lock.json (if exists) to install dependencies
+COPY package*.json ./
+
+# Install production dependencies
+RUN npm ci
+
+# Bundle app source inside Docker image
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Make port 80 available to the world outside this container
+EXPOSE 80
+
+# Define environment variable
+ENV PORT=5173
+
+# Run serve with static files from dist directory
+CMD ["serve", "-s", "dist", "-l", "80"]
+```
+
+**docker-compose.yml**
+```yaml
+services:
+  backend:
+    image: react-job-portal-backend:latest
+    build: ./backend
+    ports:
+      - "4000:4000"
+    env_file:
+      - ./backend/.env
+
+  frontend:
+    image: react-job-portal-frontend:latest
+    build: ./frontend
+    ports:
+      - "5173:80"
+```
+
+**Verification Comments**
+- The backend Dockerfile uses `node:20-alpine` as the base image.
+- The frontend Dockerfile uses `node:20-alpine` as the base image.
+- Both Dockerfiles expose the correct port (`4000` for backend and `80` for frontend).
+- Both Dockerfiles use `npm ci` to install dependencies, which is appropriate for production builds.
+- Both Dockerfiles run the build command (`npm run build`) to prepare the application.
+- The docker-compose.yml file correctly specifies the images and ports for both services.
+- No database container is included as per the metadata.
+
