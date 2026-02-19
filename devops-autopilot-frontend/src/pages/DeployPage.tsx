@@ -3,12 +3,14 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Navbar } from "../components/Navbar";
 import { Card } from "../components/Card";
 import { Button } from "../components/Button";
-import { apiClient } from "../api/client";
+import { apiClient, streamAWSTerraform } from "../api/client";
 import {
   DockerContextResponse,
   DockerfileInfo,
   FileNode,
 } from "../types/api";
+
+type DeployMode = "docker" | "aws";
 
 interface ChatMessage {
   role: "user" | "ai";
@@ -42,6 +44,21 @@ export const DeployPage: React.FC = () => {
   const [eventSource, setEventSource] = useState<EventSource | null>(null);
   const [refreshingTree, setRefreshingTree] = useState<boolean>(false);
   const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
+  
+  // Deploy mode toggle: docker or aws
+  const [deployMode, setDeployMode] = useState<DeployMode>("docker");
+  const [awsConfig, setAwsConfig] = useState({
+    aws_region: "us-east-1",
+    docker_repo_prefix: "",
+    db_engine: "none",
+    mongo_db_url: "",
+    desired_count: 1,
+  });
+  const [awsStatus, setAwsStatus] = useState<string>("not_deployed");
+  const [terraformExists, setTerraformExists] = useState<boolean>(false);
+  const [terraformLogs, setTerraformLogs] = useState<{type: string; message: string; stage?: string}[]>([]);
+  const [isDeploying, setIsDeploying] = useState(false);
+  
   const apiBase = "http://localhost:8000/api";
   const rootLabel = context?.project.project_name || "project";
 
@@ -60,6 +77,20 @@ export const DeployPage: React.FC = () => {
           },
         ]);
         setError(null);
+        
+        // Also fetch AWS prerequisites to get Docker Hub username
+        try {
+          const awsPrereqs = await apiClient.checkAWSPrerequisites(projectId);
+          if (awsPrereqs.docker_hub_username) {
+            setAwsConfig(prev => ({ ...prev, docker_repo_prefix: awsPrereqs.docker_hub_username || "" }));
+          }
+          if (awsPrereqs.terraform_exists) {
+            setTerraformExists(true);
+            setAwsStatus(awsPrereqs.aws_deployment_status || "terraform_generated");
+          }
+        } catch {
+          // AWS prerequisites optional
+        }
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to load deploy context"
@@ -560,14 +591,41 @@ export const DeployPage: React.FC = () => {
       <main className="max-w-7xl mx-auto px-6 py-8 h-[calc(100vh-64px)]">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-3xl font-bold text-white">Docker Deploy</h1>
+            <h1 className="text-3xl font-bold text-white">
+              {deployMode === "docker" ? "🐳 Docker Deploy" : "☁️ AWS Deploy"}
+            </h1>
             <p className="text-gray-400">
               Project: {context.project.project_name} (powered by Llama 3.1)
             </p>
           </div>
-          <Button variant="secondary" onClick={() => navigate("/dashboard")}>
-            Back to Dashboard
-          </Button>
+          <div className="flex items-center gap-4">
+            {/* Mode Toggle */}
+            <div className="flex items-center gap-2 bg-gray-800 rounded-lg p-1">
+              <button
+                onClick={() => setDeployMode("docker")}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                  deployMode === "docker"
+                    ? "bg-cyan-600 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                🐳 Docker
+              </button>
+              <button
+                onClick={() => setDeployMode("aws")}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                  deployMode === "aws"
+                    ? "bg-orange-500 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                ☁️ AWS
+              </button>
+            </div>
+            <Button variant="secondary" onClick={() => navigate("/dashboard")}>
+              Back to Dashboard
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-[calc(100vh-150px)]">
@@ -718,71 +776,266 @@ export const DeployPage: React.FC = () => {
             </Card>
           </div>
 
-          {/* Right sidebar: docker actions + chat */}
+          {/* Right sidebar: actions + chat */}
           <div className="lg:col-span-3 flex flex-col gap-3 max-h-[calc(100vh-180px)] overflow-y-auto custom-scroll">
             <Card className="p-4 bg-gray-800 border-gray-700">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-white">Docker Actions</h3>
-                <span className="text-xs text-gray-400">Build & Run</span>
-              </div>
-              
-              {/* Deploy blocked warning */}
-              {context.metadata.deploy_blocked && (
-                <div className="mb-3 p-3 bg-yellow-500/10 border border-yellow-500/50 rounded-lg">
-                  <p className="text-xs text-yellow-400 font-medium mb-1">⚠️ Deployment Blocked</p>
-                  <p className="text-xs text-yellow-300/80">
-                    {context.metadata.deploy_blocked_reason || "Backend .env file is required for Docker deployment."}
-                  </p>
-                </div>
-              )}
-              
-              <div className="flex flex-wrap gap-2 mb-3">
-                <Button 
-                  variant="secondary" 
-                  size="sm" 
-                  onClick={() => startStream("build")}
-                  disabled={context.metadata.deploy_blocked}
-                >
-                  Build Image
-                </Button>
-                <Button 
-                  variant="secondary" 
-                  size="sm" 
-                  onClick={() => startStream("run")}
-                  disabled={context.metadata.deploy_blocked}
-                >
-                  Run Container
-                </Button>
-                <Button 
-                  variant="secondary" 
-                  size="sm" 
-                  onClick={() => startStream("push")}
-                  disabled={context.metadata.deploy_blocked}
-                >
-                  Push Image
-                </Button>
-              </div>
-              <div className="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-36 overflow-auto custom-scroll">
-                {logs.length === 0 ? (
-                  <p className="text-sm text-gray-400">Logs will stream here.</p>
-                ) : (
-                  logs.map((l, idx) => (
-                    <div key={idx} className="text-xs text-gray-200">
-                      <span className="text-cyan-400 mr-2">[{l.stage}]</span>
-                      {l.line}
-                      {typeof l.exit_code === "number" ? ` (exit ${l.exit_code})` : ""}
+              {deployMode === "docker" ? (
+                <>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-white">🐳 Docker Actions</h3>
+                    <span className="text-xs text-gray-400">Build & Run</span>
+                  </div>
+                  
+                  {/* Deploy blocked warning */}
+                  {context.metadata.deploy_blocked && (
+                    <div className="mb-3 p-3 bg-yellow-500/10 border border-yellow-500/50 rounded-lg">
+                      <p className="text-xs text-yellow-400 font-medium mb-1">⚠️ Deployment Blocked</p>
+                      <p className="text-xs text-yellow-300/80">
+                        {context.metadata.deploy_blocked_reason || "Backend .env file is required for Docker deployment."}
+                      </p>
                     </div>
-                  ))
-                )}
-              </div>
+                  )}
+                  
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    <Button 
+                      variant="secondary" 
+                      size="sm" 
+                      onClick={() => startStream("build")}
+                      disabled={context.metadata.deploy_blocked}
+                    >
+                      Build Image
+                    </Button>
+                    <Button 
+                      variant="secondary" 
+                      size="sm" 
+                      onClick={() => startStream("run")}
+                      disabled={context.metadata.deploy_blocked}
+                    >
+                      Run Container
+                    </Button>
+                    <Button 
+                      variant="secondary" 
+                      size="sm" 
+                      onClick={() => startStream("push")}
+                      disabled={context.metadata.deploy_blocked}
+                    >
+                      Push Image
+                    </Button>
+                  </div>
+                  <div className="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-36 overflow-auto custom-scroll">
+                    {logs.length === 0 ? (
+                      <p className="text-sm text-gray-400">Logs will stream here.</p>
+                    ) : (
+                      logs.map((l, idx) => (
+                        <div key={idx} className="text-xs text-gray-200">
+                          <span className="text-cyan-400 mr-2">[{l.stage}]</span>
+                          {l.line}
+                          {typeof l.exit_code === "number" ? ` (exit ${l.exit_code})` : ""}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-white">☁️ AWS Actions</h3>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      awsStatus === "deployed" ? "bg-green-500/20 text-green-400" :
+                      awsStatus === "deploying" ? "bg-blue-500/20 text-blue-400" :
+                      "bg-gray-600/50 text-gray-400"
+                    }`}>
+                      {awsStatus.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                  
+                  {/* AWS Config Form */}
+                  <div className="space-y-3 mb-3">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">AWS Region</label>
+                      <select
+                        value={awsConfig.aws_region}
+                        onChange={(e) => setAwsConfig(prev => ({ ...prev, aws_region: e.target.value }))}
+                        className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white"
+                      >
+                        <option value="us-east-1">US East (N. Virginia)</option>
+                        <option value="us-west-2">US West (Oregon)</option>
+                        <option value="eu-west-1">EU (Ireland)</option>
+                        <option value="ap-south-1">Asia Pacific (Mumbai)</option>
+                      </select>
+                    </div>
+                    {awsConfig.docker_repo_prefix && (
+                      <div className="text-xs text-gray-400">
+                        <span>Docker Hub: </span>
+                        <span className="text-cyan-400">{awsConfig.docker_repo_prefix}</span>
+                        <span className="text-gray-500 ml-1">(from backend .env)</span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    <Button 
+                      variant="secondary" 
+                      size="sm" 
+                      onClick={async () => {
+                        if (!projectId || !awsConfig.docker_repo_prefix) return;
+                        setIsDeploying(true);
+                        
+                        // Show generating message
+                        setMessages(prev => [...prev, { 
+                          role: "ai", 
+                          content: "🏗️ Generating Terraform configuration for AWS ECS/Fargate...\n\nThis may take 30-60 seconds as the LLM creates infrastructure code for:\n• VPC and networking\n• Application Load Balancer\n• ECS Cluster and Fargate services\n• CloudWatch logging\n• IAM roles and security groups" 
+                        }]);
+                        
+                        try {
+                          const result = await apiClient.generateTerraform(projectId, awsConfig);
+                          setAwsStatus("terraform_generated");
+                          setMessages(prev => [...prev, { 
+                            role: "ai", 
+                            content: `✅ Terraform configuration generated and saved!\n\n📁 File: \`infra/main.tf\`\n📍 Path: ${result.terraform_path}\n\nThe infrastructure code includes:\n• VPC with 2 public subnets\n• Application Load Balancer\n• ECS Cluster with Fargate launch type\n• Task definitions for your services\n• Environment variables from your .env files\n\n👉 Click 'Deploy' to apply this configuration to AWS.` 
+                          }]);
+                          
+                          // Auto-refresh file explorer to show new file
+                          await refreshExplorer();
+                        } catch (err: any) {
+                          setMessages(prev => [...prev, { role: "ai", content: `❌ Terraform generation failed: ${err.message}` }]);
+                        }
+                        setIsDeploying(false);
+                      }}
+                      disabled={isDeploying || !awsConfig.docker_repo_prefix}
+                    >
+                      🏗️ Generate Terraform
+                    </Button>
+                    <Button 
+                      variant="secondary" 
+                      size="sm" 
+                      onClick={() => {
+                        if (!projectId) return;
+                        setIsDeploying(true);
+                        setTerraformLogs([]);
+                        setAwsStatus("deploying");
+                        
+                        let errorLogs: string[] = [];
+                        
+                        streamAWSTerraform(
+                          projectId,
+                          "apply",
+                          (event) => {
+                            setTerraformLogs(prev => [...prev, event]);
+                            if (event.type === "error" || event.message?.includes("Error")) {
+                              errorLogs.push(event.message);
+                            }
+                          },
+                          () => { setIsDeploying(false); setAwsStatus("deployed"); },
+                          async (err) => {
+                            // Collect error details
+                            const errorOutput = errorLogs.length > 0 
+                              ? errorLogs.join("\n") 
+                              : err.message;
+                            
+                            setMessages(prev => [...prev, { 
+                              role: "ai", 
+                              content: `❌ Deploy failed. Sending errors to LLM for auto-fix...` 
+                            }]);
+                            
+                            // Auto-fix via LLM
+                            try {
+                              const result = await apiClient.fixTerraform(projectId, errorOutput);
+                              setMessages(prev => [...prev, { 
+                                role: "ai", 
+                                content: `🔧 ${result.message}\n\nClick Deploy again to try the fixed configuration.` 
+                              }]);
+                              setAwsStatus("terraform_generated"); // Reset to allow retry
+                            } catch (fixErr: any) {
+                              setMessages(prev => [...prev, { 
+                                role: "ai", 
+                                content: `❌ Auto-fix failed: ${fixErr.message}. Check infra/main.tf manually.` 
+                              }]);
+                              setAwsStatus("failed");
+                            }
+                            setIsDeploying(false);
+                          }
+                        );
+                      }}
+                      disabled={isDeploying || (awsStatus === "not_deployed" && !terraformExists)}
+                    >
+                      🚀 Deploy
+                    </Button>
+                    <Button 
+                      variant="danger" 
+                      size="sm" 
+                      onClick={() => {
+                        if (!projectId || !window.confirm("⚠️ Destroy all AWS resources?")) return;
+                        setIsDeploying(true);
+                        setTerraformLogs([]);
+                        streamAWSTerraform(
+                          projectId,
+                          "destroy",
+                          (event) => setTerraformLogs(prev => [...prev, event]),
+                          () => { setIsDeploying(false); setAwsStatus("not_deployed"); },
+                          (err) => { setIsDeploying(false); setMessages(prev => [...prev, { role: "ai", content: `❌ ${err.message}` }]); }
+                        );
+                      }}
+                      disabled={isDeploying || (awsStatus === "not_deployed" && !terraformExists)}
+                    >
+                      🗑️ Destroy
+                    </Button>
+                    {awsStatus === "deployed" && (
+                      <Button 
+                        variant="secondary" 
+                        size="sm" 
+                        onClick={() => {
+                          if (!projectId) return;
+                          setIsDeploying(true);
+                          setTerraformLogs([]);
+                          setMessages(prev => [...prev, { role: "ai", content: "💤 Scaling to zero for cost savings..." }]);
+                          streamAWSTerraform(
+                            projectId,
+                            "scale-zero",
+                            (event) => setTerraformLogs(prev => [...prev, event]),
+                            () => { 
+                              setIsDeploying(false); 
+                              setAwsStatus("scaled_to_zero"); 
+                              setMessages(prev => [...prev, { role: "ai", content: "✅ Scaled to zero! No compute charges. Use Deploy to scale back up." }]);
+                            },
+                            (err) => { setIsDeploying(false); setMessages(prev => [...prev, { role: "ai", content: `❌ ${err.message}` }]); }
+                          );
+                        }}
+                        disabled={isDeploying}
+                      >
+                        💤 Scale to Zero
+                      </Button>
+                    )}
+                  </div>
+                  
+                  <div className="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-36 overflow-auto custom-scroll font-mono text-xs">
+                    {terraformLogs.length === 0 ? (
+                      <p className="text-gray-400">Terraform logs will stream here.</p>
+                    ) : (
+                      terraformLogs.map((log, idx) => (
+                        <div key={idx} className={`${
+                          log.type === "error" ? "text-red-400" :
+                          log.type === "success" ? "text-green-400" :
+                          "text-gray-200"
+                        }`}>
+                          <span className="text-orange-400 mr-2">[{log.stage || "tf"}]</span>
+                          {log.message}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </>
+              )}
             </Card>
 
             <Card className="p-4 bg-gray-800 border-gray-700 flex-1 flex flex-col min-h-0">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-white">
-                  Llama 3.1 Deploy Chat
+                  {deployMode === "docker" ? "🐳 Llama 3.1 Deploy Chat" : "☁️ Llama 3.1 AWS Chat"}
                 </h3>
-                <span className="text-xs text-gray-400">Dockerfile validation</span>
+                <span className="text-xs text-gray-400">
+                  {deployMode === "docker" ? "Dockerfile validation" : "Terraform generation"}
+                </span>
               </div>
 
               <div className="flex-1 overflow-y-auto custom-scroll mb-4 space-y-3 min-h-[320px] max-h-[520px]">

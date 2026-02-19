@@ -4,6 +4,7 @@ import { Button } from "./Button";
 import { Badge } from "./Badge";
 import { apiClient } from "../api/client";
 import { Project } from "../types/api";
+import AWSDeployPanel from "./AWSDeployPanel";
 
 interface ProjectDetailsModalProps {
   project: Project;
@@ -16,7 +17,7 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<"overview" | "metadata" | "logs">(
+  const [activeTab, setActiveTab] = useState<"overview" | "metadata" | "logs" | "deploy">(
     "overview"
   );
   const [exporting, setExporting] = useState(false);
@@ -119,6 +120,16 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
               }`}
             >
               Logs
+            </button>
+            <button
+              onClick={() => setActiveTab("deploy")}
+              className={`px-4 py-2 font-medium transition-colors border-b-2 ${
+                activeTab === "deploy"
+                  ? "border-cyan-500 text-cyan-400"
+                  : "border-transparent text-gray-400 hover:text-gray-300"
+              }`}
+            >
+              ☁️ AWS Deploy
             </button>
           </div>
 
@@ -739,6 +750,16 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
                   <p>No logs available</p>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Deploy Tab */}
+          {activeTab === "deploy" && (
+            <div>
+              <AWSDeployPanel
+                projectId={project._id}
+                projectName={project.project_name}
+              />
             </div>
           )}
 

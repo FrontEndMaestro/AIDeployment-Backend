@@ -354,6 +354,78 @@ class ApiClient {
     });
     return this.handleResponse(response);
   }
+
+  // ============ AWS DEPLOYMENT ENDPOINTS ============
+  
+  async checkAWSPrerequisites(projectId: string): Promise<{
+    can_deploy: boolean;
+    issues: string[];
+    project_name: string;
+    aws_region: string;
+    docker_push_success: boolean;
+    docker_hub_username?: string;
+    terraform_exists?: boolean;
+    aws_deployment_status?: string;
+  }> {
+    const response = await fetch(
+      `${API_BASE_URL}/aws/${projectId}/prerequisites`,
+      {
+        method: "GET",
+        headers: this.getHeaders(),
+      }
+    );
+    return this.handleResponse(response);
+  }
+
+  async generateTerraform(
+    projectId: string,
+    config: {
+      aws_region: string;
+      docker_repo_prefix: string;
+      db_engine?: string;
+      mongo_db_url?: string;
+      rds_db_url?: string;
+      desired_count?: number;
+      extra_env?: Record<string, string>;
+    }
+  ): Promise<{ status: string; terraform_path: string; message: string }> {
+    const response = await fetch(`${API_BASE_URL}/aws/${projectId}/generate`, {
+      method: "POST",
+      headers: this.getHeaders(),
+      body: JSON.stringify(config),
+    });
+    return this.handleResponse(response);
+  }
+
+  async getAWSStatus(projectId: string): Promise<{
+    aws_deployment_status: string;
+    aws_region?: string;
+    aws_frontend_url?: string;
+    aws_ecs_cluster_id?: string;
+    aws_last_deployed?: string;
+    docker_push_success: boolean;
+    live_alb_url?: string;
+    live_cluster_name?: string;
+    live_vpc_id?: string;
+  }> {
+    const response = await fetch(`${API_BASE_URL}/aws/${projectId}/status`, {
+      method: "GET",
+      headers: this.getHeaders(),
+    });
+    return this.handleResponse(response);
+  }
+
+  async fixTerraform(
+    projectId: string,
+    errorOutput: string
+  ): Promise<{ status: string; message: string }> {
+    const response = await fetch(`${API_BASE_URL}/aws/${projectId}/fix`, {
+      method: "POST",
+      headers: this.getHeaders(),
+      body: JSON.stringify({ error_output: errorOutput }),
+    });
+    return this.handleResponse(response);
+  }
 }
 
 export const apiClient = new ApiClient();
@@ -429,4 +501,95 @@ export function streamDockerChat(
   };
 
   return source;
+}
+
+/**
+ * Stream AWS Terraform apply/destroy operations using Server-Sent Events (SSE).
+ * 
+ * @param projectId - Project ID
+ * @param operation - 'apply' | 'destroy' | 'scale-zero'
+ * @param onEvent - Callback for each event received
+ * @param onComplete - Callback when streaming completes
+ * @param onError - Callback for errors
+ * @returns EventSource instance (can be closed to cancel)
+ */
+export function streamAWSTerraform(
+  projectId: string,
+  operation: 'apply' | 'destroy' | 'scale-zero',
+  onEvent: (event: { type: string; message: string; stage?: string }) => void,
+  onComplete: (outputs?: Record<string, any>) => void,
+  onError: (error: Error) => void
+): EventSource {
+  const rawApiBase =
+    (import.meta as any).env?.VITE_API_BASE_URL || "http://localhost:8000/api";
+  const apiBase = rawApiBase.endsWith("/api")
+    ? rawApiBase.replace(/\/+$/, "")
+    : `${rawApiBase.replace(/\/+$/, "")}/api`;
+
+  const token = apiClient.getToken();
+  const url = new URL(`${apiBase}/aws/${projectId}/${operation}`);
+  
+  if (token) {
+    url.searchParams.set("token", token);
+  }
+
+  // Use fetch with ReadableStream for POST requests
+  const headers: Record<string, string> = {
+    "Accept": "text/event-stream",
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  fetch(url.toString(), {
+    method: "POST",
+    headers,
+  }).then(async (response) => {
+    if (!response.ok) {
+      onError(new Error(`HTTP ${response.status}: ${response.statusText}`));
+      return;
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      onError(new Error("No response body"));
+      return;
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            
+            if (data.type === "complete") {
+              onComplete(data.outputs);
+            } else if (data.type === "error") {
+              onError(new Error(data.message));
+            } else {
+              onEvent(data);
+            }
+          } catch (err) {
+            console.error("Error parsing SSE event:", err);
+          }
+        }
+      }
+    }
+    
+    onComplete();
+  }).catch(onError);
+
+  // Return a dummy EventSource for API compatibility
+  // (actual streaming is done via fetch)
+  return { close: () => {} } as EventSource;
 }
