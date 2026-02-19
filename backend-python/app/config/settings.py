@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     LLM_TOP_P: float = 0.9
     LLM_TIMEOUT: int = 600
     
+    # AWS Deployment Configuration
+    AWS_PROFILE: Optional[str] = None  # AWS CLI profile name (e.g., "my-terraform")
+    AWS_DEFAULT_REGION: str = "us-east-1"
+    TERRAFORM_PATH: str = "terraform"  # Path to terraform CLI binary
+    
     class Config:
         env_file = ".env"
         case_sensitive = True

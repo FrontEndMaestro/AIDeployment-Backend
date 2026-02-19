@@ -1,0 +1,88 @@
+﻿.\venv\Scripts\python.exe 
+: Traceback (most recent 
+call last):
+At line:1 char:20
++ ... THONUTF8=1; 
+.\venv\Scripts\python.exe 
+-c "from app.main import 
+app; p ...
++                 ~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (T  
+  raceback (most recent   
+  call last)::String)     
+[], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+  File "<string>", line 
+1, in <module>
+    from app.main import 
+app; print('Import OK')
+    
+^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\abdul\Dow
+nloads\devops-autopilot\de
+vops-autopilot\backend-pyt
+hon\app\main.py", line 
+15, in <module>
+    from .routes import 
+analyze, auth, 
+aws_deploy, deploy, 
+docker_ai, extract, upload
+  File "C:\Users\abdul\Dow
+nloads\devops-autopilot\de
+vops-autopilot\backend-pyt
+hon\app\routes\analyze.py"
+, line 2, in <module>
+    from ..controllers.ana
+lyze_controller import (
+    ...<7 lines>...
+    )
+  File "C:\Users\abdul\Dow
+nloads\devops-autopilot\de
+vops-autopilot\backend-pyt
+hon\app\controllers\analyz
+e_controller.py", line 5, 
+in <module>
+    from ..utils.detector 
+import detect_framework, 
+detect_env_variables
+  File "C:\Users\abdul\Dow
+nloads\devops-autopilot\de
+vops-autopilot\backend-pyt
+hon\app\utils\detector.py"
+, line 7, in <module>
+    from .ml_analyzer 
+import get_ml_analyzer
+  File "C:\Users\abdul\Dow
+nloads\devops-autopilot\de
+vops-autopilot\backend-pyt
+hon\app\utils\ml_analyzer.
+py", line 17, in <module>
+    class MLCodeAnalyzer:
+    ...<335 lines>...
+            }
+  File "C:\Users\abdul\Dow
+nloads\devops-autopilot\de
+vops-autopilot\backend-pyt
+hon\app\utils\ml_analyzer.
+py", line 120, in 
+MLCodeAnalyzer
+    def 
+_extract_embedding(self, 
+text: str) -> 
+Optional[np.ndarray]:
+                          
+                          
+    ^^
+NameError: name 'np' is 
+not defined
+Γ£à Settings loaded: development mode
+≡ƒôü Upload directory: ./uploads
+≡ƒôü Extracted directory: ./extracted
+≡ƒöÉ Docker Hub credentials loaded from environment
+ΓÜá∩╕Å ML libraries not available: No module named 'torch'

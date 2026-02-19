@@ -1,6 +1,0 @@
-﻿============================================================
-USING CORRECT PROJECT PATH
-Path: uploads/user_abdulahadabbassi2@gmail.com/extracted/project-6936a14a609b7eea2f627972/react-job-portal-main
-Exists: False
-============================================================
-PATH DOES NOT EXIST!

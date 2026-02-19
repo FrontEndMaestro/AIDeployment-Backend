@@ -51,7 +51,6 @@ async def analyze_project_handler(
                     "framework": project["metadata"]["framework"],
                     "language": project["metadata"]["language"],
                     "dependencies": project["metadata"]["dependencies"],
-                    # keep old field name, but it may be None if only detection_confidence exists
                     "ml_confidence": project["metadata"].get("ml_confidence") or project["metadata"].get("detection_confidence")
                 }
             }

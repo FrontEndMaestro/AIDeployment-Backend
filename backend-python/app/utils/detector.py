@@ -383,9 +383,13 @@ def find_project_root(extracted_path: str, max_depth: int = 3) -> str:
                 if has_framework_file:
                     return current_path
                 
-                if len(folders) == 1 and len(files) == 0:
-                    nested_path = os.path.join(current_path, folders[0])
-                    print(f"Going deeper: {folders[0]}")
+                # Exclude non-project folders (infra is for terraform, node_modules etc)
+                project_folders = [f for f in folders if f not in ['infra', 'node_modules', '.git', '__pycache__', '.terraform']]
+                
+                # If only one actual project folder and no framework files, go deeper
+                if len(project_folders) == 1 and len(files) == 0:
+                    nested_path = os.path.join(current_path, project_folders[0])
+                    print(f"Going deeper: {project_folders[0]}")
                     return search_recursively(nested_path, depth + 1)
                 
                 return current_path

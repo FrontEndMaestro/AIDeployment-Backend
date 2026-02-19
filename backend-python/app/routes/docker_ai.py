@@ -82,7 +82,7 @@ async def docker_chat_stream(
     
     # Handle authentication (similar to logs endpoint)
     auth_header = request.headers.get("authorization")
-    actual_token = token  # From query param (EventSource can't set headers)
+    actual_token = token 
     if auth_header and auth_header.startswith("Bearer "):
         actual_token = auth_header.split(" ")[1]
     
