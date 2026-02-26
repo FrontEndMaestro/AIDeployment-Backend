@@ -91,6 +91,7 @@ export interface ProjectMetadata {
   deploy_blocked?: boolean;
   deploy_blocked_reason?: string | null;
   backend_env_missing?: boolean;
+  deploy_warning?: string | null;
 }
 
 export interface LogEntry {

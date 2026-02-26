@@ -795,6 +795,16 @@ export const DeployPage: React.FC = () => {
                       </p>
                     </div>
                   )}
+
+                  {/* Deploy warning (non-blocking) */}
+                  {!context.metadata.deploy_blocked && context.metadata.deploy_warning && (
+                    <div className="mb-3 p-3 bg-amber-500/10 border border-amber-500/40 rounded-lg">
+                      <p className="text-xs text-amber-400 font-medium mb-1">⚠️ Warning</p>
+                      <p className="text-xs text-amber-300/80">
+                        {context.metadata.deploy_warning}
+                      </p>
+                    </div>
+                  )}
                   
                   <div className="flex flex-wrap gap-2 mb-3">
                     <Button 
