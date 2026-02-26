@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     
     # LLM Configuration
     OLLAMA_URL: str = "http://localhost:11434/api/generate"
-    LLM_MODEL_NAME: str = "qwen2.5-coder:7b"
+    LLM_MODEL_NAME: str = "llama3.1:7b"
     LLM_TEMPERATURE: float = 0.1
     LLM_TOP_P: float = 0.9
     LLM_TIMEOUT: int = 600

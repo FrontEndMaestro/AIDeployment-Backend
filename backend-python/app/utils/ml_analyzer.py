@@ -2,6 +2,7 @@ import os
 import json
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+import numpy as np
 
 try:
     import torch

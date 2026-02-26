@@ -182,17 +182,28 @@ async def get_docker_context_handler(project_id: str, current_user: dict) -> Dic
     )
     
     if backend_services and backend_missing_env:
-        metadata["deploy_blocked"] = True
-        metadata["deploy_blocked_reason"] = (
-            "Backend .env file is required for Docker deployment. "
-            "Please add a .env file to your backend directory with your environment variables "
-            "(e.g., DATABASE_URL, PORT, JWT_SECRET)."
-        )
-        metadata["backend_env_missing"] = True
+        if metadata.get("database") != "Unknown":
+            # Database detected + no .env → BLOCK deployment
+            metadata["deploy_blocked"] = True
+            metadata["deploy_blocked_reason"] = (
+                "Backend .env file is required because a database was detected. "
+                "Please add a .env file with DATABASE_URL, PORT, and other secrets."
+            )
+            metadata["backend_env_missing"] = True
+            metadata["deploy_warning"] = None
+        else:
+            # No database + no .env → WARNING only (not blocked)
+            metadata["deploy_blocked"] = False
+            metadata["deploy_blocked_reason"] = None
+            metadata["backend_env_missing"] = True
+            metadata["deploy_warning"] = (
+                "No .env detected. Proceed only if your app doesn't require secrets."
+            )
     else:
         metadata["deploy_blocked"] = False
         metadata["deploy_blocked_reason"] = None
         metadata["backend_env_missing"] = False
+        metadata["deploy_warning"] = None
     
     # Update services in metadata
     metadata["services"] = services

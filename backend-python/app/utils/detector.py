@@ -2099,18 +2099,30 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         )
         
         if backend_services and backend_missing_env:
-            results["deploy_blocked"] = True
-            results["deploy_blocked_reason"] = (
-                "Backend .env file is required for Docker deployment. "
-                "Please add a .env file to your backend directory with your environment variables "
-                "(e.g., DATABASE_URL, PORT, JWT_SECRET)."
-            )
-            results["backend_env_missing"] = True
-            print(f"⚠️ Deploy blocked: Backend .env file missing")
+            if results.get("database") != "Unknown":
+                # Database detected + no .env → BLOCK deployment
+                results["deploy_blocked"] = True
+                results["deploy_blocked_reason"] = (
+                    "Backend .env file is required because a database was detected. "
+                    "Please add a .env file with DATABASE_URL, PORT, and other secrets."
+                )
+                results["backend_env_missing"] = True
+                results["deploy_warning"] = None
+                print(f"⚠️ Deploy blocked: Backend .env file missing (database detected)")
+            else:
+                # No database + no .env → WARNING only (not blocked)
+                results["deploy_blocked"] = False
+                results["deploy_blocked_reason"] = None
+                results["backend_env_missing"] = True
+                results["deploy_warning"] = (
+                    "No .env detected. Proceed only if your app doesn't require secrets."
+                )
+                print(f"⚠️ Deploy warning: Backend .env file missing (no database)")
         else:
             results["deploy_blocked"] = False
             results["deploy_blocked_reason"] = None
             results["backend_env_missing"] = False
+            results["deploy_warning"] = None
         
         # Deduplicate detected_files
         results["detected_files"] = list(set(results["detected_files"]))
