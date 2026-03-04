@@ -437,6 +437,95 @@ def build_deploy_message(
             lines.append(svc_line)
         sections.append("\n".join(lines))
 
+        # ── Fix 2: Monolith architecture override ─────────────────────
+        if metadata.get("architecture") == "monolith":
+            monolith_svc = next(
+                (s for s in services if s.get("type") == "monolith"), None
+            )
+            if monolith_svc:
+                runtime = metadata.get("runtime", "node:20-alpine")
+                port = monolith_svc.get("port", 3000)
+                entry = monolith_svc.get("entry_point", "server.js")
+                pm_info = monolith_svc.get("package_manager", {})
+                if isinstance(pm_info, dict):
+                    has_lock = pm_info.get("has_lockfile", True)
+                    pm = pm_info.get("manager", "npm")
+                else:
+                    has_lock = True
+                    pm = pm_info or "npm"
+                if pm == "yarn":
+                    install_cmd = "yarn install --frozen-lockfile"
+                elif pm == "pnpm":
+                    install_cmd = "pnpm install --frozen-lockfile"
+                elif has_lock:
+                    install_cmd = "npm ci"
+                else:
+                    install_cmd = "npm install"
+
+                sections.append(
+                    "⚠️ MONOLITH ARCHITECTURE DETECTED\n"
+                    "This project has Express AND React in the same package.json.\n"
+                    "Generate ONE Dockerfile only (no multi-stage nginx split):\n\n"
+                    f"FROM {runtime}\n"
+                    "WORKDIR /app\n"
+                    "COPY package*.json ./\n"
+                    f"RUN {install_cmd}\n"
+                    "COPY . .\n"
+                    "RUN npm run build          ← builds React into /build or /dist\n"
+                    f"ENV PORT={port}\n"
+                    f"EXPOSE {port}\n"
+                    f'CMD ["node", "{entry}"]   ← Express serves static files\n\n'
+                    "docker-compose.yml should have ONE app service + database (if needed).\n"
+                    "Do NOT generate a separate frontend Dockerfile or nginx service."
+                )
+
+        # ── Fix 7: Python backend Dockerfile override ─────────────────
+        python_svcs = [s for s in services if s.get("dockerfile_strategy") == "python_backend"]
+        for py_svc in python_svcs:
+            fw = py_svc.get("framework", "Unknown")
+            port = py_svc.get("port", 8000)
+            entry = py_svc.get("entry_point", "app.py")
+            pm = py_svc.get("package_manager", "pip")
+            svc_name = py_svc.get("name", "app")
+
+            if pm == "poetry":
+                install_block = (
+                    "COPY pyproject.toml poetry.lock* ./\n"
+                    "RUN pip install poetry && poetry install --no-root --no-dev"
+                )
+            elif pm == "pipenv":
+                install_block = (
+                    "COPY Pipfile Pipfile.lock* ./\n"
+                    "RUN pip install pipenv && pipenv install --system --deploy"
+                )
+            else:
+                install_block = (
+                    "COPY requirements.txt ./\n"
+                    "RUN pip install --no-cache-dir -r requirements.txt"
+                )
+
+            if fw == "Django":
+                cmd_line = f'CMD ["python", "manage.py", "runserver", "0.0.0.0:{port}"]'
+            elif fw == "FastAPI":
+                cmd_line = f'CMD ["uvicorn", "{entry.replace(".py", "")}:app", "--host", "0.0.0.0", "--port", "{port}"]'
+            elif fw == "Flask":
+                cmd_line = f'CMD ["python", "{entry}"]'
+            else:
+                cmd_line = f'CMD ["python", "{entry}"]'
+
+            sections.append(
+                f"🐍 PYTHON BACKEND DETECTED: {svc_name} ({fw})\n"
+                f"Generate a Python Dockerfile for service '{svc_name}':\n\n"
+                "FROM python:3.11-slim\n"
+                "WORKDIR /app\n"
+                f"{install_block}\n"
+                "COPY . .\n"
+                f"ENV PORT={port}\n"
+                f"EXPOSE {port}\n"
+                f"{cmd_line}\n\n"
+                f"Use this Dockerfile for the '{svc_name}' service in docker-compose.yml."
+            )
+
     # Enhance user_message for GENERATE_MISSING mode if it's generic
     if mode == "GENERATE_MISSING" and user_message.strip().lower() in ["generate", "create", ""]:
         user_message = (

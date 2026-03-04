@@ -1,0 +1,394 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python
+plugins: anyio-4.12.1
+collecting ... collected 133 items
+
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_requirements_txt[pinned] PASSED [  0%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_requirements_txt[comments_blanks] PASSED [  1%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_requirements_txt[flags_skipped] PASSED [  2%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_requirements_txt[extras_stripped] PASSED [  3%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_requirements_txt[empty] PASSED [  3%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_requirements_txt[only_comments] PASSED [  4%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_package_json[merge] PASSED [  5%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_package_json[deps_only] PASSED [  6%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_package_json[empty_json] PASSED [  6%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_package_json_bad_json PASSED [  7%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_pom_xml PASSED [  8%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_go_mod PASSED [  9%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_dependencies_capped_at_50 PASSED [  9%]
+tests/test_detector_exhaustive.py::TestParseDependenciesFile::test_unknown_file_type PASSED [ 10%]
+tests/test_detector_exhaustive.py::TestEnvParsing::test_detects_env_keys[.env] PASSED [ 11%]
+tests/test_detector_exhaustive.py::TestEnvParsing::test_detects_env_keys[.env.example] PASSED [ 12%]
+tests/test_detector_exhaustive.py::TestEnvParsing::test_detects_env_keys[.env.local] PASSED [ 12%]
+tests/test_detector_exhaustive.py::TestEnvParsing::test_skips_comments_and_blanks PASSED [ 13%]
+tests/test_detector_exhaustive.py::TestEnvParsing::test_read_key_values PASSED [ 14%]
+tests/test_detector_exhaustive.py::TestEnvParsing::test_multiple_env_files_merged PASSED [ 15%]
+tests/test_detector_exhaustive.py::TestEnvParsing::test_no_env_files PASSED [ 15%]
+tests/test_detector_exhaustive.py::TestFindProjectRoot::test_root_has_package_json PASSED [ 16%]
+tests/test_detector_exhaustive.py::TestFindProjectRoot::test_nested_single_folder PASSED [ 17%]
+tests/test_detector_exhaustive.py::TestFindProjectRoot::test_deeply_nested PASSED [ 18%]
+tests/test_detector_exhaustive.py::TestFindProjectRoot::test_max_depth_honoured PASSED [ 18%]
+tests/test_detector_exhaustive.py::TestFindProjectRoot::test_multiple_siblings_stays PASSED [ 19%]
+tests/test_detector_exhaustive.py::TestFindProjectRoot::test_ignores_infrastructure_dirs PASSED [ 20%]
+tests/test_detector_exhaustive.py::TestScanJsForPortHint::test_detects_port[env_or_fallback] PASSED [ 21%]
+tests/test_detector_exhaustive.py::TestScanJsForPortHint::test_detects_port[app_listen] PASSED [ 21%]
+tests/test_detector_exhaustive.py::TestScanJsForPortHint::test_detects_port[server_listen] PASSED [ 22%]
+tests/test_detector_exhaustive.py::TestScanJsForPortHint::test_detects_port[env_var] PASSED [ 23%]
+tests/test_detector_exhaustive.py::TestScanJsForPortHint::test_ignores_node_modules PASSED [ 24%]
+tests/test_detector_exhaustive.py::TestScanJsForPortHint::test_no_port_returns_none PASSED [ 24%]
+tests/test_detector_exhaustive.py::TestScanJsForPortHint::test_ts_files_scanned PASSED [ 25%]
+tests/test_detector_exhaustive.py::TestScanJsForPortHint::test_port_below_1024_ignored PASSED [ 26%]
+tests/test_detector_exhaustive.py::TestDetectPortFromPackageJson::test_explicit_port_in_script PASSED [ 27%]
+tests/test_detector_exhaustive.py::TestDetectPortFromPackageJson::test_vite_default_for_frontend PASSED [ 27%]
+tests/test_detector_exhaustive.py::TestDetectPortFromPackageJson::test_no_package_json PASSED [ 28%]
+tests/test_detector_exhaustive.py::TestDetectPortFromPackageJson::test_bad_json PASSED [ 29%]
+tests/test_detector_exhaustive.py::TestDetectPortFromPackageJson::test_defaults_to_3000 PASSED [ 30%]
+tests/test_detector_exhaustive.py::TestDetectPortFromPackageJson::test_port_patterns[PORT_equals] PASSED [ 30%]
+tests/test_detector_exhaustive.py::TestDetectPortFromPackageJson::test_port_patterns[cross_env_PORT] PASSED [ 31%]
+tests/test_detector_exhaustive.py::TestScanCodeForPorts::test_generic_port_patterns[python_uvicorn] FAILED [ 32%]
+tests/test_detector_exhaustive.py::TestScanCodeForPorts::test_generic_port_patterns[go_listen] PASSED [ 33%]
+tests/test_detector_exhaustive.py::TestScanCodeForPorts::test_generic_port_patterns[js_listen_no_match] PASSED [ 33%]
+tests/test_detector_exhaustive.py::TestScanCodeForPorts::test_generic_port_patterns[python_bind] PASSED [ 34%]
+tests/test_detector_exhaustive.py::TestScanCodeForPorts::test_ignores_venv FAILED [ 35%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[frontend] PASSED [ 36%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[client] PASSED [ 36%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[web] PASSED [ 37%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[ui] PASSED [ 38%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[backend] PASSED [ 39%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[api] PASSED [ 39%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[server] PASSED [ 40%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[app] PASSED [ 41%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[mongo] PASSED [ 42%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[postgres] PASSED [ 42%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[redis] PASSED [ 43%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[mysql] PASSED [ 44%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[db] PASSED [ 45%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[worker] PASSED [ 45%]
+tests/test_detector_exhaustive.py::TestClassifyDockerService::test_classification[nginx] PASSED [ 46%]
+tests/test_detector_exhaustive.py::TestDockerfileExposePorts::test_single_expose PASSED [ 47%]
+tests/test_detector_exhaustive.py::TestDockerfileExposePorts::test_multiple_expose PASSED [ 48%]
+tests/test_detector_exhaustive.py::TestDockerfileExposePorts::test_expose_with_protocol PASSED [ 48%]
+tests/test_detector_exhaustive.py::TestDockerfileExposePorts::test_no_dockerfile PASSED [ 49%]
+tests/test_detector_exhaustive.py::TestDetectDockerFiles::test_detects_both FAILED [ 50%]
+tests/test_detector_exhaustive.py::TestDetectDockerFiles::test_detects_none FAILED [ 51%]
+tests/test_detector_exhaustive.py::TestInferDatabasePort::test_infer_port[mongo_env] PASSED [ 51%]
+tests/test_detector_exhaustive.py::TestInferDatabasePort::test_infer_port[pg_generic] PASSED [ 52%]
+tests/test_detector_exhaustive.py::TestInferDatabasePort::test_infer_port[pg_compose_host] PASSED [ 53%]
+tests/test_detector_exhaustive.py::TestInferDatabasePort::test_infer_port[mysql_default] PASSED [ 54%]
+tests/test_detector_exhaustive.py::TestInferDatabasePort::test_infer_port[redis_default] PASSED [ 54%]
+tests/test_detector_exhaustive.py::TestInferDatabasePort::test_infer_port[sqlite_none] PASSED [ 55%]
+tests/test_detector_exhaustive.py::TestInferDatabasePort::test_infer_port[unknown_none] PASSED [ 56%]
+tests/test_detector_exhaustive.py::TestInferDatabasePort::test_infer_port[mongo_connstr] PASSED [ 57%]
+tests/test_detector_exhaustive.py::TestDetectDatabases::test_mongo_from_dependency PASSED [ 57%]
+tests/test_detector_exhaustive.py::TestDetectDatabases::test_postgres_from_env PASSED [ 58%]
+tests/test_detector_exhaustive.py::TestDetectDatabases::test_redis_from_compose PASSED [ 59%]
+tests/test_detector_exhaustive.py::TestDetectDatabases::test_no_db_detected PASSED [ 60%]
+tests/test_detector_exhaustive.py::TestDetectDatabases::test_multiple_databases_scored FAILED [ 60%]
+tests/test_detector_exhaustive.py::TestDetectDatabases::test_cloud_env_uri PASSED [ 61%]
+tests/test_detector_exhaustive.py::TestDetectDatabases::test_nested_backend_env PASSED [ 62%]
+tests/test_detector_exhaustive.py::TestFullstackStructure::test_typical_fullstack[backend_frontend] PASSED [ 63%]
+tests/test_detector_exhaustive.py::TestFullstackStructure::test_typical_fullstack[server_client] PASSED [ 63%]
+tests/test_detector_exhaustive.py::TestFullstackStructure::test_typical_fullstack[api_web] PASSED [ 64%]
+tests/test_detector_exhaustive.py::TestFullstackStructure::test_typical_fullstack[app_ui] PASSED [ 65%]
+tests/test_detector_exhaustive.py::TestFullstackStructure::test_backend_only PASSED [ 66%]
+tests/test_detector_exhaustive.py::TestFullstackStructure::test_no_structure PASSED [ 66%]
+tests/test_detector_exhaustive.py::TestFullstackStructure::test_folder_without_package_json PASSED [ 67%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[named_backend] PASSED [ 68%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[named_frontend] PASSED [ 69%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[client_keyword] PASSED [ 69%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[api_keyword] PASSED [ 70%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[worker_keyword] PASSED [ 71%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[react_framework] PASSED [ 72%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[nextjs_framework] PASSED [ 72%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[static_only] PASSED [ 73%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[python_lang] PASSED [ 74%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[go_lang] PASSED [ 75%]
+tests/test_detector_exhaustive.py::TestInferServiceType::test_classification[unknown_other] PASSED [ 75%]
+tests/test_detector_exhaustive.py::TestDetectPackageManager::test_detects_manager[yarn] PASSED [ 76%]
+tests/test_detector_exhaustive.py::TestDetectPackageManager::test_detects_manager[pnpm] PASSED [ 77%]
+tests/test_detector_exhaustive.py::TestDetectPackageManager::test_detects_manager[npm_lock] PASSED [ 78%]
+tests/test_detector_exhaustive.py::TestDetectPackageManager::test_detects_manager[npm_no_lock] PASSED [ 78%]
+tests/test_detector_exhaustive.py::TestHeuristicLanguageDetection::test_detects_language[python] PASSED [ 79%]
+tests/test_detector_exhaustive.py::TestHeuristicLanguageDetection::test_detects_language[javascript] PASSED [ 80%]
+tests/test_detector_exhaustive.py::TestHeuristicLanguageDetection::test_detects_language[java] PASSED [ 81%]
+tests/test_detector_exhaustive.py::TestHeuristicLanguageDetection::test_detects_language[go] PASSED [ 81%]
+tests/test_detector_exhaustive.py::TestHeuristicLanguageDetection::test_detects_language[typescript] FAILED [ 82%]
+tests/test_detector_exhaustive.py::TestHeuristicLanguageDetection::test_empty_dir PASSED [ 83%]
+tests/test_detector_exhaustive.py::TestHeuristicFrameworkDetection::test_detects_framework[express] PASSED [ 84%]
+tests/test_detector_exhaustive.py::TestHeuristicFrameworkDetection::test_detects_framework[react] PASSED [ 84%]
+tests/test_detector_exhaustive.py::TestHeuristicFrameworkDetection::test_detects_framework[nextjs] PASSED [ 85%]
+tests/test_detector_exhaustive.py::TestHeuristicFrameworkDetection::test_detects_framework[flask] PASSED [ 86%]
+tests/test_detector_exhaustive.py::TestHeuristicFrameworkDetection::test_detects_framework[django] PASSED [ 87%]
+tests/test_detector_exhaustive.py::TestHeuristicFrameworkDetection::test_detects_framework[fastapi] PASSED [ 87%]
+tests/test_detector_exhaustive.py::TestHeuristicFrameworkDetection::test_penalises_language_mismatch PASSED [ 88%]
+tests/test_detector_exhaustive.py::TestHeuristicFrameworkDetection::test_unknown_project PASSED [ 89%]
+tests/test_detector_exhaustive.py::TestGetRuntimeInfo::test_runtime_selection[node] PASSED [ 90%]
+tests/test_detector_exhaustive.py::TestGetRuntimeInfo::test_runtime_selection[flask] PASSED [ 90%]
+tests/test_detector_exhaustive.py::TestGetRuntimeInfo::test_runtime_selection[django] PASSED [ 91%]
+tests/test_detector_exhaustive.py::TestGetRuntimeInfo::test_runtime_selection[spring] PASSED [ 92%]
+tests/test_detector_exhaustive.py::TestGetRuntimeInfo::test_runtime_selection[go] PASSED [ 93%]
+tests/test_detector_exhaustive.py::TestDetectFrameworkOrchestrator::test_express_backend_detected PASSED [ 93%]
+tests/test_detector_exhaustive.py::TestDetectFrameworkOrchestrator::test_empty_project PASSED [ 94%]
+tests/test_detector_exhaustive.py::TestDetectFrameworkOrchestrator::test_react_frontend_detected PASSED [ 95%]
+tests/test_detector_exhaustive.py::TestDeployBlockedLogic::test_blocked_when_db_and_no_env PASSED [ 96%]
+tests/test_detector_exhaustive.py::TestDeployBlockedLogic::test_warning_when_no_db_no_env PASSED [ 96%]
+tests/test_detector_exhaustive.py::TestDeployBlockedLogic::test_not_blocked_with_env PASSED [ 97%]
+tests/test_detector_exhaustive.py::TestDeployBlockedLogic::test_frontend_only_not_blocked PASSED [ 98%]
+tests/test_detector_exhaustive.py::TestDeployBlockedLogic::test_fullstack_mern_with_env FAILED [ 99%]
+tests/test_detector_exhaustive.py::TestCloudDatabaseClearing::test_cloud_db_clears_port FAILED [100%]
+
+================================== FAILURES ===================================
+E   assert None == 8000
+C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\tests\test_detector_exhaustive.py:378: assert None == 8000
+E   AssertionError: assert None == 8000
+     +  where None = _scan_code_for_ports('C:\\Users\\abdul\\AppData\\Local\\Temp\\pytest-of-abdul\\pytest-1\\test_ignores_venv0')
+     +    where 'C:\\Users\\abdul\\AppData\\Local\\Temp\\pytest-of-abdul\\pytest-1\\test_ignores_venv0' = str(WindowsPath('C:/Users/abdul/AppData/Local/Temp/pytest-of-abdul/pytest-1/test_ignores_venv0'))
+C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\tests\test_detector_exhaustive.py:385: AssertionError: assert None == 8000
+E   KeyError: 'has_dockerfile'
+C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\tests\test_detector_exhaustive.py:448: KeyError: 'has_dockerfile'
+E   KeyError: 'has_dockerfile'
+C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\tests\test_detector_exhaustive.py:454: KeyError: 'has_dockerfile'
+E   AssertionError: assert 'Redis' == 'MongoDB'
+      
+      - MongoDB
+      + Redis
+---------------------------- Captured stdout call -----------------------------
+   Detected databases (best first): ['Redis', 'MongoDB']
+C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\tests\test_detector_exhaustive.py:526: AssertionError: assert 'Redis' == 'MongoDB'
+E   AssertionError: assert 'JavaScript' == 'TypeScript'
+      
+      - TypeScript
+      + JavaScript
+---------------------------- Captured stdout call -----------------------------
+   Heuristic Language: JavaScript (score: 1.10)
+C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\tests\test_detector_exhaustive.py:643: AssertionError: assert 'JavaScript' == 'TypeScript'
+E   assert True is False
+---------------------------- Captured stdout call -----------------------------
+
+Starting Hybrid Framework Detection
+Project Path: C:\Users\abdul\AppData\Local\Temp\pytest-of-abdul\pytest-1\test_fullstack_mern_with_env0
+ML Mode: Disabled
+
+Running heuristic detection (fast & reliable)...
+   Heuristic Language: JavaScript (score: 2.00)
+   Heuristic Framework: Express.js (score: 0.50)
+≡ƒôª Overriding start_command with: node server.js
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+   Detected databases (best first): ['MongoDB']
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+ΓÜá∩╕Å Deploy blocked: Backend .env file missing (database detected)
+Here are all the results:
+{
+  "framework": "Express.js",
+  "language": "JavaScript",
+  "runtime": "node:20-alpine",
+  "dependencies": [
+    "express",
+    "mongoose",
+    "react",
+    "react-dom",
+    "vite"
+  ],
+  "port": 5000,
+  "build_command": "npm install",
+  "start_command": "node server.js",
+  "env_variables": [],
+  "dockerfile": false,
+  "docker_compose": false,
+  "detected_files": [
+    "package.json"
+  ],
+  "detection_confidence": {
+    "language": 1.0,
+    "framework": 0.25,
+    "method": "heuristic"
+  },
+  "has_package_json": true,
+  "has_requirements_txt": false,
+  "has_manage_py": false,
+  "static_only": false,
+  "database": "MongoDB",
+  "databases": [
+    "MongoDB"
+  ],
+  "database_detection": {
+    "MongoDB": {
+      "score": 1.8,
+      "evidence": [
+        "dependency:mongoose",
+        "env:MONGO_URI"
+      ]
+    }
+  },
+  "database_port": 27017,
+  "backend_port": 5000,
+  "frontend_port": 5173,
+  "docker_backend_ports": null,
+  "docker_frontend_ports": null,
+  "docker_database_ports": null,
+  "docker_other_ports": null,
+  "docker_backend_container_ports": null,
+  "docker_frontend_container_ports": null,
+  "docker_database_container_ports": null,
+  "docker_other_container_ports": null,
+  "docker_expose_ports": null,
+  "entry_point": "server.js",
+  "services": [
+    {
+      "name": "app",
+      "path": ".",
+      "type": "backend"
+    }
+  ],
+  "deploy_blocked": true,
+  "deploy_blocked_reason": "Backend .env file is required because a database was detected. Please add a .env file with DATABASE_URL, PORT, and other secrets.",
+  "backend_env_missing": true,
+  "deploy_warning": null
+}
+
+Detection Complete!
+   Language: JavaScript (confidence: 1.00)
+   Framework: Express.js (confidence: 0.25)
+   Method: heuristic
+
+C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\tests\test_detector_exhaustive.py:939: assert True is False
+E   AssertionError: assert 27017 is None
+     +  where 27017 = <built-in method get of dict object at 0x0000025726A8F7C0>('database_port')
+     +    where <built-in method get of dict object at 0x0000025726A8F7C0> = {'backend_env_missing': False, 'backend_port': 3000, 'build_command': 'npm install', 'database': 'MongoDB', ...}.get
+---------------------------- Captured stdout call -----------------------------
+
+Starting Hybrid Framework Detection
+Project Path: C:\Users\abdul\AppData\Local\Temp\pytest-of-abdul\pytest-1\test_cloud_db_clears_port0
+ML Mode: Disabled
+
+Going deeper: backend
+Found project root: C:\Users\abdul\AppData\Local\Temp\pytest-of-abdul\pytest-1\test_cloud_db_clears_port0\backend
+Running heuristic detection (fast & reliable)...
+   Heuristic Language: JavaScript (score: 1.00)
+   Heuristic Framework: Express.js (score: 0.80)
+≡ƒôª Overriding start_command with: node server.js
+   Detected databases (best first): ['MongoDB']
+≡ƒôä Found root env file: ./.env
+Here are all the results:
+{
+  "framework": "Express.js",
+  "language": "JavaScript",
+  "runtime": "node:20-alpine",
+  "dependencies": [
+    "express",
+    "mongoose"
+  ],
+  "port": 3000,
+  "build_command": "npm install",
+  "start_command": "node server.js",
+  "env_variables": [
+    "MONGO_URI"
+  ],
+  "dockerfile": false,
+  "docker_compose": false,
+  "detected_files": [
+    "package.json"
+  ],
+  "detection_confidence": {
+    "language": 0.5,
+    "framework": 0.4,
+    "method": "heuristic"
+  },
+  "has_package_json": true,
+  "has_requirements_txt": false,
+  "has_manage_py": false,
+  "static_only": false,
+  "database": "MongoDB",
+  "databases": [
+    "MongoDB"
+  ],
+  "database_detection": {
+    "MongoDB": {
+      "score": 1.8,
+      "evidence": [
+        "dependency:mongoose",
+        "env:MONGO_URI"
+      ]
+    }
+  },
+  "database_port": 27017,
+  "backend_port": 3000,
+  "frontend_port": null,
+  "docker_backend_ports": null,
+  "docker_frontend_ports": null,
+  "docker_database_ports": null,
+  "docker_other_ports": null,
+  "docker_backend_container_ports": null,
+  "docker_frontend_container_ports": null,
+  "docker_database_container_ports": null,
+  "docker_other_container_ports": null,
+  "docker_expose_ports": null,
+  "entry_point": "server.js",
+  "services": [
+    {
+      "name": "app",
+      "path": ".",
+      "type": "backend",
+      "env_file": "./.env"
+    }
+  ],
+  "deploy_blocked": false,
+  "deploy_blocked_reason": null,
+  "backend_env_missing": false,
+  "deploy_warning": null
+}
+
+Detection Complete!
+   Language: JavaScript (confidence: 0.50)
+   Framework: Express.js (confidence: 0.40)
+   Method: heuristic
+
+C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\tests\test_detector_exhaustive.py:973: AssertionError: assert 27017 is None
+============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_detector_exhaustive.py::TestScanCodeForPorts::test_generic_port_patterns[python_uvicorn]
+FAILED tests/test_detector_exhaustive.py::TestScanCodeForPorts::test_ignores_venv
+FAILED tests/test_detector_exhaustive.py::TestDetectDockerFiles::test_detects_both
+FAILED tests/test_detector_exhaustive.py::TestDetectDockerFiles::test_detects_none
+FAILED tests/test_detector_exhaustive.py::TestDetectDatabases::test_multiple_databases_scored
+FAILED tests/test_detector_exhaustive.py::TestHeuristicLanguageDetection::test_detects_language[typescript]
+FAILED tests/test_detector_exhaustive.py::TestDeployBlockedLogic::test_fullstack_mern_with_env
+FAILED tests/test_detector_exhaustive.py::TestCloudDatabaseClearing::test_cloud_db_clears_port
+================= 8 failed, 125 passed, 2 warnings in 21.45s ==================
+.\venv\Scripts\python.exe 
+: <sys>:0: 
+DeprecationWarning: 
+builtin type swigvarlink 
+has no __module__ 
+attribute
+At line:1 char:20
++ ... THONUTF8=1; 
+.\venv\Scripts\python.exe 
+-m pytest 
+tests\test_detector_e ...
++                 ~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo        
+  :     NotSpecified: 
+(<sys>:0:     
+Deprec...ule__ attribute: 
+   String) [], 
+RemoteExcepti    on
+    + 
+FullyQualifiedErrorId :   
+  NativeCommandError
+ 

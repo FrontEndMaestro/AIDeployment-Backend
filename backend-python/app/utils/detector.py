@@ -167,6 +167,43 @@ DB_INDICATORS = {
 }
 
 
+# --- Service classification dep sets (Fix 1 / Fix 4) ---
+BACKEND_DEPS = {
+    "express", "fastify", "koa", "hapi", "@nestjs/core",
+    "apollo-server", "graphql-yoga", "@hapi/hapi",
+}
+
+FRONTEND_DEPS = {
+    "react", "vue", "svelte", "next", "nuxt", "vite",
+    "react-scripts", "react-dom", "@vitejs/plugin-react",
+    "@vue/cli-service", "gatsby", "@sveltejs/kit",
+}
+
+SKIP_DIRS = {
+    "node_modules", ".git", "__pycache__", "dist", "build",
+    ".next", "coverage", "test", "tests", ".cache",
+}
+
+PYTHON_BACKEND_DEPS = {
+    "fastapi", "flask", "django", "starlette", "tornado", "aiohttp", "sanic",
+}
+
+DB_KEYWORDS = {
+    "postgres", "postgresql", "mysql", "mongo", "mongodb", "redis",
+    "elasticsearch", "cassandra", "sqlite", "db", "database",
+}
+
+PYTHON_SKIP_DIRS = SKIP_DIRS | {"venv", ".venv", "env"}
+
+
+def norm_path(p: str) -> str:
+    """Normalise a path: backslashes → forward, strip trailing slashes, empty → '.'."""
+    if not p:
+        return "."
+    p = p.replace("\\", "/").rstrip("/")
+    return p if p else "."
+
+
 def parse_dependencies_file(file_path: str, file_type: str) -> List[str]:
     """Parse dependencies from various file types"""
     dependencies = []
@@ -618,19 +655,152 @@ def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
     return structure
 
 
-def _infer_service_type(name: str, framework: str, language: str, static_only: bool) -> str:
-    n = name.lower()
-    if static_only or framework in ["React", "Next.js"]:
-        return "frontend"
-    if any(k in n for k in ["front", "client", "web", "ui"]):
-        return "frontend"
-    if any(k in n for k in ["worker", "queue", "job"]):
-        return "worker"
-    if any(k in n for k in ["back", "api", "server", "app"]):
+def _infer_service_type(service_path: str, service_name: str, project_root: str) -> str:
+    """
+    Classify a service by reading its package.json deps first (Fix 4).
+    Fix 6b: DB keyword names → 'other' immediately.
+    Falls back to name heuristic only if no package.json found.
+    """
+    pkg_path = os.path.join(project_root, service_path, "package.json")
+    if os.path.exists(pkg_path):
+        try:
+            with open(pkg_path, "r", encoding="utf-8", errors="ignore") as f:
+                pkg = json.load(f)
+            deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+            is_be = bool(deps.keys() & BACKEND_DEPS)
+            is_fe = bool(deps.keys() & FRONTEND_DEPS)
+            if is_be and is_fe:
+                return "monolith"
+            if is_be:
+                return "backend"
+            if is_fe:
+                return "frontend"
+        except Exception:
+            pass
+
+    # Fix 6b: DB-named services → other (before any backend/frontend guess)
+    name_lower = service_name.lower()
+    if name_lower in DB_KEYWORDS:
+        return "other"
+
+    # Fallback to name heuristic only if no package.json found
+    if any(k in name_lower for k in ["backend", "server", "api", "worker"]):
         return "backend"
-    if language in ["Python", "Go", "Java", "PHP", "Ruby"] and framework not in ["React", "Next.js"]:
-        return "backend"
+    if any(k in name_lower for k in ["frontend", "client", "ui", "web", "app"]):
+        return "frontend"
     return "other"
+
+
+def _find_all_services_by_deps(project_path: str) -> List[Dict[str, str]]:
+    """
+    Fix 1: Walk all subdirs (excluding SKIP_DIRS), find every package.json,
+    and classify each service by deps against BACKEND_DEPS / FRONTEND_DEPS.
+    Fix 6a: Skips type=other stubs entirely.
+    Returns list of {name, abs_path, type} stubs.
+    """
+    services = []
+    for root, dirs, files in os.walk(project_path):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+
+        if "package.json" not in files:
+            continue
+
+        pkg_path = os.path.join(root, "package.json")
+        try:
+            with open(pkg_path, "r", encoding="utf-8", errors="ignore") as f:
+                pkg = json.load(f)
+        except Exception:
+            continue
+
+        deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+        is_be = bool(deps.keys() & BACKEND_DEPS)
+        is_fe = bool(deps.keys() & FRONTEND_DEPS)
+
+        if is_be and is_fe:
+            svc_type = "monolith"
+        elif is_be:
+            svc_type = "backend"
+        elif is_fe:
+            svc_type = "frontend"
+        else:
+            continue  # Fix 6a: neither backend nor frontend deps — skip (type=other)
+
+        folder_name = os.path.basename(root) or os.path.basename(project_path)
+        services.append({
+            "name": folder_name,
+            "abs_path": root,
+            "type": svc_type,
+        })
+        print(f"📦 Dep-scan: found {svc_type} service '{folder_name}' at {root}")
+
+    return services
+
+
+def _suppress_root_if_children_found(
+    services: List[Dict[str, str]],
+    project_path: str,
+) -> List[Dict[str, str]]:
+    """
+    Fix 5: Post-process service stubs with ordered rules.
+    All path comparisons use norm_path().
+
+    Rules applied in order (step 1 = empty-shell dropping runs separately post-population):
+    2. Root monolith wins — if root is type=monolith, suppress all non-database children
+    3. Root backend coexists — keep everything
+    4. Phantom root — root is frontend/other/untyped + ≥2 real non-root → drop root
+    """
+    root_np = norm_path(project_path)
+
+    def is_root(s):
+        return norm_path(s.get("abs_path", "")) == root_np
+
+    root_svcs = [s for s in services if is_root(s)]
+    non_root = [s for s in services if not is_root(s)]
+
+    if not root_svcs:
+        return services
+
+    root_svc = root_svcs[0]
+    root_type = root_svc.get("type", "other")
+
+    # Step 2: Root monolith → suppress all non-database children
+    if root_type == "monolith":
+        db_children = [s for s in non_root if s.get("type") == "database"]
+        return root_svcs + db_children
+
+    # Step 3: Root backend → keep everything (root + children are separate services)
+    if root_type == "backend":
+        return services
+
+    # Step 4: Root is frontend/other/untyped + ≥2 real non-root → drop root
+    if root_type in ("frontend", "other") or root_type is None:
+        real_non_root = [
+            s for s in non_root
+            if s.get("type") not in ("database", "other")
+        ]
+        if len(real_non_root) >= 2:
+            return non_root
+
+    return services
+
+
+def _drop_empty_shells(services: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Fix 5 Step 1: Remove services with no port AND no entry_point,
+    unless they are database or other type. Called AFTER population.
+    """
+    survivors = []
+    for s in services:
+        stype = s.get("type", "other")
+        if stype in ("database", "other"):
+            survivors.append(s)
+            continue
+        if s.get("port") or s.get("entry_point"):
+            survivors.append(s)
+            continue
+        print(f"Dropping empty shell: {s.get('name')} (no port, no entry_point)")
+    return survivors
+
 
 
 def _normalize_service_path(project_path: str, service_path: str) -> str:
@@ -658,6 +828,169 @@ def _detect_package_manager(service_path: str) -> dict:
         return {"manager": "npm", "has_lockfile": False}
 
 
+def _find_python_services(project_path: str) -> List[Dict[str, str]]:
+    """
+    Fix 7: Walk subdirs (excluding PYTHON_SKIP_DIRS), detect Python backends via
+    manage.py or requirements.txt/pyproject.toml/Pipfile containing PYTHON_BACKEND_DEPS.
+    Returns stubs with: name, abs_path, type, language, framework, package_manager,
+                        dockerfile_strategy, entry_point, port, port_source.
+    """
+    services = []
+
+    for root, dirs, files in os.walk(project_path):
+        dirs[:] = [d for d in dirs if d not in PYTHON_SKIP_DIRS]
+
+        framework = None
+        pkg_manager = "pip"
+
+        # Django detection via manage.py
+        if "manage.py" in files:
+            framework = "Django"
+
+        # Check requirements.txt
+        if not framework and "requirements.txt" in files:
+            try:
+                with open(os.path.join(root, "requirements.txt"), "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read().lower()
+                for dep in PYTHON_BACKEND_DEPS:
+                    if dep in content:
+                        framework = dep.capitalize()
+                        if dep == "fastapi":
+                            framework = "FastAPI"
+                        break
+            except Exception:
+                pass
+
+        # Check pyproject.toml
+        if not framework and "pyproject.toml" in files:
+            pkg_manager = "poetry"
+            try:
+                with open(os.path.join(root, "pyproject.toml"), "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read().lower()
+                for dep in PYTHON_BACKEND_DEPS:
+                    if dep in content:
+                        framework = dep.capitalize()
+                        if dep == "fastapi":
+                            framework = "FastAPI"
+                        break
+            except Exception:
+                pass
+
+        # Check Pipfile
+        if not framework and "Pipfile" in files:
+            pkg_manager = "pipenv"
+            try:
+                with open(os.path.join(root, "Pipfile"), "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read().lower()
+                for dep in PYTHON_BACKEND_DEPS:
+                    if dep in content:
+                        framework = dep.capitalize()
+                        if dep == "fastapi":
+                            framework = "FastAPI"
+                        break
+            except Exception:
+                pass
+
+        if not framework:
+            continue
+
+        # Detect entry_point
+        entry_point = None
+        if framework == "Django":
+            entry_point = "manage.py"
+        else:
+            for candidate in ["main.py", "app.py", "run.py", "server.py"]:
+                if candidate in files:
+                    entry_point = candidate
+                    break
+
+        # Detect port
+        port = None
+        port_source = "default"
+
+        # Check .env for PORT
+        for env_name in [".env", ".env.local", ".env.production"]:
+            env_path = os.path.join(root, env_name)
+            if os.path.exists(env_path):
+                try:
+                    with open(env_path, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line.startswith("PORT="):
+                                try:
+                                    port = int(line.split("=", 1)[1].strip())
+                                    port_source = "env"
+                                except ValueError:
+                                    pass
+                except Exception:
+                    pass
+                break
+
+        # Scan source files for port hints
+        if not port and entry_point and os.path.exists(os.path.join(root, entry_point)):
+            try:
+                with open(os.path.join(root, entry_point), "r", encoding="utf-8", errors="ignore") as f:
+                    src = f.read()
+                # uvicorn.run(..., port=XXXX)
+                m = re.search(r'(?:uvicorn\.run|app\.run)\s*\(.*?port\s*=\s*(\d+)', src)
+                if m:
+                    port = int(m.group(1))
+                    port_source = "source"
+            except Exception:
+                pass
+
+        # Framework defaults
+        if not port:
+            if framework in ("Django", "FastAPI", "Starlette"):
+                port = 8000
+            elif framework == "Flask":
+                port = 5000
+            else:
+                port = 8000
+
+        folder_name = os.path.basename(root) or os.path.basename(project_path)
+        services.append({
+            "name": folder_name,
+            "abs_path": root,
+            "type": "backend",
+            "language": "Python",
+            "framework": framework,
+            "package_manager": pkg_manager,
+            "dockerfile_strategy": "python_backend",
+            "entry_point": entry_point,
+            "port": port,
+            "port_source": port_source,
+        })
+        print(f"🐍 Python-scan: found {framework} backend '{folder_name}' at {root}")
+
+    return services
+
+
+def _merge_node_python_stubs(
+    node_stubs: List[Dict[str, str]],
+    python_stubs: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    """
+    Merge Node and Python stubs, deduplicating by abs_path.
+    If same path appears in both, prefer Python if it has a framework match,
+    otherwise prefer Node.
+    """
+    by_path = {}
+    # Node stubs first
+    for s in node_stubs:
+        np = norm_path(s.get("abs_path", ""))
+        by_path[np] = s
+    # Python stubs overlay if they have a framework
+    for s in python_stubs:
+        np = norm_path(s.get("abs_path", ""))
+        if np in by_path:
+            # Prefer Python if it detected a real framework
+            if s.get("framework"):
+                by_path[np] = s
+        else:
+            by_path[np] = s
+    return list(by_path.values())
+
 
 def infer_services(
     project_path: str,
@@ -669,80 +1002,129 @@ def infer_services(
     Return a list of services, each with:
       - name: str
       - path: str (build context relative to project root)
-      - type: one of {"backend", "frontend", "worker", "other"}
+      - type: one of {"backend", "frontend", "monolith", "worker", "other"}
+      - port, port_source, entry_point, build_output, env_file, package_manager
+    
+    Fix 1: Uses dep-based scanning instead of folder-name matching.
+    Fix 2: Monolith services get dockerfile_strategy.
+    Fix 3/5: Root phantom service suppressed when child services exist.
+    Fix 7: Python backends detected alongside Node services.
     """
-    services: List[Dict[str, str]] = []
     static_only = metadata.get("static_only", False)
 
-    # Primary inference from file tree/metadata
-    fullstack = _detect_fullstack_structure(project_path)
-    if fullstack.get("is_fullstack"):
-        backend_path = fullstack.get("backend_path")
-        frontend_path = fullstack.get("frontend_path")
-        if backend_path:
-            # Extract port from backend directory
-            backend_port_info = extract_port_from_project(backend_path, framework, language)
-            backend_port = backend_port_info.get("port", 3000)
-            
-            # Extract start command from BACKEND's package.json (not root!)
-            backend_cmds = extract_nodejs_commands(backend_path)
-            backend_entry = backend_cmds.get("entry_point", "index.js")
-            backend_start_cmd = backend_cmds.get("start_command", f"node {backend_entry}")
-            print(f"📦 Backend service entry_point: {backend_entry}, start_command: {backend_start_cmd}")
-            
-            # Check for .env file in backend directory
-            backend_env_file = None
-            for env_name in [".env", ".env.local", ".env.production"]:
-                env_path = os.path.join(backend_path, env_name)
-                if os.path.exists(env_path):
-                    backend_env_file = f"./{_normalize_service_path(project_path, backend_path)}/{env_name}"
-                    print(f"📄 Found backend env file: {backend_env_file}")
-                    break
-            
-            services.append({
-                "name": "backend",
-                "path": _normalize_service_path(project_path, backend_path),
-                "type": "backend",
-                "port": backend_port,  # Actual port from .env or source
-                "port_source": backend_port_info.get("source", "default"),
-                "entry_point": backend_entry,  # Entry point relative to service dir
-                "start_command": backend_start_cmd,  # Start command relative to service dir
-                "env_file": backend_env_file,  # Path to .env for docker-compose
-                "package_manager": _detect_package_manager(backend_path)  # npm/yarn/pnpm
-            })
-        if frontend_path:
-            # Extract build_output specifically for this frontend service
-            frontend_cmds = extract_nodejs_commands(frontend_path)
-            frontend_build_output = frontend_cmds.get("build_output", "dist")
-            
+    # ── Fix 1: Dep-based service discovery (Node.js) ──────────────────
+    node_stubs = _find_all_services_by_deps(project_path)
+
+    # ── Fix 7: Python backend discovery ───────────────────────────────
+    python_stubs = _find_python_services(project_path)
+
+    # ── Merge + deduplicate (Python preferred if it has framework) ─────
+    raw_stubs = _merge_node_python_stubs(node_stubs, python_stubs)
+    
+    # ── Fix 3/5: Suppress root phantom if children found ──────────────
+    raw_stubs = _suppress_root_if_children_found(raw_stubs, project_path)
+
+    # ── Populate per-service fields ───────────────────────────────────
+    services: List[Dict[str, str]] = []
+    has_monolith = False
+
+    for stub in raw_stubs:
+        svc_abs_path = stub["abs_path"]
+        svc_rel_path = _normalize_service_path(project_path, svc_abs_path)
+        svc_type = stub["type"]
+        svc_name = stub["name"]
+
+        # Check for .env file
+        env_file = None
+        for env_name in [".env", ".env.local", ".env.production"]:
+            env_check = os.path.join(svc_abs_path, env_name)
+            if os.path.exists(env_check):
+                if svc_rel_path == ".":
+                    env_file = f"./{env_name}"
+                else:
+                    env_file = f"./{svc_rel_path}{env_name}"
+                print(f"📄 Found env file for {svc_name}: {env_file}")
+                break
+
+        if svc_type in ("backend", "monolith"):
+            # ── Python stubs already have fields populated by _find_python_services ──
+            if stub.get("language") == "Python":
+                svc_dict = {
+                    "name": svc_name,
+                    "path": svc_rel_path,
+                    "type": svc_type,
+                    "language": "Python",
+                    "framework": stub.get("framework"),
+                    "port": stub.get("port", 8000),
+                    "port_source": stub.get("port_source", "default"),
+                    "entry_point": stub.get("entry_point"),
+                    "env_file": env_file,
+                    "package_manager": stub.get("package_manager", "pip"),
+                    "dockerfile_strategy": "python_backend",
+                }
+                services.append(svc_dict)
+                print(f"🐍 Python service '{svc_name}': framework={stub.get('framework')}, port={stub.get('port')}")
+                continue
+
+            # ── Node.js backend/monolith ───────────────────────────────
+            # Extract port from service directory
+            port_info = extract_port_from_project(svc_abs_path, framework, language)
+            port = port_info.get("port", 3000)
+
+            # Extract start command from service's package.json
+            cmds = extract_nodejs_commands(svc_abs_path)
+            entry_point = cmds.get("entry_point", "index.js")
+            start_command = cmds.get("start_command", f"node {entry_point}")
+            print(f"📦 {svc_type.title()} service '{svc_name}': entry_point={entry_point}, start_command={start_command}")
+
+            svc_dict = {
+                "name": svc_name,
+                "path": svc_rel_path,
+                "type": svc_type,
+                "port": port,
+                "port_source": port_info.get("source", "default"),
+                "entry_point": entry_point,
+                "start_command": start_command,
+                "env_file": env_file,
+                "package_manager": _detect_package_manager(svc_abs_path),
+            }
+
+            # ── Fix 2: Monolith gets extra fields ─────────────────
+            if svc_type == "monolith":
+                has_monolith = True
+                svc_dict["dockerfile_strategy"] = "single_stage_with_build"
+                # Also get build_output for the React build step
+                build_output = cmds.get("build_output", "build")
+                svc_dict["build_output"] = build_output
+
+            services.append(svc_dict)
+
+        elif svc_type == "frontend":
+            # Extract build_output for this frontend service
+            cmds = extract_nodejs_commands(svc_abs_path)
+            build_output = cmds.get("build_output", "dist")
+
             # Extract frontend port
-            frontend_port_info = extract_frontend_port(frontend_path)
-            frontend_port = frontend_port_info.get("port", 5173)
-            
-            # Check for .env file in frontend directory
-            frontend_env_file = None
-            for env_name in [".env", ".env.local", ".env.production"]:
-                env_path = os.path.join(frontend_path, env_name)
-                if os.path.exists(env_path):
-                    frontend_env_file = f"./{_normalize_service_path(project_path, frontend_path)}/{env_name}"
-                    print(f"📄 Found frontend env file: {frontend_env_file}")
-                    break
-            
-            print(f"📦 Frontend service build_output: {frontend_build_output}, port: {frontend_port}")
-            
+            fe_port_info = extract_frontend_port(svc_abs_path)
+            fe_port = fe_port_info.get("port", 5173)
+            print(f"📦 Frontend service '{svc_name}': build_output={build_output}, port={fe_port}")
+
             services.append({
-                "name": "frontend",
-                "path": _normalize_service_path(project_path, frontend_path),
+                "name": svc_name,
+                "path": svc_rel_path,
                 "type": "frontend",
-                "build_output": frontend_build_output,  # CRA -> "build", Vite -> "dist"
-                "port": frontend_port,
-                "port_source": frontend_port_info.get("source", "default"),
-                "env_file": frontend_env_file,  # Path to .env for docker-compose
-                "package_manager": _detect_package_manager(frontend_path)  # npm/yarn/pnpm
+                "build_output": build_output,
+                "port": fe_port,
+                "port_source": fe_port_info.get("source", "default"),
+                "env_file": env_file,
+                "package_manager": _detect_package_manager(svc_abs_path),
             })
-    else:
-        # Single service inference
-        # Check for .env file at project root (for single-service projects)
+
+    # ── Fix 5 Step 1: Drop empty shells post-population ────────────────
+    services = _drop_empty_shells(services)
+
+    # ── Fallback: if dep-scan found nothing, use legacy single-service logic ──
+    if not services:
         root_env_file = None
         for env_name in [".env", ".env.local", ".env.production"]:
             env_path = os.path.join(project_path, env_name)
@@ -750,41 +1132,45 @@ def infer_services(
                 root_env_file = f"./{env_name}"
                 print(f"📄 Found root env file: {root_env_file}")
                 break
-        
+
         if static_only:
-            # Extract build_output for static frontend
             single_cmds = extract_nodejs_commands(project_path)
             single_build_output = single_cmds.get("build_output", "dist")
             services.append({
-                "name": "frontend", 
-                "path": ".", 
+                "name": "frontend",
+                "path": ".",
                 "type": "frontend",
                 "build_output": single_build_output,
-                "env_file": root_env_file
+                "env_file": root_env_file,
             })
         else:
             svc_name = "frontend" if framework in ["React", "Next.js"] else "app"
             svc_type = "frontend" if framework in ["React", "Next.js"] else "backend"
             if svc_type == "frontend":
-                # Extract build_output for frontend
                 single_cmds = extract_nodejs_commands(project_path)
                 single_build_output = single_cmds.get("build_output", "dist")
                 services.append({
-                    "name": svc_name, 
-                    "path": ".", 
+                    "name": svc_name,
+                    "path": ".",
                     "type": svc_type,
                     "build_output": single_build_output,
-                    "env_file": root_env_file
+                    "env_file": root_env_file,
                 })
             else:
                 services.append({
-                    "name": svc_name, 
-                    "path": ".", 
+                    "name": svc_name,
+                    "path": ".",
                     "type": svc_type,
-                    "env_file": root_env_file
+                    "env_file": root_env_file,
                 })
 
-    # Compose hints (optional refinement)
+    # ── Fix 2: Set architecture metadata ──────────────────────────────
+    if has_monolith:
+        metadata["architecture"] = "monolith"
+    else:
+        metadata.setdefault("architecture", "multi-service")
+
+    # ── Compose hints (optional refinement) ───────────────────────────
     compose_path = None
     for fname in ("docker-compose.yml", "docker-compose.yaml"):
         candidate = os.path.join(project_path, fname)
@@ -811,11 +1197,10 @@ def infer_services(
 
                 abs_ctx = os.path.abspath(os.path.join(project_path, build_ctx))
                 if not os.path.isdir(abs_ctx):
-                    # invalid context; treat as warning, do not create service
                     continue
 
                 rel_ctx = _normalize_service_path(project_path, abs_ctx)
-                svc_type = _infer_service_type(svc_name, framework, language, static_only)
+                svc_type = _infer_service_type(rel_ctx, svc_name, project_path)
 
                 # Try to match by path
                 matched = False
@@ -841,39 +1226,35 @@ def infer_services(
                     services.append({
                         "name": svc_name,
                         "path": rel_ctx,
-                        "type": svc_type
+                        "type": svc_type,
                     })
         except Exception:
             pass
 
-    # Database service detection (smart cloud vs local)
-    # Check backend path first for database info (it's where .env usually is)
+    # ── Database service detection (smart cloud vs local) ─────────────
     backend_path = None
     for svc in services:
-        if svc.get("type") == "backend":
+        if svc.get("type") in ("backend", "monolith"):
             backend_path = os.path.join(project_path, svc.get("path", "."))
             break
-    
+
     if not backend_path:
         backend_path = project_path
-    
-    # Use new extract_database_info for smart detection
+
     db_info = extract_database_info(backend_path, metadata.get("database"))
-    
+
     if db_info.get("db_type"):
-        # Update metadata with database info
         metadata["database_is_cloud"] = db_info["is_cloud"]
         metadata["database_env_var"] = db_info.get("env_var_name")
-        
+
         if db_info.get("needs_container"):
-            # LOCAL database - add container service
             db_service_name = {
                 "mongodb": "mongo",
                 "postgresql": "postgres",
                 "mysql": "mysql",
-                "redis": "redis"
+                "redis": "redis",
             }.get(db_info["db_type"], "database")
-            
+
             if not any(svc.get("type") == "database" for svc in services):
                 services.append({
                     "name": db_service_name,
@@ -881,11 +1262,10 @@ def infer_services(
                     "type": "database",
                     "port": db_info.get("default_port"),
                     "docker_image": db_info.get("docker_image"),
-                    "is_cloud": False
+                    "is_cloud": False,
                 })
                 print(f"🏠 Adding LOCAL {db_service_name} container to services")
         else:
-            # CLOUD database - just pass env var, no container
             print(f"☁️ Cloud database detected ({db_info['db_type']}), no container needed")
             print(f"   Backend should use env var: {db_info.get('env_var_name')}")
 
@@ -2061,7 +2441,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             svc_port = svc.get("port")
             svc_port_source = svc.get("port_source", "unknown")
             
-            if svc_type == "backend" and svc_port:
+            if svc_type in ("backend", "monolith") and svc_port:
                 # Only override if service port came from a reliable source
                 if svc_port_source in ("env", "source"):
                     print(f"🔧 Consolidating: backend_port = {svc_port} (from {svc_port_source})")
@@ -2092,9 +2472,9 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         # DEPLOY BLOCKED CHECK: Backend service requires .env file
         # If backend exists but has no .env, block deployment and notify user
         # =======================================================================
-        backend_services = [s for s in results.get("services", []) if s.get("type") == "backend"]
+        backend_services = [s for s in results.get("services", []) if s.get("type") in ("backend", "monolith")]
         backend_missing_env = any(
-            svc.get("type") == "backend" and not svc.get("env_file")
+            svc.get("type") in ("backend", "monolith") and not svc.get("env_file")
             for svc in results.get("services", [])
         )
         

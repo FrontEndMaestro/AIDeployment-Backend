@@ -1,0 +1,219 @@
+﻿........................................................................ [ 54%]
+...........................................................FF            [100%]
+================================== FAILURES ===================================
+E   assert True is False
+---------------------------- Captured stdout call -----------------------------
+
+Starting Hybrid Framework Detection
+Project Path: C:\Users\abdul\AppData\Local\Temp\pytest-of-abdul\pytest-3\test_fullstack_mern_with_env0
+ML Mode: Disabled
+
+Running heuristic detection (fast & reliable)...
+   Heuristic Language: JavaScript (score: 2.70)
+   Heuristic Framework: Express.js (score: 0.50)
+≡ƒôª Overriding start_command with: node server.js
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+   Detected databases (best first): ['MongoDB']
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+≡ƒöì Fullstack: found backend folder 'backend'
+≡ƒöì Fullstack: found frontend folder 'frontend'
+ΓÜá∩╕Å Deploy blocked: Backend .env file missing (database detected)
+Here are all the results:
+{
+  "framework": "Express.js",
+  "language": "JavaScript",
+  "runtime": "node:20-alpine",
+  "dependencies": [
+    "express",
+    "mongoose",
+    "react",
+    "react-dom",
+    "vite"
+  ],
+  "port": 5000,
+  "build_command": "npm install",
+  "start_command": "node server.js",
+  "env_variables": [],
+  "dockerfile": false,
+  "docker_compose": false,
+  "detected_files": [
+    "package.json"
+  ],
+  "detection_confidence": {
+    "language": 1.0,
+    "framework": 0.25,
+    "method": "heuristic"
+  },
+  "has_package_json": true,
+  "has_requirements_txt": false,
+  "has_manage_py": false,
+  "static_only": false,
+  "database": "MongoDB",
+  "databases": [
+    "MongoDB"
+  ],
+  "database_detection": {
+    "MongoDB": {
+      "score": 1.8,
+      "evidence": [
+        "dependency:mongoose",
+        "env:MONGO_URI"
+      ]
+    }
+  },
+  "database_port": 27017,
+  "backend_port": 5000,
+  "frontend_port": 5173,
+  "docker_backend_ports": null,
+  "docker_frontend_ports": null,
+  "docker_database_ports": null,
+  "docker_other_ports": null,
+  "docker_backend_container_ports": null,
+  "docker_frontend_container_ports": null,
+  "docker_database_container_ports": null,
+  "docker_other_container_ports": null,
+  "docker_expose_ports": null,
+  "entry_point": "server.js",
+  "services": [
+    {
+      "name": "app",
+      "path": ".",
+      "type": "backend"
+    }
+  ],
+  "deploy_blocked": true,
+  "deploy_blocked_reason": "Backend .env file is required because a database was detected. Please add a .env file with DATABASE_URL, PORT, and other secrets.",
+  "backend_env_missing": true,
+  "deploy_warning": null
+}
+
+Detection Complete!
+   Language: JavaScript (confidence: 1.00)
+   Framework: Express.js (confidence: 0.25)
+   Method: heuristic
+
+C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\tests\test_detector_exhaustive.py:954: assert True is False
+E   AssertionError: assert 27017 is None
+     +  where 27017 = <built-in method get of dict object at 0x0000016DE5861AC0>('database_port')
+     +    where <built-in method get of dict object at 0x0000016DE5861AC0> = {'backend_env_missing': False, 'backend_port': 3000, 'build_command': 'npm install', 'database': 'MongoDB', ...}.get
+---------------------------- Captured stdout call -----------------------------
+
+Starting Hybrid Framework Detection
+Project Path: C:\Users\abdul\AppData\Local\Temp\pytest-of-abdul\pytest-3\test_cloud_db_clears_port0
+ML Mode: Disabled
+
+Running heuristic detection (fast & reliable)...
+   Heuristic Language: JavaScript (score: 1.00)
+   Heuristic Framework: Express.js (score: 0.80)
+≡ƒôª Overriding start_command with: node server.js
+   Detected databases (best first): ['MongoDB']
+≡ƒôä Found root env file: ./.env
+Here are all the results:
+{
+  "framework": "Express.js",
+  "language": "JavaScript",
+  "runtime": "node:20-alpine",
+  "dependencies": [
+    "express",
+    "mongoose"
+  ],
+  "port": 3000,
+  "build_command": "npm install",
+  "start_command": "node server.js",
+  "env_variables": [
+    "MONGO_URI"
+  ],
+  "dockerfile": false,
+  "docker_compose": false,
+  "detected_files": [
+    "package.json"
+  ],
+  "detection_confidence": {
+    "language": 0.5,
+    "framework": 0.4,
+    "method": "heuristic"
+  },
+  "has_package_json": true,
+  "has_requirements_txt": false,
+  "has_manage_py": false,
+  "static_only": false,
+  "database": "MongoDB",
+  "databases": [
+    "MongoDB"
+  ],
+  "database_detection": {
+    "MongoDB": {
+      "score": 1.8,
+      "evidence": [
+        "dependency:mongoose",
+        "env:MONGO_URI"
+      ]
+    }
+  },
+  "database_port": 27017,
+  "backend_port": 3000,
+  "frontend_port": null,
+  "docker_backend_ports": null,
+  "docker_frontend_ports": null,
+  "docker_database_ports": null,
+  "docker_other_ports": null,
+  "docker_backend_container_ports": null,
+  "docker_frontend_container_ports": null,
+  "docker_database_container_ports": null,
+  "docker_other_container_ports": null,
+  "docker_expose_ports": null,
+  "entry_point": "server.js",
+  "services": [
+    {
+      "name": "app",
+      "path": ".",
+      "type": "backend",
+      "env_file": "./.env"
+    }
+  ],
+  "deploy_blocked": false,
+  "deploy_blocked_reason": null,
+  "backend_env_missing": false,
+  "deploy_warning": null
+}
+
+Detection Complete!
+   Language: JavaScript (confidence: 0.50)
+   Framework: Express.js (confidence: 0.40)
+   Method: heuristic
+
+C:\Users\abdul\Downloads\devops-autopilot\devops-autopilot\backend-python\tests\test_detector_exhaustive.py:989: AssertionError: assert 27017 is None
+============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_detector_exhaustive.py::TestDeployBlockedLogic::test_fullstack_mern_with_env
+FAILED tests/test_detector_exhaustive.py::TestCloudDatabaseClearing::test_cloud_db_clears_port
+2 failed, 131 passed, 2 warnings in 19.89s
+.\venv\Scripts\python.exe : 
+<sys>:0: DeprecationWarning: 
+builtin type swigvarlink has 
+no __module__ attribute
+At line:1 char:20
++ ... THONUTF8=1; 
+.\venv\Scripts\python.exe -m 
+pytest tests\test_detector_e 
+...
++                 ~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
+    + CategoryInfo            
+  : NotSpecified: (<    
+sys>:0: Deprec...ule_    _ 
+attribute:String) [    ], 
+RemoteException
+    + FullyQualifiedError    
+Id : NativeCommandErr    or
+ 

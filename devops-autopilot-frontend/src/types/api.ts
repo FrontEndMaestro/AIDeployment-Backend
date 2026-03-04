@@ -92,6 +92,9 @@ export interface ProjectMetadata {
   deploy_blocked_reason?: string | null;
   backend_env_missing?: boolean;
   deploy_warning?: string | null;
+
+  // ARCHITECTURE (monolith vs multi-service)
+  architecture?: "multi-service" | "monolith";
 }
 
 export interface LogEntry {
