@@ -4,6 +4,11 @@ import re
 import yaml
 from collections import Counter
 from typing import Dict, List, Tuple, Optional
+
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover
+    tomllib = None
 from .ml_analyzer import get_ml_analyzer
 from .command_extractor import (
     extract_nodejs_commands, 
@@ -130,6 +135,18 @@ FRAMEWORK_LANGUAGES: Dict[str, str] = {
     "Rails": "Ruby",
 }
 
+
+def _languages_compatible(detected: str, expected: str) -> bool:
+    """
+    Treat JavaScript and TypeScript as compatible for JS ecosystem frameworks
+    (e.g., React/Next/Express) so valid framework detections aren't erased.
+    """
+    if detected == expected:
+        return True
+    js_like = {"JavaScript", "TypeScript"}
+    return detected in js_like and expected in js_like
+
+
 # --- Database indicator config (for DB detection) ---
 
 DB_INDICATORS = {
@@ -164,6 +181,14 @@ DB_INDICATORS = {
         "env_keys": ["REDIS_URL", "REDIS_HOST"],
         "compose_images": ["redis"]
     }
+}
+
+DB_ENV_KEYWORDS = {
+    "PostgreSQL": ["postgres", "postgresql", "pg"],
+    "MySQL": ["mysql", "mariadb"],
+    "MongoDB": ["mongo", "mongodb"],
+    "Redis": ["redis"],
+    "SQLite": ["sqlite"],
 }
 
 
@@ -202,6 +227,30 @@ def norm_path(p: str) -> str:
         return "."
     p = p.replace("\\", "/").rstrip("/")
     return p if p else "."
+
+
+def _normalize_dep_name(dep: str) -> str:
+    """Best-effort normalize a dependency spec into a package name."""
+    dep = (dep or "").strip()
+    if not dep:
+        return ""
+
+    # Drop environment markers and direct references
+    dep = dep.split(";", 1)[0].strip()
+    dep = dep.split("@", 1)[0].strip()
+
+    # Strip extras (e.g., fastapi[standard])
+    dep = dep.split("[", 1)[0].strip()
+
+    # Strip version / comparator noise
+    for sep in ("==", ">=", "<=", "~=", "!=", ">", "<", "="):
+        if sep in dep:
+            dep = dep.split(sep, 1)[0].strip()
+            break
+
+    # Some formats include whitespace (e.g., "pkg >= 1.0")
+    dep = dep.split(None, 1)[0].strip()
+    return dep
 
 
 def parse_dependencies_file(file_path: str, file_type: str) -> List[str]:
@@ -244,11 +293,105 @@ def parse_dependencies_file(file_path: str, file_type: str) -> List[str]:
                     if parts:
                         deps.append(parts[0])
                 dependencies = deps
+
+        elif file_type == "pyproject.toml":
+            deps: List[str] = []
+            if tomllib is not None:
+                with open(file_path, "rb") as f:
+                    data = tomllib.load(f) or {}
+
+                # PEP 621 dependencies (list of strings)
+                project = data.get("project") or {}
+                for dep in project.get("dependencies") or []:
+                    name = _normalize_dep_name(dep)
+                    if name:
+                        deps.append(name)
+
+                opt = project.get("optional-dependencies") or {}
+                if isinstance(opt, dict):
+                    for group_deps in opt.values():
+                        if isinstance(group_deps, list):
+                            for dep in group_deps:
+                                name = _normalize_dep_name(dep)
+                                if name:
+                                    deps.append(name)
+
+                # Poetry dependencies (tables)
+                poetry = (data.get("tool") or {}).get("poetry") or {}
+                poetry_deps = poetry.get("dependencies") or {}
+                if isinstance(poetry_deps, dict):
+                    deps.extend([k for k in poetry_deps.keys() if k.lower() != "python"])
+
+                group = poetry.get("group") or {}
+                if isinstance(group, dict):
+                    for grp in group.values():
+                        if isinstance(grp, dict):
+                            grp_deps = grp.get("dependencies") or {}
+                            if isinstance(grp_deps, dict):
+                                deps.extend([k for k in grp_deps.keys() if k.lower() != "python"])
+            dependencies = deps
+
+        elif file_type == "Pipfile":
+            deps: List[str] = []
+            if tomllib is not None:
+                with open(file_path, "rb") as f:
+                    data = tomllib.load(f) or {}
+                for section_name in ("packages", "dev-packages"):
+                    section = data.get(section_name) or {}
+                    if isinstance(section, dict):
+                        deps.extend(list(section.keys()))
+            dependencies = deps
+
+        elif file_type == "poetry.lock":
+            deps: List[str] = []
+            if tomllib is not None:
+                with open(file_path, "rb") as f:
+                    data = tomllib.load(f) or {}
+                pkgs = data.get("package") or []
+                if isinstance(pkgs, list):
+                    for pkg in pkgs:
+                        if isinstance(pkg, dict):
+                            name = pkg.get("name")
+                            if name:
+                                deps.append(str(name))
+            else:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                deps.extend(re.findall(r'(?m)^name\\s*=\\s*\"([^\"]+)\"\\s*$', content))
+            dependencies = deps
+
+        elif file_type == "composer.json":
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                data = json.load(f) or {}
+            deps = {**data.get("require", {}), **data.get("require-dev", {})}
+            dependencies = list(deps.keys())
+
+        elif file_type == "Cargo.toml":
+            deps: List[str] = []
+            if tomllib is not None:
+                with open(file_path, "rb") as f:
+                    data = tomllib.load(f) or {}
+                for section_name in ("dependencies", "dev-dependencies", "build-dependencies"):
+                    section = data.get(section_name) or {}
+                    if isinstance(section, dict):
+                        deps.extend(list(section.keys()))
+            dependencies = deps
     
     except Exception as e:
         print(f"Error parsing {file_type}: {e}")
     
-    return dependencies[:50]
+    # Deduplicate while preserving order
+    seen = set()
+    deduped: List[str] = []
+    for d in dependencies:
+        if not d:
+            continue
+        if d in seen:
+            continue
+        seen.add(d)
+        deduped.append(d)
+
+    return deduped[:50]
 
 
 def get_runtime_info(language: str, framework: str) -> Dict:
@@ -402,40 +545,65 @@ def find_project_root(extracted_path: str, max_depth: int = 3) -> str:
     """Find actual project root recursively"""
     try:
         framework_files = [
-            'package.json', 'requirements.txt', 'pom.xml', 'build.gradle',
-            'composer.json', 'go.mod', 'Gemfile', 'setup.py'
+            'package.json', 'requirements.txt', 'pyproject.toml', 'Pipfile', 'poetry.lock',
+            'pom.xml', 'build.gradle', 'composer.json', 'go.mod', 'Gemfile', 'Cargo.toml',
+            'setup.py'
         ]
-        
-        def search_recursively(current_path: str, depth: int = 0) -> str:
-            if depth > max_depth:
-                return current_path
-            
+
+        excluded_dirs = {
+            'infra', 'node_modules', '.git', '__pycache__', '.terraform',
+            'venv', '.venv', 'dist', 'build', '.next'
+        }
+
+        def has_manifest(path: str) -> bool:
             try:
-                items = os.listdir(current_path)
-                folders = [item for item in items if os.path.isdir(os.path.join(current_path, item))]
-                files = [item for item in items if os.path.isfile(os.path.join(current_path, item))]
-                
-                has_framework_file = any(f in files for f in framework_files)
-                
-                if has_framework_file:
-                    return current_path
-                
-                # Exclude non-project folders (infra is for terraform, node_modules etc)
-                project_folders = [f for f in folders if f not in ['infra', 'node_modules', '.git', '__pycache__', '.terraform']]
-                
-                # If only one actual project folder and no framework files, go deeper
-                if len(project_folders) == 1 and len(files) == 0:
-                    nested_path = os.path.join(current_path, project_folders[0])
-                    print(f"Going deeper: {project_folders[0]}")
-                    return search_recursively(nested_path, depth + 1)
-                
+                return any(os.path.exists(os.path.join(path, f)) for f in framework_files)
+            except Exception:
+                return False
+
+        def search_unique(current_path: str, depth: int = 0) -> Optional[str]:
+            """
+            Search down to max_depth for manifest files. If exactly one unique
+            manifest-containing directory exists in this subtree, return it.
+            If multiple candidates exist, return None (ambiguous).
+            """
+            if depth > max_depth:
+                return None
+
+            if has_manifest(current_path):
                 return current_path
-            
+
+            try:
+                entries = os.listdir(current_path)
             except Exception as e:
                 print(f"Error scanning {current_path}: {e}")
-                return current_path
-        
-        final_path = search_recursively(extracted_path)
+                return None
+
+            found: List[str] = []
+            for name in entries:
+                abs_path = os.path.join(current_path, name)
+                if not os.path.isdir(abs_path):
+                    continue
+                if name in excluded_dirs:
+                    continue
+                child = search_unique(abs_path, depth + 1)
+                if child:
+                    found.append(child)
+
+            # Deduplicate candidates
+            uniq: List[str] = []
+            seen = set()
+            for p in found:
+                if p in seen:
+                    continue
+                seen.add(p)
+                uniq.append(p)
+
+            if len(uniq) == 1:
+                return uniq[0]
+            return None
+
+        final_path = search_unique(extracted_path) or extracted_path
         
         if final_path != extracted_path:
             print(f"Found project root: {final_path}")
@@ -600,7 +768,7 @@ def heuristic_framework_detection(project_path: str, language: str) -> Tuple[str
     for framework, score in framework_scores.items():
         fw_lang = FRAMEWORK_LANGUAGES.get(framework)
         adjusted_score = score
-        if fw_lang and language != "Unknown" and fw_lang != language:
+        if fw_lang and language != "Unknown" and not _languages_compatible(language, fw_lang):
             adjusted_score *= 0.5  # penalize mismatched language/framework
         if adjusted_score > best_score:
             best_score = adjusted_score
@@ -1133,6 +1301,23 @@ def infer_services(
                 print(f"📄 Found root env file: {root_env_file}")
                 break
 
+        # Phantom fallback guard: only emit a service if we have some positive signal.
+        manifest_files = [
+            "package.json", "requirements.txt", "pyproject.toml", "Pipfile", "poetry.lock",
+            "composer.json", "Cargo.toml", "pom.xml", "go.mod", "Gemfile", "setup.py",
+        ]
+        has_manifest = any(os.path.exists(os.path.join(project_path, f)) for f in manifest_files)
+
+        node_cmds = extract_nodejs_commands(project_path)
+        python_cmds = extract_python_commands(project_path)
+        entry_point = node_cmds.get("entry_point") or python_cmds.get("entry_point")
+
+        port_info = extract_port_from_project(project_path, framework, language)
+        explicit_port = port_info.get("source") in ("env", "source")
+
+        if not (has_manifest or entry_point or explicit_port):
+            return []
+
         if static_only:
             single_cmds = extract_nodejs_commands(project_path)
             single_build_output = single_cmds.get("build_output", "dist")
@@ -1231,6 +1416,14 @@ def infer_services(
         except Exception:
             pass
 
+    # Root monolith can coexist with compose hints that add child build contexts.
+    # If a root monolith exists, suppress non-database subdirectory services to avoid duplication.
+    if any(s.get("path") == "." and s.get("type") == "monolith" for s in services):
+        services = [
+            s for s in services
+            if s.get("path") == "." or s.get("type") == "database"
+        ]
+
     # ── Database service detection (smart cloud vs local) ─────────────
     backend_path = None
     for svc in services:
@@ -1239,7 +1432,7 @@ def infer_services(
             break
 
     if not backend_path:
-        backend_path = project_path
+        return services
 
     db_info = extract_database_info(backend_path, metadata.get("database"))
 
@@ -1268,9 +1461,6 @@ def infer_services(
         else:
             print(f"☁️ Cloud database detected ({db_info['db_type']}), no container needed")
             print(f"   Backend should use env var: {db_info.get('env_var_name')}")
-
-    if not services:
-        services.append({"name": "app", "path": ".", "type": "backend"})
 
     return services
 
@@ -2098,6 +2288,15 @@ def detect_databases(
             if key.lower() in env_lower:
                 score += 0.8
                 ev.append(f"env:{key}")
+
+        # Opportunistic substring match (captures POSTGRES_URL, MONGODB_URL, etc.)
+        substrings = DB_ENV_KEYWORDS.get(db_name, [])
+        if substrings:
+            for env_key in env_lower:
+                if any(sub in env_key for sub in substrings):
+                    score += 0.4
+                    ev.append(f"env_like:{env_key}")
+                    break
         
         # docker-compose images
         for img in info["compose_images"]:
@@ -2243,14 +2442,20 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         
                 # Sanity check: prevent impossible framework/language combos
         fw_lang = FRAMEWORK_LANGUAGES.get(results["framework"])
-        if fw_lang and results["language"] != "Unknown" and fw_lang != results["language"]:
+        if fw_lang and results["language"] == "Unknown":
+            results["language"] = fw_lang
+            results["detection_confidence"]["language"] = max(results["detection_confidence"]["language"], 0.5)
+
+        if fw_lang and results["language"] != "Unknown" and not _languages_compatible(results["language"], fw_lang):
             print(
                 f"⚠️ Inconsistent detection: framework {results['framework']} "
                 f"normally uses {fw_lang}, but language detected as {results['language']}. "
-                f"Resetting framework to Unknown."
+                f"Keeping framework and adjusting language."
             )
-            results["framework"] = "Unknown"
-            results["detection_confidence"]["framework"] = 0.0
+            results["language"] = fw_lang
+            results["detection_confidence"]["language"] = max(results["detection_confidence"]["language"], 0.5)
+            if results["detection_confidence"]["method"] == "heuristic":
+                results["detection_confidence"]["method"] = "hybrid (framework->language)"
 
 
         # Runtime defaults (may include default port)
@@ -2322,9 +2527,14 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         # Dependencies (root + nested subprojects like client/server)
         dep_files = {
             "requirements.txt": "requirements.txt",
+            "pyproject.toml": "pyproject.toml",
+            "Pipfile": "Pipfile",
+            "poetry.lock": "poetry.lock",
             "package.json": "package.json",
             "pom.xml": "pom.xml",
-            "go.mod": "go.mod"
+            "go.mod": "go.mod",
+            "composer.json": "composer.json",
+            "Cargo.toml": "Cargo.toml",
         }
         
         visited_dep_files = set()
@@ -2429,7 +2639,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                 results
             )
         except Exception:
-            results["services"] = [{"name": "app", "path": ".", "type": "backend"}]
+            results["services"] = []
         
         # =======================================================================
         # PORT CONSOLIDATION: Copy service ports to metadata for consistency

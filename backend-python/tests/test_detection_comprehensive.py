@@ -133,14 +133,14 @@ class TestEntryPointComplexScripts:
 
     def test_env_prefix_node(self, tmp_path):
         """NODE_ENV=production node --max-old-space-size=4096 server/index.js.
-        Complex script → start_command='npm start', entry_point extracted."""
+        Complex script → start_command='node <entry>', entry_point extracted."""
         _pkg(tmp_path, "api", deps={"express": "4"},
              scripts={"start": "NODE_ENV=production node --max-old-space-size=4096 server/index.js"})
         _write(tmp_path / "server" / "index.js", "")
         r = extract_nodejs_commands(str(tmp_path))
         assert r["entry_point"] == "server/index.js"
-        # Complex scripts (not starting with 'node ') → npm start
-        assert r["start_command"] == "npm start"
+        # If an entry point is resolved, prefer it over generic fallbacks
+        assert r["start_command"] == "node server/index.js"
 
     def test_cross_env(self, tmp_path):
         """cross-env NODE_ENV=production node dist/main.js."""
@@ -171,7 +171,7 @@ class TestEntryPointPM2:
         _write(tmp_path / "src" / "app.js", "")
         r = extract_nodejs_commands(str(tmp_path))
         assert r["entry_point"] == "src/app.js"
-        assert r["start_command"] == "npm start"
+        assert r["start_command"] == "node src/app.js"
 
     def test_pm2_no_dev_fallback_to_main(self, tmp_path):
         """pm2 without dev script → falls back to 'main' field."""
@@ -550,7 +550,7 @@ class TestRealisticMERNBackend:
 
     def test_monorepo_with_env_vars_and_flags(self, tmp_path):
         """Real-world script: NODE_OPTIONS=--max-old-space-size=8192 node server/app.js.
-        Complex script → start_command='npm start', entry parsed from script."""
+        Complex script → start_command='node <entry>', entry parsed from script."""
         _pkg(tmp_path, "backend",
              deps={"express": "4", "mongoose": "7"},
              scripts={
@@ -567,8 +567,8 @@ class TestRealisticMERNBackend:
 
         cmds = extract_nodejs_commands(str(tmp_path))
         assert cmds["entry_point"] == "server/app.js"
-        # Complex scripts (not starting with 'node ') → npm start
-        assert cmds["start_command"] == "npm start"
+        # If an entry point is resolved, prefer it over generic fallbacks
+        assert cmds["start_command"] == "node server/app.js"
 
         port = extract_port_from_project(str(tmp_path), language="JavaScript")
         assert port["port"] == 3001

@@ -8,6 +8,11 @@ import json
 import re
 from typing import Dict, Optional
 
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover
+    tomllib = None
+
 
 def _parse_vite_config(project_path: str) -> Optional[str]:
     """
@@ -270,16 +275,18 @@ def extract_nodejs_commands(project_path: str) -> Dict[str, Optional[str]]:
                     entry = extract_entry_from_script(dev_script)
                     if entry:
                         result["entry_point"] = entry
+                        result["start_command"] = f"node {entry}"
                         print(f"📦 PM2 detected, using entry from dev script: {entry}")
             else:
-                # Use npm start for complex scripts
-                result["start_command"] = "npm start"
-                
                 # Try to infer entry from script content using smart parsing (Fix 2)
                 entry = extract_entry_from_script(start_script)
                 if entry:
                     result["entry_point"] = entry
+                    result["start_command"] = f"node {entry}"
                 else:
+                    # Use npm start for complex scripts
+                    result["start_command"] = "npm start"
+
                     # Fallback to simple pattern matching
                     for pattern in ["node ", "nodemon "]:
                         if pattern in start_script:
@@ -413,6 +420,90 @@ def extract_python_commands(project_path: str) -> Dict[str, Optional[str]]:
     if os.path.exists(os.path.join(project_path, "manage.py")):
         result["entry_point"] = "manage.py"
         result["start_command"] = "python manage.py runserver 0.0.0.0:8000"
+        return result
+
+    # Prefer explicit start commands when present (avoid hardcoding uvicorn <module>:app).
+    def _find_explicit_start_command() -> Optional[str]:
+        # Procfile (e.g., Heroku)
+        procfile_path = os.path.join(project_path, "Procfile")
+        if os.path.exists(procfile_path):
+            try:
+                with open(procfile_path, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+
+                # Prefer web: if present
+                for ln in lines:
+                    if ":" not in ln:
+                        continue
+                    proc_type, cmd = ln.split(":", 1)
+                    cmd = cmd.strip()
+                    if proc_type.strip() == "web" and "uvicorn" in cmd:
+                        return cmd
+
+                # Otherwise, first process containing uvicorn
+                for ln in lines:
+                    if ":" not in ln:
+                        continue
+                    _, cmd = ln.split(":", 1)
+                    cmd = cmd.strip()
+                    if "uvicorn" in cmd:
+                        return cmd
+            except Exception:
+                pass
+
+        # pyproject.toml [tool.scripts] (and common variants like tool.pdm.scripts)
+        pyproject_path = os.path.join(project_path, "pyproject.toml")
+        if os.path.exists(pyproject_path) and tomllib is not None:
+            try:
+                with open(pyproject_path, "rb") as f:
+                    data = tomllib.load(f) or {}
+
+                tool = data.get("tool") or {}
+                script_tables = [
+                    tool.get("scripts"),
+                    (tool.get("pdm") or {}).get("scripts"),
+                ]
+
+                for scripts in script_tables:
+                    if not isinstance(scripts, dict):
+                        continue
+                    for val in scripts.values():
+                        cmd = None
+                        if isinstance(val, str):
+                            cmd = val
+                        elif isinstance(val, dict):
+                            cmd = val.get("cmd") or val.get("command") or val.get("shell")
+                        if cmd and "uvicorn" in cmd:
+                            return cmd.strip()
+            except Exception:
+                pass
+
+        # Common start scripts that may contain uvicorn (start.sh, entrypoint.sh, etc.)
+        for fname in [
+            "start.sh", "run.sh", "entrypoint.sh", "docker-entrypoint.sh", "startup.sh",
+            "start.bat", "run.bat",
+        ]:
+            fpath = os.path.join(project_path, fname)
+            if not os.path.exists(fpath):
+                continue
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if "uvicorn" in line:
+                            if line.startswith("exec "):
+                                line = line[5:].strip()
+                            return line
+            except Exception:
+                pass
+
+        return None
+
+    explicit = _find_explicit_start_command()
+    if explicit:
+        result["start_command"] = explicit
         return result
     
     # Check for common entry files
