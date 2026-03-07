@@ -1,2 +1,0 @@
-FAILED tests/test_detection_comprehensive.py::TestEntryPointComplexScripts::test_env_prefix_node
-FAILED tests/test_detection_comprehensive.py::TestRealisticMERNBackend::test_monorepo_with_env_vars_and_flags

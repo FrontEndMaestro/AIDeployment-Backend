@@ -14,7 +14,7 @@
 4. [API Endpoints (Full Reference)](#4-api-endpoints-full-reference)
 5. [User Upload Flow](#5-user-upload-flow)
 6. [Project Extraction Flow](#6-project-extraction-flow)
-7. [Analysis Pipeline — detector.py](#7-analysis-pipeline--detectorpy)
+7. [Analysis Pipeline — Detection Modules](#7-analysis-pipeline--detection-modules)
 8. [AI / LLM Integration](#8-ai--llm-integration)
 9. [Docker AI Controller — Deploy Flow](#9-docker-ai-controller--deploy-flow)
 10. [Environment File (.env) Handling](#10-environment-file-env-handling)
@@ -62,9 +62,19 @@ React Frontend (port 5173)
 FastAPI Backend (port 8000)
     ├── upload_controller     ← receives zip/tar
     ├── extract_controller    ← unzips to ./extracted/user_X/
-    ├── analyze_controller    ← runs detector.py
+    ├── analyze_controller    ← runs detector.py (orchestrator)
     ├── docker_ai_controller  ← calls LLM + runs docker
     └── aws_deploy_controller ← calls LLM for Terraform
+         │
+    Detection Modules (app/utils/)
+    ├── detector.py                ← orchestrator + re-export hub
+    ├── detection_constants.py     ← shared constants & helpers
+    ├── detection_language.py      ← language/framework detection
+    ├── detection_ports.py         ← port detection (env, pkg, Docker)
+    ├── detection_database.py      ← database detection & scoring
+    ├── detection_services.py      ← service inference
+    ├── command_extractor.py       ← Node.js/Python command extraction
+    └── ml_analyzer.py             ← ML-based classification
          │
          ▼
     LLM Layer (app/LLM/)
@@ -242,43 +252,58 @@ extract_controller.py
 
 ---
 
-## 7. Analysis Pipeline — detector.py
+## 7. Analysis Pipeline — Detection Modules
 
 This is the heart of the detection system. Triggered by `POST /api/projects/{id}/analyze`.
+
+### 7.0 Module Architecture
+
+The detection logic is split across 5 focused modules + an orchestrator:
+
+| Module | LOC | Responsibility |
+|---|---|---|
+| `detection_constants.py` | ~220 | All shared constants (`LANGUAGE_INDICATORS`, `DB_INDICATORS`, `BACKEND_DEPS`, etc.) and helpers (`norm_path`, `_normalize_dep_name`) |
+| `detection_language.py` | ~310 | `parse_dependencies_file`, `heuristic_language_detection`, `heuristic_framework_detection`, `get_runtime_info` |
+| `detection_ports.py` | ~530 | Port detection: `detect_ports_for_project`, `_detect_port_from_package_json`, `_scan_js_for_port_hint`, Docker compose/EXPOSE parsing |
+| `detection_database.py` | ~230 | `detect_databases`, `_infer_database_port`, `detect_db_and_ports` |
+| `detection_services.py` | ~530 | `infer_services`, `_find_all_services_by_deps`, `_find_python_services`, root suppression, empty-shell dropping |
+| `detector.py` (orchestrator) | ~620 | `detect_framework`, `find_project_root`, Docker/env helpers + **re-exports all symbols** from the modules above |
+
+> **Import compatibility:** `detector.py` re-exports every symbol from the 5 modules, so all existing `from app.utils.detector import X` paths continue to work unchanged.
 
 ### 7.1 What `detect_framework()` Does
 
 Runs a hybrid heuristic + ML pipeline on the extracted project folder:
 
 ```
-detect_framework(project_path, use_ml=True)
+detect_framework(project_path, use_ml=True)          # detector.py
     │
-    ├── 1. find_project_root()     — navigate nested zip structure
-    ├── 2. heuristic_language_detection()
+    ├── 1. find_project_root()                        # detector.py
+    ├── 2. heuristic_language_detection()              # detection_language.py
     │       ├── Scores: file extensions (+0.3), config files (+0.7), import patterns (+0.4)
     │       └── Languages: Python, JavaScript, TypeScript, Java, Go, Ruby, PHP
-    ├── 3. heuristic_framework_detection()
+    ├── 3. heuristic_framework_detection()             # detection_language.py
     │       ├── Scores: package.json/requirements.txt deps (+0.8), file markers (+0.5)
     │       └── Frameworks: Express.js, React, Next.js, Flask, Django, FastAPI, Spring Boot...
-    ├── 4. (if use_ml=True) ML supplement via ml_analyzer.py
-    ├── 5. Scan dependency files
+    ├── 4. (if use_ml=True) ML supplement              # ml_analyzer.py
+    ├── 5. Scan dependency files                       # detection_language.py
     │       parse_dependencies_file() for:
     │           package.json → deps + devDeps
     │           requirements.txt → skip comments, flags, extras notation
     │           pom.xml → <artifactId> tags
     │           go.mod → module paths
-    ├── 6. detect_docker_files()   — check for Dockerfile + docker-compose.yml
-    ├── 7. detect_env_variables()  — scan .env, .env.example, .env.local for KEYS only
-    ├── 8. detect_db_and_ports()
-    │       ├── detect_databases() — scores DB from deps, env keys, compose images
+    ├── 6. detect_docker_files()                       # detector.py
+    ├── 7. detect_env_variables()                      # detector.py
+    ├── 8. detect_db_and_ports()                       # detection_database.py
+    │       ├── detect_databases()                     # detection_database.py
     │       │       Databases: MongoDB, PostgreSQL, MySQL, SQLite, Redis
-    │       └── detect_ports_for_project()
-    │               ├── _read_env_key_values() — reads PORT, BACKEND_PORT, etc.
-    │               ├── _detect_port_from_package_json() — parses scripts for PORT=XXXX
-    │               ├── _scan_js_for_port_hint() — scans .js/.ts for app.listen(PORT)
-    │               └── _parse_docker_compose_ports()
-    ├── 9. infer_services()        — build service definitions
-    └── 10. deploy_blocked check   — see Section 11
+    │       └── detect_ports_for_project()             # detection_ports.py
+    │               ├── _read_env_key_values()         # detector.py
+    │               ├── _detect_port_from_package_json()# detection_ports.py
+    │               ├── _scan_js_for_port_hint()       # detection_ports.py
+    │               └── _parse_docker_compose_ports()  # detection_ports.py
+    ├── 9. infer_services()                            # detection_services.py
+    └── 10. deploy_blocked check                       # detector.py (see Section 11)
 ```
 
 ### 7.2 Full Output of `detect_framework()`
@@ -584,11 +609,11 @@ docker push {hub_username}/{image}
 
 ## 10. Environment File (.env) Handling
 
-### 10.1 During Analysis (detector.py)
+### 10.1 During Analysis (detection modules)
 
-The detector reads `.env` files at **two layers** — root and nested service directories:
+The detection modules read `.env` files at **two layers** — root and nested service directories:
 
-**Files read for key-value detection** (`_read_env_key_values`):
+**Files read for key-value detection** (`_read_env_key_values` in `detector.py`):
 - `.env`
 - `.env.local`
 - `.env.development`
@@ -596,13 +621,13 @@ The detector reads `.env` files at **two layers** — root and nested service di
 - `.env.test`
 - `.env.example`
 
-**Files read for key-only listing** (`detect_env_variables`):
+**Files read for key-only listing** (`detect_env_variables` in `detector.py`):
 - `.env`
 - `.env.example`
 - `.env.sample`
 - `.env.local`
 
-**For DB detection**, the system also reads nested `.env` files inside `backend/`, `server/`, `api/` etc. and merges all key-value pairs before scoring.
+**For DB detection** (`detection_database.py`), the system also reads nested `.env` files inside `backend/`, `server/`, `api/` etc. and merges all key-value pairs before scoring.
 
 **Port from `.env`** — these keys are checked (priority order):
 
@@ -804,6 +829,16 @@ The system can also generate Terraform configurations for AWS ECS + ECR deployme
 devops-autopilot/
 ├── backend-python/
 │   ├── .env                          ← backend config (gitignored)
+│   ├── app/
+│   │   └── utils/
+│   │       ├── detector.py            ← orchestrator + re-export hub (~620 LOC)
+│   │       ├── detection_constants.py ← shared constants & helpers
+│   │       ├── detection_language.py  ← language/framework detection
+│   │       ├── detection_ports.py     ← port detection (env, pkg, Docker)
+│   │       ├── detection_database.py  ← database detection & scoring
+│   │       ├── detection_services.py  ← service inference
+│   │       ├── command_extractor.py   ← Node.js/Python command extraction
+│   │       └── ml_analyzer.py         ← ML-based classification
 │   ├── uploads/
 │   │   └── user_{username}/
 │   │       └── {timestamp}-{file}    ← uploaded archives
@@ -834,16 +869,26 @@ devops-autopilot/
 |---|---|---|
 | `backend-python/tests/test_docker_pipeline.py` | 49 tests (unittest) | Docker pipeline, Layer 1–4 |
 | `backend-python/tests/test_detector_exhaustive.py` | 133 tests (pytest) | Full detector.py coverage |
+| `backend-python/tests/test_detection_comprehensive.py` | 77 tests (pytest) | Real-world MERN scenarios |
+| `backend-python/tests/test_database_detection.py` | Database detection | DB scoring & port inference |
+| `backend-python/tests/test_port_detection.py` | Port detection | Multi-source port resolution |
+| `backend-python/tests/test_command_extractor.py` | Command extraction | Node.js/Python entry points |
+
+**Total: 359 tests** (all passing after modular refactoring)
 
 **Run tests:**
 ```bash
-# Existing unittest suite
-python -m unittest tests/test_docker_pipeline.py -v
+# Full suite (recommended)
+python -m pytest tests/ -v
 
-# New exhaustive pytest suite
+# Individual test files
 python -m pytest tests/test_detector_exhaustive.py -v
+python -m pytest tests/test_detection_comprehensive.py -v
+python -m pytest tests/test_database_detection.py -v
 ```
+
+> **Note:** All tests import from `app.utils.detector` — the re-export pattern ensures no test imports needed changing after the modular refactoring.
 
 ---
 
-*Document generated: 2026-02-26 | DevOps AutoPilot v1.0*
+*Document updated: 2026-03-06 | DevOps AutoPilot v1.1 — Modular detection architecture*

@@ -1,0 +1,706 @@
+"""
+Port detection helpers for backend, frontend, Docker Compose, and Dockerfile EXPOSE.
+Extracted from detector.py to reduce its size.
+"""
+
+import os
+import json
+import re
+import yaml
+from collections import Counter
+from typing import Dict, List, Tuple, Optional
+
+
+def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
+    """
+    Detect typical fullstack structure with separate frontend/backend folders.
+    Looks for 'backend/server/api' and 'frontend/client/web' with package.json.
+    """
+    structure = {
+        "is_fullstack": False,
+        "has_backend": False,
+        "has_frontend": False,
+        "backend_path": None,
+        "frontend_path": None,
+    }
+    
+    for root, dirs, files in os.walk(project_path):
+        depth = root.replace(project_path, '').count(os.sep)
+        if depth > 2:
+            continue
+        
+        for folder in dirs:
+            folder_lower = folder.lower()
+            folder_path = os.path.join(root, folder)
+            pkg_path = os.path.join(folder_path, "package.json")
+            
+            if os.path.exists(pkg_path):
+                if folder_lower in ["backend", "server", "api", "app"]:
+                    structure["has_backend"] = True
+                    structure["backend_path"] = folder_path
+                    structure["is_fullstack"] = True
+                    print(f"🔍 Fullstack: found backend folder '{folder}'")
+                if folder_lower in ["frontend", "client", "web", "ui"]:
+                    structure["has_frontend"] = True
+                    structure["frontend_path"] = folder_path
+                    structure["is_fullstack"] = True
+                    print(f"🔍 Fullstack: found frontend folder '{folder}'")
+    
+    return structure
+
+
+def _scan_js_for_port_hint(service_path: str, max_files: int = 50) -> Optional[int]:
+    """
+    Scan JS/TS files under service_path for typical port patterns like:
+      - process.env.PORT || 5050
+      - app.listen(5050)
+    Returns the first reasonable port it finds, or None.
+    """
+    exts = {".js", ".jsx", ".ts", ".tsx"}
+    patterns = [
+        # process.env.PORT || 5050
+        re.compile(r"process\.env\.PORT\s*\|\|\s*(\d{2,5})"),
+        # generic 'PORT ... 5050'
+        re.compile(r"\bPORT\b[^;\n]*\b(\d{2,5})\b"),
+        # app.listen(5050) / listen(5050)
+        re.compile(r"\blist(?:en)?\s*\(\s*(\d{2,5})")
+    ]
+    
+    ports: List[int] = []
+    files_scanned = 0
+    
+    for root, dirs, files in os.walk(service_path):
+        dirs[:] = [
+            d for d in dirs
+            if d not in ["node_modules", "dist", "build", ".next", ".vite", ".git"]
+        ]
+        
+        for file in files:
+            if files_scanned >= max_files:
+                break
+            
+            _, ext = os.path.splitext(file)
+            if ext.lower() not in exts:
+                continue
+            
+            file_path = os.path.join(root, file)
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read(10000)
+            except Exception:
+                files_scanned += 1
+                continue
+            
+            for pat in patterns:
+                for m in pat.finditer(content):
+                    # last non-None group first
+                    for g in reversed(m.groups()):
+                        if g and g.isdigit():
+                            p = int(g)
+                            if 1024 <= p <= 65535:
+                                ports.append(p)
+                                break
+                    if ports:
+                        break
+                if ports:
+                    break
+            
+            files_scanned += 1
+        
+        if files_scanned >= max_files:
+            break
+    
+    return ports[0] if ports else None
+
+
+def _detect_port_from_package_json(project_path: str, prefer_frontend: bool = False) -> Optional[int]:
+    """
+    Guess port from package.json scripts.
+    prefer_frontend:
+      - True  => prioritise typical frontend ports
+      - False => prioritise typical backend ports
+    Also special-cases Vite (frontend) to default to 5173 when no explicit port is set.
+    """
+    pkg_json = os.path.join(project_path, "package.json")
+    if not os.path.exists(pkg_json):
+        return None
+    
+    try:
+        with open(pkg_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"Error reading package.json for port detection: {e}")
+        return None
+    
+    scripts = data.get("scripts", {})
+    # collect dependency names to detect Vite etc.
+    deps = {}
+    deps.update(data.get("dependencies", {}))
+    deps.update(data.get("devDependencies", {}))
+    dep_names = set(k.lower() for k in deps.keys())
+    
+    script_strings = " ".join(str(v) for v in scripts.values())
+    
+    # Look for explicit PORT=XXXX patterns first
+    match = re.search(r"\bPORT\s*=?\s*(\d{2,5})\b", script_strings)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    
+    # Heuristic port priorities
+    if prefer_frontend:
+        candidates = [3000, 5173, 4173, 4200, 8080, 8000, 5000, 4000]
+    else:
+        candidates = [8000, 8080, 5000, 4000, 3000, 5173, 4200]
+    
+    # More precise matching than simple substring
+    for port in candidates:
+        port_pattern = re.compile(
+            rf"(?:[:=]\s*{port}\b|\bPORT\s*=?\s*{port}\b)"
+        )
+        if port_pattern.search(script_strings):
+            return port
+    
+    # If this looks like a Vite frontend app, default to Vite's dev port 5173
+    if prefer_frontend and "vite" in dep_names:
+        return 5173
+    
+    # Default for Node apps when nothing explicit is found
+    return 3000
+
+
+def _scan_code_for_ports(project_path: str, max_files: int = 150) -> Optional[int]:
+    """
+    Generic port scan: look for host:port patterns in code.
+    Used mainly for non-JS/TS projects.
+    """
+    exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rb", ".php"}
+    pattern = re.compile(
+        r"(?:0\.0\.0\.0|127\.0\.0\.1|localhost)\s*[: ]\s*(\d{2,5})"
+    )
+    
+    counts: Counter = Counter()
+    files_scanned = 0
+    
+    try:
+        for root, dirs, files in os.walk(project_path):
+            dirs[:] = [d for d in dirs if d not in [
+                "node_modules", "__pycache__", ".git", "venv", ".venv",
+                "dist", "build", ".next", "target", "bin", "obj", "out"
+            ]]
+            
+            for file in files:
+                if files_scanned >= max_files:
+                    break
+                _, ext = os.path.splitext(file)
+                if ext.lower() not in exts:
+                    continue
+                
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read(8000)
+                    for m in pattern.finditer(content):
+                        try:
+                            port = int(m.group(1))
+                            if 1024 <= port <= 65535:
+                                counts[port] += 1
+                        except ValueError:
+                            continue
+                except Exception:
+                    continue
+                files_scanned += 1
+            
+            if files_scanned >= max_files:
+                break
+    except Exception as e:
+        print(f"Port scan error: {e}")
+    
+    if not counts:
+        return None
+    
+    # Most frequent port
+    port, _ = counts.most_common(1)[0]
+    return port
+
+
+def _parse_docker_compose_ports(project_path: str) -> Dict[str, List[Tuple[int, int]]]:
+    """
+    Parse docker-compose.yml/.yaml using a proper YAML parser (PyYAML).
+
+    Supports:
+      services:
+        frontend:
+          ports:
+            - "5173:80"
+            - 3000:3000
+        backend:
+          ports: "5000:5000"
+        db:
+          ports:
+            - "27017:27017"
+
+    Returns:
+        {
+            "<service_name>": [(host_port, container_port), ...],
+            ...
+        }
+    """
+    compose_files = ("docker-compose.yml", "docker-compose.yaml")
+    compose_path = None
+
+    for fname in compose_files:
+        candidate = os.path.join(project_path, fname)
+        if os.path.exists(candidate):
+            compose_path = candidate
+            break
+
+    # No compose file found
+    if not compose_path:
+        return {}
+
+    # If PyYAML isn't installed, fall back to "no ports" rather than breaking
+    if yaml is None:
+        print("Warning: PyYAML not installed; docker-compose ports will not be parsed.")
+        return {}
+
+    try:
+        with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"Error parsing docker-compose with YAML: {e}")
+        return {}
+
+    services = data.get("services", {})
+    service_ports: Dict[str, List[Tuple[int, int]]] = {}
+
+    for svc_name, svc_def in services.items():
+        if not isinstance(svc_def, dict):
+            continue
+
+        ports_field = svc_def.get("ports")
+        if not ports_field:
+            continue
+
+        # Normalize ports_field to a list
+        if isinstance(ports_field, (str, int)):
+            ports_list = [ports_field]
+        elif isinstance(ports_field, list):
+            ports_list = ports_field
+        else:
+            # Unknown type, skip
+            continue
+
+        mappings: List[Tuple[int, int]] = []
+
+        for entry in ports_list:
+            # Possible formats:
+            # - "3000:3000"
+            # - "0.0.0.0:3000:3000"
+            # - "3000"
+            # - 3000
+            host_port: Optional[int] = None
+            container_port: Optional[int] = None
+
+            if isinstance(entry, int):
+                # `ports: - 3000` means container port 3000, host randomized.
+                # We can treat this as (3000, 3000) for our detection purposes,
+                # or skip host mapping. Here we treat host == container.
+                host_port = entry
+                container_port = entry
+            else:
+                # It's a string
+                text = str(entry).strip().strip('"').strip("'")
+                # Drop protocol suffix if present, e.g. "3000:3000/tcp"
+                if "/" in text:
+                    text = text.split("/", 1)[0]
+
+                parts = text.split(":")
+                # "3000" => only container port (host random)
+                if len(parts) == 1 and parts[0].isdigit():
+                    container_port = int(parts[0])
+                    # we *could* leave host_port as None; but for your
+                    # detector it's more useful to treat host == container
+                    host_port = container_port
+                elif len(parts) >= 2:
+                    # Could be "host:container" or "ip:host:container"
+                    # We take last two segments as host/container
+                    maybe_host = parts[-2]
+                    maybe_container = parts[-1]
+                    if maybe_host.isdigit() and maybe_container.isdigit():
+                        host_port = int(maybe_host)
+                        container_port = int(maybe_container)
+
+            if host_port is not None and container_port is not None:
+                mappings.append((host_port, container_port))
+
+        if mappings:
+            service_ports[svc_name] = mappings
+
+    return service_ports
+
+
+def _parse_dockerfile_expose_ports(project_path: str) -> List[int]:
+    """
+    Collect exposed ports from any Dockerfile found in the project.
+    Supports:
+      EXPOSE 3000
+      EXPOSE 80 443
+      EXPOSE 8080/tcp
+      EXPOSE 8081/udp
+    """
+    ports = []
+    dockerfiles = ["Dockerfile", "dockerfile"]
+
+    for root, dirs, files in os.walk(project_path):
+        dirs[:] = [d for d in dirs if d not in ["node_modules", ".git", "__pycache__", "dist", "build"]]
+
+        for file in files:
+            if file in dockerfiles:
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            m = re.search(r"EXPOSE\s+(.*)", line, re.IGNORECASE)
+                            if not m:
+                                continue
+
+                            tokens = m.group(1).split()
+                            for token in tokens:
+                                token = token.strip()
+                                token = token.split("/")[0]  # drop /tcp
+                                if token.isdigit():
+                                    ports.append(int(token))
+                except:
+                    pass
+
+    return sorted(set(ports))
+
+
+def _classify_docker_service(name: str) -> str:
+    """
+    Classify a docker-compose service name into one of:
+    'frontend', 'backend', 'database', or 'other'.
+    """
+    n = name.lower()
+
+    if any(k in n for k in ["front", "client", "web", "ui","public"]):
+        return "frontend"
+    if any(k in n for k in ["back", "api", "server", "app"]):
+        return "backend"
+    if any(k in n for k in ["mongo", "mysql", "postgres", "pgsql", "redis", "db"]):
+        return "database"
+    return "other"
+
+
+def detect_ports_for_project(
+    project_path: str,
+    language: str,
+    framework: str,
+    base_port: Optional[int]
+) -> Dict[str, Optional[int]]:
+    """
+    Detect backend and frontend ports.
+
+    - For JS/TS: look for fullstack structure and read package.json,
+      then refine backend with a JS code scan.
+      Also consult .env for port hints (root and, for fullstack, backend/frontend subfolders).
+    - For others: scan code for host:port; fall back to base_port / defaults,
+      with .env overrides.
+
+    Additionally:
+    - Parse docker-compose.yml/.yaml and expose:
+        docker_backend_ports             (HOST ports on the machine)
+        docker_frontend_ports            (HOST ports on the machine)
+        docker_database_ports            (HOST ports on the machine)
+        docker_other_ports               (service_name -> [HOST ports])
+        docker_backend_container_ports   (CONTAINER ports inside backend containers)
+        docker_frontend_container_ports  (CONTAINER ports inside frontend containers)
+        docker_database_container_ports  (CONTAINER ports inside DB containers)
+        docker_other_container_ports     (service_name -> [CONTAINER ports])
+    - Parse Dockerfile EXPOSE lines to collect container ports in docker_expose_ports.
+    """
+    # Import here to avoid circular imports (detector.py owns _read_env_key_values)
+    from .detector import _read_env_key_values
+
+    backend_port: Optional[int] = None
+    frontend_port: Optional[int] = None
+
+    # ---- read env key/values at the project root ----
+    root_env_kv = _read_env_key_values(project_path)
+
+    def _extract_port(val: str) -> Optional[int]:
+        val = val.strip()
+        if not val:
+            return None
+        if val.isdigit():
+            p = int(val)
+            if 1 <= p <= 65535:
+                return p
+        m = re.search(r"(\d{2,5})", val)
+        if m:
+            try:
+                p = int(m.group(1))
+                if 1 <= p <= 65535:
+                    return p
+            except ValueError:
+                return None
+        return None
+
+    def _extract_env_ports(env_kv: Dict[str, str]):
+        """
+        Given a mapping of env key -> value, extract:
+          - backend_env_port: from BACKEND_PORT/SERVER_PORT/API_PORT
+          - frontend_env_port: from FRONTEND_PORT/CLIENT_PORT/VITE_PORT/REACT_APP_PORT
+          - generic_env_port: from PORT
+        """
+        backend_env_port: Optional[int] = None
+        frontend_env_port: Optional[int] = None
+        generic_env_port: Optional[int] = None
+
+        for key, value in env_kv.items():
+            p = _extract_port(value)
+            if p is None:
+                continue
+            ku = key.upper()
+
+            # explicit backend hints
+            if ku in ("BACKEND_PORT", "SERVER_PORT", "API_PORT"):
+                if backend_env_port is None:
+                    backend_env_port = p
+                continue
+
+            # explicit frontend hints
+            if ku in ("FRONTEND_PORT", "CLIENT_PORT", "VITE_PORT", "REACT_APP_PORT"):
+                if frontend_env_port is None:
+                    frontend_env_port = p
+                continue
+
+            # generic PORT
+            if ku == "PORT" and generic_env_port is None:
+                generic_env_port = p
+
+        return backend_env_port, frontend_env_port, generic_env_port
+
+    # root env-derived ports (may be overridden for fullstack)
+    backend_env_port, frontend_env_port, generic_env_port = _extract_env_ports(root_env_kv)
+
+    is_js_ts = language in ["JavaScript", "TypeScript"]
+
+    if is_js_ts:
+        fullstack = _detect_fullstack_structure(project_path)
+        is_fullstack = fullstack.get("is_fullstack", False)
+
+        # ---- FULLSTACK JS/TS (client + server folders) ----
+        if is_fullstack:
+            backend_path = fullstack.get("backend_path")
+            frontend_path = fullstack.get("frontend_path")
+
+            # Backend-specific env: backend/.env overrides root .env
+            if backend_path:
+                backend_env_kv = _read_env_key_values(backend_path)
+                b_backend_env_port, _, b_generic_env_port = _extract_env_ports(backend_env_kv)
+
+
+                if b_backend_env_port is not None:
+                    backend_env_port = b_backend_env_port
+                elif b_generic_env_port is not None:
+                    # FIX: In fullstack project, treat backend/.env PORT as backend port
+                    # (not just generic fallback). This ensures PORT=4000 from backend/.env
+                    # takes priority over package.json default of 3000.
+                    backend_env_port = b_generic_env_port
+
+            # Frontend-specific env: frontend/.env overrides root .env
+            if frontend_path:
+                frontend_env_kv = _read_env_key_values(frontend_path)
+                _, f_frontend_env_port, _ = _extract_env_ports(frontend_env_kv)
+
+                if f_frontend_env_port is not None:
+                    frontend_env_port = f_frontend_env_port
+                # We intentionally do NOT use generic PORT for frontend in fullstack,
+                # to keep the original semantics.
+
+            # Backend: env override > package.json + code scan > generic PORT
+            if backend_env_port is not None:
+                backend_port = backend_env_port
+            else:
+                if fullstack.get("has_backend") and backend_path:
+                    backend_port = _detect_port_from_package_json(
+                        backend_path, prefer_frontend=False
+                    )
+                    code_port = _scan_js_for_port_hint(backend_path)
+                    if code_port is not None:
+                        backend_port = code_port
+                else:
+                    backend_port = _detect_port_from_package_json(
+                        project_path, prefer_frontend=False
+                    )
+                    code_port = _scan_js_for_port_hint(project_path)
+                    if code_port is not None:
+                        backend_port = code_port
+
+                if backend_port is None and generic_env_port is not None:
+                    backend_port = generic_env_port
+
+            # Frontend: env override > package.json (frontend preference)
+            if fullstack.get("has_frontend") and frontend_path:
+                if frontend_env_port is not None:
+                    frontend_port = frontend_env_port
+                else:
+                    frontend_port = _detect_port_from_package_json(
+                        frontend_path, prefer_frontend=True
+                    )
+            # we do NOT use generic PORT for frontend in fullstack case
+
+        # ---- SINGLE JS/TS PROJECT (no separate client/server folders) ----
+        else:
+            # treat React / Next.js as frontend-only by default
+            is_frontend_only = framework in ["React", "Next.js"]
+
+            if is_frontend_only:
+                # FRONTEND: env > generic PORT > package.json + JS scan
+                if frontend_env_port is not None:
+                    frontend_port = frontend_env_port
+                elif generic_env_port is not None:
+                    frontend_port = generic_env_port
+                else:
+                    frontend_port = _detect_port_from_package_json(
+                        project_path, prefer_frontend=True
+                    )
+                    code_port = _scan_js_for_port_hint(project_path)
+                    if code_port is not None:
+                        frontend_port = code_port
+
+                # BACKEND: only if explicitly defined in env
+                if backend_env_port is not None:
+                    backend_port = backend_env_port
+                else:
+                    backend_port = None
+
+            else:
+                # Non-React/Next single JS/TS: treat as backend app
+                # Backend: env > package.json + JS scan > generic PORT
+                if backend_env_port is not None:
+                    backend_port = backend_env_port
+                else:
+                    backend_port = _detect_port_from_package_json(
+                        project_path, prefer_frontend=False
+                    )
+                    code_port = _scan_js_for_port_hint(project_path)
+                    if code_port is not None:
+                        backend_port = code_port
+
+                    if backend_port is None and generic_env_port is not None:
+                        backend_port = generic_env_port
+
+                # Frontend only if explicitly given in env
+                if frontend_env_port is not None:
+                    frontend_port = frontend_env_port
+
+    else:
+        # ---- NON JS/TS PROJECTS ----
+        detected = _scan_code_for_ports(project_path)
+        if detected:
+            backend_port = detected
+        else:
+            backend_port = base_port
+            if backend_port is None:
+                default_ports = {
+                    "Python": 8000,
+                    "Java": 8080,
+                    "Go": 8080,
+                    "Ruby": 3000,
+                    "PHP": 8000
+                }
+                backend_port = default_ports.get(language, 8000)
+
+        # Env overrides for backend
+        if backend_env_port is not None:
+            backend_port = backend_env_port
+        elif generic_env_port is not None and backend_port is None:
+            backend_port = generic_env_port
+
+        # Allow explicit frontend env even in non-JS projects (edge multi-service)
+        if frontend_env_port is not None:
+            frontend_port = frontend_env_port
+
+    # ---- Docker-compose ports ----
+    docker_service_ports = _parse_docker_compose_ports(project_path)
+
+    # ---- Dockerfile EXPOSE ports ----
+    dockerfile_exposed_ports = _parse_dockerfile_expose_ports(project_path)
+
+    docker_backend_ports: List[int] = []
+    docker_frontend_ports: List[int] = []
+    docker_database_ports: List[int] = []
+    docker_other_ports: Dict[str, List[int]] = {}
+
+    # Container (internal) ports for the same services
+    docker_backend_container_ports: List[int] = []
+    docker_frontend_container_ports: List[int] = []
+    docker_database_container_ports: List[int] = []
+    docker_other_container_ports: Dict[str, List[int]] = {}
+
+    for svc, mappings in docker_service_ports.items():
+        role = _classify_docker_service(svc)
+        host_ports = [hp for (hp, cp) in mappings]
+        container_ports = [cp for (hp, cp) in mappings]
+
+        if not host_ports and not container_ports:
+            continue
+
+        if role == "backend":
+            docker_backend_ports.extend(host_ports)
+            docker_backend_container_ports.extend(container_ports)
+            # OLD behavior was: if backend_port is None and host_ports: backend_port = host_ports[0]
+            # We now defer the canonical override until after all services are processed.
+        elif role == "frontend":
+            docker_frontend_ports.extend(host_ports)
+            docker_frontend_container_ports.extend(container_ports)
+        elif role == "database":
+            docker_database_ports.extend(host_ports)
+            docker_database_container_ports.extend(container_ports)
+        else:
+            if host_ports:
+                docker_other_ports[svc] = host_ports
+            if container_ports:
+                docker_other_container_ports[svc] = container_ports
+
+    # de-duplicate docker port lists
+    docker_backend_ports = sorted(set(docker_backend_ports))
+    docker_frontend_ports = sorted(set(docker_frontend_ports))
+    docker_database_ports = sorted(set(docker_database_ports))
+
+    docker_backend_container_ports = sorted(set(docker_backend_container_ports))
+    docker_frontend_container_ports = sorted(set(docker_frontend_container_ports))
+    docker_database_container_ports = sorted(set(docker_database_container_ports))
+
+    # --- Compose-driven hints (conservative) ---
+    # Only use compose HOST ports if we did not find a better hint earlier.
+    if backend_port is None and docker_backend_ports:
+        backend_port = docker_backend_ports[0]
+
+    if frontend_port is None and docker_frontend_ports:
+        frontend_port = docker_frontend_ports[0]
+
+    return {
+        "backend_port": backend_port,
+        "frontend_port": frontend_port,
+
+        # HOST ports from docker-compose (what you bind on the machine)
+        "docker_backend_ports": docker_backend_ports or None,
+        "docker_frontend_ports": docker_frontend_ports or None,
+        "docker_database_ports": docker_database_ports or None,
+        "docker_other_ports": docker_other_ports or None,
+
+        # CONTAINER ports from docker-compose (internal container-side ports)
+        "docker_backend_container_ports": docker_backend_container_ports or None,
+        "docker_frontend_container_ports": docker_frontend_container_ports or None,
+        "docker_database_container_ports": docker_database_container_ports or None,
+        "docker_other_container_ports": docker_other_container_ports or None,
+
+        # Container ports from Dockerfile EXPOSE lines
+        "docker_expose_ports": dockerfile_exposed_ports or None,
+    }
