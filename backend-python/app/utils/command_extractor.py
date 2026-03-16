@@ -544,8 +544,12 @@ def _parse_env_for_port(project_path: str) -> Optional[int]:
                 with open(env_path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
                 
-                # Pattern: PORT=4000 or PORT = 4000
-                match = re.search(r'^PORT\s*=\s*(\d+)', content, re.MULTILINE)
+                # Pattern: PORT=4000, VITE_PORT=5173, REACT_APP_PORT=3000, etc.
+                match = re.search(
+                    r'^(?:PORT|VITE_PORT|REACT_APP_PORT|NEXT_PUBLIC_PORT|VITE_DEV_PORT)\s*=\s*(\d+)',
+                    content,
+                    re.MULTILINE
+                )
                 if match:
                     port = int(match.group(1))
                     print(f"🔌 Found PORT={port} in {env_file}")
@@ -636,7 +640,10 @@ def _get_framework_default_port(framework: str, language: str) -> int:
     """
     framework_ports = {
         "Express.js": 3000,
+        "Fastify": 3000,
+        "NestJS": 3000,
         "Next.js": 3000,
+        "Vite": 5173,
         "React": 3000,  # CRA default
         "Vue": 8080,
         "Angular": 4200,
@@ -920,6 +927,13 @@ def extract_database_info(project_path: str, detected_db: str = None) -> Dict[st
         "mysql": {"port": 3306, "image": "mysql:8"},
         "redis": {"port": 6379, "image": "redis:alpine"},
     }
+
+    synthesized_env_defaults = {
+        "mongodb": "MONGO_URI=mongodb://mongo:27017/app",
+        "postgresql": "DATABASE_URL=postgresql://postgres:postgres@postgres:5432/app",
+        "mysql": "DATABASE_URL=mysql://root:root@mysql:3306/app",
+        "redis": "REDIS_URL=redis://redis:6379/0",
+    }
     
     # First, check .env for database URL
     env_db = _parse_env_for_database(project_path)
@@ -949,6 +963,9 @@ def extract_database_info(project_path: str, detected_db: str = None) -> Dict[st
                 result["needs_container"] = True
                 print(f"🏠 No DB URL in .env, assuming LOCAL {db_name} container needed")
                 break
+
+    if result["needs_container"] and not result["env_var_name"] and result["db_type"] in synthesized_env_defaults:
+        result["env_var_name"] = synthesized_env_defaults[result["db_type"]]
     
     print(f"🗄️ Database detection: type={result['db_type']}, cloud={result['is_cloud']}, needs_container={result['needs_container']}")
     return result

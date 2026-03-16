@@ -2,7 +2,7 @@ from fastapi import HTTPException
 from datetime import datetime
 from bson import ObjectId
 from ..config.database import get_projects_collection
-from ..utils.detector import detect_framework, detect_env_variables
+from ..utils.detector import detect_framework
 from ..utils.auth import get_current_active_user
 
 
@@ -77,11 +77,6 @@ async def analyze_project_handler(
         if "ml_confidence" not in detection and "detection_confidence" in detection:
             detection["ml_confidence"] = detection["detection_confidence"]
         # -------------------------------------------------
-        
-        # Detect environment variables (extra pass using original extracted path)
-        env_vars = detect_env_variables(project["extracted_path"])
-        if env_vars:
-            detection["env_variables"] = env_vars
         
         # Build analysis logs
         analysis_logs = [

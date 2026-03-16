@@ -89,7 +89,7 @@ def _infer_service_type(service_path: str, service_name: str, project_root: str)
         "auth-service", "api-gateway", "service",
         "services", "express", "node", "bezkoder-api",
         "user-service", "todo-service", "bend", "nodejs", "graphql",
-        "server-app", "node-app","worker", "agentic_ai", "auth", "graphql", "socket",
+        "server-app", "node-app", "agentic_ai", "socket",
         "back", "implementation",
 
     }
@@ -97,11 +97,18 @@ def _infer_service_type(service_path: str, service_name: str, project_root: str)
         "frontend", "client", "ui", "web", "app",
         "front-end", "front_end", "front", "react", "vue",
         "angular", "bezkoder-ui", "my-app", "webapp", "web-app",
-        "www", "cafe-front", "taskly-frontend","front", "my-app", "www",
+        "www", "cafe-front", "taskly-frontend",
     }
-    if any(k in name_lower for k in _BACKEND_NAMES):
+    _BACKEND_SUBSTR_NAMES = _BACKEND_NAMES - {"worker", "auth", "graphql"}
+    _FRONTEND_SUBSTR_NAMES = _FRONTEND_NAMES - {"front", "my-app", "www"}
+
+    if name_lower in _BACKEND_NAMES:
         return "backend"
-    if any(k in name_lower for k in _FRONTEND_NAMES):
+    if name_lower in _FRONTEND_NAMES:
+        return "frontend"
+    if any(k in name_lower for k in _BACKEND_SUBSTR_NAMES):
+        return "backend"
+    if any(k in name_lower for k in _FRONTEND_SUBSTR_NAMES):
         return "frontend"
     return "other"
 
@@ -110,7 +117,7 @@ def _find_all_services_by_deps(project_path: str) -> List[Dict[str, str]]:
     """
     Fix 1: Walk all subdirs (excluding SKIP_DIRS), find every package.json,
     and classify each service by deps against BACKEND_DEPS / FRONTEND_DEPS.
-    Fix 6a: Skips type=other stubs entirely.
+    Folders with no recognized backend/frontend deps are included as type='other' for downstream reclassification.
     Returns list of {name, abs_path, type} stubs.
     """
     services = []
@@ -138,7 +145,7 @@ def _find_all_services_by_deps(project_path: str) -> List[Dict[str, str]]:
         elif is_fe:
             svc_type = "frontend"
         else:
-            continue  # Fix 6a: neither backend nor frontend deps — skip (type=other)
+            svc_type = "other"
 
         folder_name = os.path.basename(root) or os.path.basename(project_path)
         services.append({
@@ -243,6 +250,244 @@ def _detect_package_manager(service_path: str) -> dict:
         return {"manager": "npm", "has_lockfile": False}
 
 
+def _extract_workspace_patterns(pkg: Dict) -> List[str]:
+    workspaces = pkg.get("workspaces")
+    if isinstance(workspaces, list):
+        return [str(w).strip() for w in workspaces if isinstance(w, str) and str(w).strip()]
+    if isinstance(workspaces, dict):
+        packages = workspaces.get("packages")
+        if isinstance(packages, list):
+            return [str(w).strip() for w in packages if isinstance(w, str) and str(w).strip()]
+    return []
+
+
+def _resolve_workspace_paths(project_path: str, patterns: List[str]) -> List[str]:
+    resolved: List[str] = []
+    seen = set()
+
+    for pattern in patterns:
+        if "*" in pattern:
+            if pattern.endswith("/*"):
+                prefix = pattern[:-2].strip("/\\")
+                parent = os.path.join(project_path, prefix) if prefix else project_path
+                if not os.path.isdir(parent):
+                    continue
+                try:
+                    for name in os.listdir(parent):
+                        candidate = os.path.join(parent, name)
+                        if os.path.isdir(candidate):
+                            norm = norm_path(candidate)
+                            if norm not in seen:
+                                seen.add(norm)
+                                resolved.append(candidate)
+                except (PermissionError, OSError):
+                    continue
+            continue
+
+        candidate = os.path.join(project_path, pattern.strip("/\\"))
+        if os.path.isdir(candidate):
+            norm = norm_path(candidate)
+            if norm not in seen:
+                seen.add(norm)
+                resolved.append(candidate)
+
+    return resolved
+
+
+def _build_node_stub_for_directory(service_path: str, project_path: str) -> Optional[Dict[str, str]]:
+    pkg_path = os.path.join(service_path, "package.json")
+    if not os.path.exists(pkg_path):
+        return None
+
+    try:
+        with open(pkg_path, "r", encoding="utf-8", errors="ignore") as f:
+            pkg = json.load(f)
+    except Exception:
+        return None
+
+    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    is_be = bool(deps.keys() & BACKEND_DEPS)
+    is_fe = bool(deps.keys() & FRONTEND_DEPS)
+
+    if is_be and is_fe:
+        svc_type = "monolith"
+    elif is_be:
+        svc_type = "backend"
+    elif is_fe:
+        svc_type = "frontend"
+    else:
+        svc_type = "other"
+
+    folder_name = os.path.basename(service_path) or os.path.basename(project_path)
+    return {
+        "name": folder_name,
+        "abs_path": service_path,
+        "type": svc_type,
+    }
+
+
+def _build_python_stub_for_directory(service_path: str, project_path: str) -> Optional[Dict[str, str]]:
+    try:
+        files = set(os.listdir(service_path))
+    except (PermissionError, OSError):
+        return None
+
+    framework = None
+    pkg_manager = "pip"
+
+    if "manage.py" in files:
+        framework = "Django"
+
+    if not framework and "requirements.txt" in files:
+        try:
+            with open(os.path.join(service_path, "requirements.txt"), "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().lower()
+            for dep in PYTHON_BACKEND_DEPS:
+                if dep in content:
+                    framework = dep.capitalize()
+                    if dep == "fastapi":
+                        framework = "FastAPI"
+                    break
+        except Exception:
+            pass
+
+    if not framework and "pyproject.toml" in files:
+        pkg_manager = "poetry"
+        try:
+            with open(os.path.join(service_path, "pyproject.toml"), "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().lower()
+            for dep in PYTHON_BACKEND_DEPS:
+                if dep in content:
+                    framework = dep.capitalize()
+                    if dep == "fastapi":
+                        framework = "FastAPI"
+                    break
+        except Exception:
+            pass
+
+    if not framework and "Pipfile" in files:
+        pkg_manager = "pipenv"
+        try:
+            with open(os.path.join(service_path, "Pipfile"), "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().lower()
+            for dep in PYTHON_BACKEND_DEPS:
+                if dep in content:
+                    framework = dep.capitalize()
+                    if dep == "fastapi":
+                        framework = "FastAPI"
+                    break
+        except Exception:
+            pass
+
+    if not framework:
+        has_python_manifest = any(
+            manifest in files for manifest in ("manage.py", "requirements.txt", "pyproject.toml", "Pipfile")
+        )
+        if not has_python_manifest:
+            return None
+        framework = "Unknown"
+
+    entry_point = None
+    if framework == "Django":
+        entry_point = "manage.py"
+    else:
+        for candidate in ["main.py", "app.py", "run.py", "server.py"]:
+            if candidate in files:
+                entry_point = candidate
+                break
+
+    port = None
+    port_source = "default"
+
+    for env_name in [".env", ".env.local", ".env.production"]:
+        env_path = os.path.join(service_path, env_name)
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("PORT="):
+                            try:
+                                port = int(line.split("=", 1)[1].strip())
+                                port_source = "env"
+                            except ValueError:
+                                pass
+            except Exception:
+                pass
+            break
+
+    if not port and entry_point and os.path.exists(os.path.join(service_path, entry_point)):
+        try:
+            with open(os.path.join(service_path, entry_point), "r", encoding="utf-8", errors="ignore") as f:
+                src = f.read()
+            m = re.search(r'(?:uvicorn\.run|app\.run)\s*\(.*?port\s*=\s*(\d+)', src)
+            if m:
+                port = int(m.group(1))
+                port_source = "source"
+        except Exception:
+            pass
+
+    if not port:
+        if framework in ("Django", "FastAPI", "Starlette"):
+            port = 8000
+        elif framework == "Flask":
+            port = 5000
+        else:
+            port = 8000
+
+    folder_name = os.path.basename(service_path) or os.path.basename(project_path)
+    return {
+        "name": folder_name,
+        "abs_path": service_path,
+        "type": "backend",
+        "language": "Python",
+        "framework": framework,
+        "package_manager": pkg_manager,
+        "dockerfile_strategy": "python_backend",
+        "entry_point": entry_point,
+        "port": port,
+        "port_source": port_source,
+    }
+
+
+def _build_workspace_stubs(project_path: str) -> Optional[List[Dict[str, str]]]:
+    pkg_path = os.path.join(project_path, "package.json")
+    if not os.path.exists(pkg_path):
+        return None
+
+    try:
+        with open(pkg_path, "r", encoding="utf-8", errors="ignore") as f:
+            pkg = json.load(f)
+    except Exception:
+        return None
+
+    patterns = _extract_workspace_patterns(pkg)
+    if not patterns:
+        return None
+
+    workspace_paths = _resolve_workspace_paths(project_path, patterns)
+    if not workspace_paths:
+        return None
+
+    node_stubs: List[Dict[str, str]] = []
+    python_stubs: List[Dict[str, str]] = []
+    root_norm = norm_path(project_path)
+
+    for workspace_path in workspace_paths:
+        if norm_path(workspace_path) == root_norm:
+            continue
+
+        node_stub = _build_node_stub_for_directory(workspace_path, project_path)
+        if node_stub:
+            node_stubs.append(node_stub)
+
+        python_stub = _build_python_stub_for_directory(workspace_path, project_path)
+        if python_stub:
+            python_stubs.append(python_stub)
+
+    return _merge_node_python_stubs(node_stubs, python_stubs)
+
+
 def _find_python_services(project_path: str) -> List[Dict[str, str]]:
     """
     Fix 7: Walk subdirs (excluding PYTHON_SKIP_DIRS), detect Python backends via
@@ -307,7 +552,12 @@ def _find_python_services(project_path: str) -> List[Dict[str, str]]:
                 pass
 
         if not framework:
-            continue
+            has_python_manifest = any(
+                manifest in files for manifest in ("manage.py", "requirements.txt", "pyproject.toml", "Pipfile")
+            )
+            if not has_python_manifest:
+                continue
+            framework = "Unknown"
 
         # Detect entry_point
         entry_point = None
@@ -411,7 +661,8 @@ def infer_services(
     project_path: str,
     language: str,
     framework: str,
-    metadata: Dict
+    metadata: Dict,
+    db_result: Optional[Dict] = None,
 ) -> List[Dict[str, str]]:
     """
     Return a list of services, each with:
@@ -426,18 +677,42 @@ def infer_services(
     Fix 7: Python backends detected alongside Node services.
     """
     static_only = metadata.get("static_only", False)
+    workspace_mode = False
 
-    # -- Fix 1: Dep-based service discovery (Node.js) --
-    node_stubs = _find_all_services_by_deps(project_path)
+    workspace_stubs = _build_workspace_stubs(project_path)
+    if workspace_stubs is not None:
+        workspace_mode = True
+        raw_stubs = workspace_stubs
+    else:
+        # -- Fix 1: Dep-based service discovery (Node.js) --
+        node_stubs = _find_all_services_by_deps(project_path)
 
-    # -- Fix 7: Python backend discovery --
-    python_stubs = _find_python_services(project_path)
+        # -- Fix 7: Python backend discovery --
+        python_stubs = _find_python_services(project_path)
 
-    # -- Merge + deduplicate (Python preferred if it has framework) --
-    raw_stubs = _merge_node_python_stubs(node_stubs, python_stubs)
+        # -- Merge + deduplicate (Python preferred if it has framework) --
+        raw_stubs = _merge_node_python_stubs(node_stubs, python_stubs)
     
     # -- Fix 3/5: Suppress root phantom if children found --
     raw_stubs = _suppress_root_if_children_found(raw_stubs, project_path)
+
+    # Reclassify dep-unknown stubs via path/name heuristics before population.
+    # This allows "other" stubs (e.g. api-server with no recognized deps) to
+    # become backend/frontend candidates.
+    for stub in raw_stubs:
+        if stub.get("type") != "other":
+            continue
+        svc_abs_path = stub.get("abs_path")
+        if not svc_abs_path:
+            continue
+        try:
+            rel_stub_path = os.path.relpath(svc_abs_path, project_path).replace("\\", "/")
+            rel_stub_path = "." if rel_stub_path in ("", ".") else rel_stub_path
+        except Exception:
+            rel_stub_path = "."
+        inferred_type = _infer_service_type(rel_stub_path, stub.get("name", ""), project_path)
+        if inferred_type in ("backend", "frontend", "monolith"):
+            stub["type"] = inferred_type
 
     # -- Populate per-service fields --
     services: List[Dict[str, str]] = []
@@ -539,7 +814,7 @@ def infer_services(
     services = _drop_empty_shells(services)
 
     # -- Fallback: if dep-scan found nothing, use legacy single-service logic --
-    if not services:
+    if not services and not workspace_mode:
         root_env_file = None
         for env_name in [".env", ".env.local", ".env.production"]:
             env_path = os.path.join(project_path, env_name)
@@ -682,12 +957,43 @@ def infer_services(
             backend_path = os.path.join(project_path, svc.get("path", "."))
             break
 
+    # If no backend/monolith service survived population, use an "other"-typed
+    # raw stub as fallback DB probe target.
     if not backend_path:
-        return services
+        for stub in raw_stubs:
+            if stub.get("type") != "other":
+                continue
+            candidate = stub.get("abs_path")
+            if candidate and os.path.isdir(candidate):
+                backend_path = candidate
+                break
 
-    db_info = extract_database_info(backend_path, metadata.get("database"))
+    db_info: Dict[str, any] = {}
+    authoritative_db = None
+    if isinstance(db_result, dict):
+        authoritative_db = db_result.get("primary")
+    if not authoritative_db:
+        authoritative_db = metadata.get("database")
+    if authoritative_db == "Unknown":
+        authoritative_db = None
 
-    if db_info.get("db_type"):
+    if backend_path and authoritative_db:
+        db_info = extract_database_info(backend_path, authoritative_db)
+
+        # Keep DB type aligned with detector-level scoring when provided.
+        if isinstance(db_result, dict):
+            scored_primary = db_result.get("primary")
+            if scored_primary and scored_primary != "Unknown":
+                normalized = {
+                    "MongoDB": "mongodb",
+                    "PostgreSQL": "postgresql",
+                    "MySQL": "mysql",
+                    "Redis": "redis",
+                    "SQLite": "sqlite",
+                }.get(scored_primary, str(scored_primary).lower())
+                db_info["db_type"] = normalized
+
+    if backend_path and db_info.get("db_type"):
         metadata["database_is_cloud"] = db_info["is_cloud"]
         metadata["database_env_var"] = db_info.get("env_var_name")
 
@@ -734,7 +1040,8 @@ def infer_services(
             except (PermissionError, OSError):
                 root_files = set()
             if not (root_files & _DEP_FILES):
-                services = _subdir_services
+                services = _subdir_services + [s for s in services if s.get("type") == "database"]
                 break
 
     return services
+

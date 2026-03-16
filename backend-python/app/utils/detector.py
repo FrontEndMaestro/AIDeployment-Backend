@@ -113,11 +113,15 @@ def detect_docker_files(project_path: str) -> Dict:
             for file in files:
                 if file in docker_files:
                     result["dockerfile"] = True
-                    result["detected_files"].append(file)
+                    rel = os.path.relpath(os.path.join(root, file), project_path).replace("\\", "/")
+                    if rel not in result["detected_files"]:
+                        result["detected_files"].append(rel)
                 
                 if file in compose_files:
                     result["docker_compose"] = True
-                    result["detected_files"].append(file)
+                    rel = os.path.relpath(os.path.join(root, file), project_path).replace("\\", "/")
+                    if rel not in result["detected_files"]:
+                        result["detected_files"].append(rel)
     
     except Exception as e:
         print(f"Docker detection error: {e}")
@@ -150,6 +154,19 @@ def detect_env_variables(project_path: str) -> List[str]:
 def _read_env_key_values(project_path: str) -> Dict[str, str]:
     """Internal helper: read key=value pairs from typical .env files (for DB/port hints)."""
     env_values: Dict[str, str] = {}
+    port_override_keys = {"PORT", "VITE_PORT", "REACT_APP_PORT"}
+
+    def _parse_env_line(line: str) -> Optional[tuple[str, str]]:
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            return None
+        key, value = line.split('=', 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key:
+            return None
+        return key, value
+
     env_files = [
         '.env', '.env.local', '.env.development', '.env.production',
         '.env.test', '.env.example'
@@ -160,16 +177,33 @@ def _read_env_key_values(project_path: str) -> Dict[str, str]:
             try:
                 with open(env_path, 'r', encoding='utf-8') as f:
                     for line in f:
-                        line = line.strip()
-                        if line and not line.startswith('#') and '=' in line:
-                            key, value = line.split('=', 1)
-                            env_values[key.strip()] = value.strip()
+                        parsed = _parse_env_line(line)
+                        if not parsed:
+                            continue
+                        key, value = parsed
+                        env_values.setdefault(key, value)
             except Exception as e:
                 print(f"Error reading {env_file} for values: {e}")
+
+    # Explicitly allow .env.local to override only port-related keys.
+    env_local_path = os.path.join(project_path, '.env.local')
+    if os.path.exists(env_local_path):
+        try:
+            with open(env_local_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parsed = _parse_env_line(line)
+                    if not parsed:
+                        continue
+                    key, value = parsed
+                    if key in port_override_keys:
+                        env_values[key] = value
+        except Exception as e:
+            print(f"Error reading .env.local for port overrides: {e}")
+
     return env_values
 
 
-def find_project_root(extracted_path: str, max_depth: int = 3) -> str:
+def find_project_root(extracted_path: str, max_depth: int = 5) -> str:
     """Find actual project root recursively"""
     try:
         framework_files = [
@@ -177,17 +211,150 @@ def find_project_root(extracted_path: str, max_depth: int = 3) -> str:
             'pom.xml', 'build.gradle', 'composer.json', 'go.mod', 'Gemfile', 'Cargo.toml',
             'setup.py'
         ]
+        source_extensions = {'.js', '.jsx', '.ts', '.tsx', '.py', '.java', '.go', '.rb', '.php'}
 
         excluded_dirs = {
             'infra', 'node_modules', '.git', '__pycache__', '.terraform',
             'venv', '.venv', 'dist', 'build', '.next'
         }
 
+        def _workspace_patterns(pkg: Dict) -> List[str]:
+            workspaces = pkg.get("workspaces")
+            if isinstance(workspaces, list):
+                return [str(w).strip() for w in workspaces if isinstance(w, str) and str(w).strip()]
+            if isinstance(workspaces, dict):
+                packages = workspaces.get("packages")
+                if isinstance(packages, list):
+                    return [str(w).strip() for w in packages if isinstance(w, str) and str(w).strip()]
+            return []
+
+        def _resolve_workspace_paths(base_dir: str, patterns: List[str]) -> List[str]:
+            resolved: List[str] = []
+            seen = set()
+            for pattern in patterns:
+                if "*" in pattern:
+                    if pattern.endswith("/*"):
+                        prefix = pattern[:-2].strip("/\\")
+                        parent = os.path.join(base_dir, prefix) if prefix else base_dir
+                        if not os.path.isdir(parent):
+                            continue
+                        try:
+                            for name in os.listdir(parent):
+                                candidate = os.path.join(parent, name)
+                                if os.path.isdir(candidate):
+                                    norm = os.path.normpath(candidate)
+                                    if norm not in seen:
+                                        seen.add(norm)
+                                        resolved.append(candidate)
+                        except Exception:
+                            continue
+                    continue
+
+                candidate = os.path.join(base_dir, pattern.strip("/\\"))
+                if os.path.isdir(candidate):
+                    norm = os.path.normpath(candidate)
+                    if norm not in seen:
+                        seen.add(norm)
+                        resolved.append(candidate)
+
+            return resolved
+
+        def _find_workspace_root(start_path: str) -> Optional[str]:
+            queue: List[tuple[str, int]] = [(os.path.abspath(start_path), 0)]
+            seen = set()
+
+            while queue:
+                current_path, depth = queue.pop(0)
+                current_norm = os.path.normpath(current_path)
+                if current_norm in seen:
+                    continue
+                seen.add(current_norm)
+
+                pkg_path = os.path.join(current_path, "package.json")
+                if os.path.exists(pkg_path):
+                    try:
+                        with open(pkg_path, "r", encoding="utf-8", errors="ignore") as f:
+                            pkg = json.load(f)
+                        patterns = _workspace_patterns(pkg)
+                    except Exception:
+                        patterns = []
+
+                    if patterns:
+                        workspace_dirs = _resolve_workspace_paths(current_path, patterns)
+                        if workspace_dirs:
+                            return current_path
+
+                if depth >= max_depth:
+                    continue
+
+                try:
+                    entries = os.listdir(current_path)
+                except Exception:
+                    continue
+
+                for name in entries:
+                    abs_path = os.path.join(current_path, name)
+                    if not os.path.isdir(abs_path):
+                        continue
+                    if name in excluded_dirs:
+                        continue
+                    queue.append((abs_path, depth + 1))
+
+            return None
+
+        workspace_root = _find_workspace_root(extracted_path)
+        if workspace_root:
+            if workspace_root != extracted_path:
+                print(f"Found workspace root: {workspace_root}")
+            return workspace_root
+
         def has_manifest(path: str) -> bool:
             try:
                 return any(os.path.exists(os.path.join(path, f)) for f in framework_files)
             except Exception:
                 return False
+
+        def has_source_files(path: str) -> bool:
+            try:
+                for name in os.listdir(path):
+                    abs_path = os.path.join(path, name)
+                    if os.path.isfile(abs_path):
+                        _, ext = os.path.splitext(name)
+                        if ext.lower() in source_extensions:
+                            return True
+                    # Accept conventional code folders for source signal (e.g. src/App.jsx).
+                    if os.path.isdir(abs_path) and name.lower() in {"src", "app", "lib"}:
+                        try:
+                            for child in os.listdir(abs_path):
+                                child_path = os.path.join(abs_path, child)
+                                if not os.path.isfile(child_path):
+                                    continue
+                                _, child_ext = os.path.splitext(child)
+                                if child_ext.lower() in source_extensions:
+                                    return True
+                        except Exception:
+                            continue
+            except Exception:
+                return False
+            return False
+
+        def direct_manifest_majority(path: str) -> bool:
+            try:
+                entries = os.listdir(path)
+            except Exception:
+                return False
+            direct_dirs = []
+            for name in entries:
+                abs_path = os.path.join(path, name)
+                if not os.path.isdir(abs_path):
+                    continue
+                if name in excluded_dirs:
+                    continue
+                direct_dirs.append(abs_path)
+            if not direct_dirs:
+                return False
+            manifest_children = sum(1 for d in direct_dirs if has_manifest(d))
+            return manifest_children > (len(direct_dirs) / 2.0)
 
         def search_unique(current_path: str, depth: int = 0) -> Optional[str]:
             """
@@ -199,7 +366,10 @@ def find_project_root(extracted_path: str, max_depth: int = 3) -> str:
                 return None
 
             if has_manifest(current_path):
-                return current_path
+                # Only return this path if it contains real source files;
+                # otherwise keep descending to avoid stale wrapper manifests.
+                if has_source_files(current_path):
+                    return current_path
 
             try:
                 entries = os.listdir(current_path)
@@ -229,6 +399,16 @@ def find_project_root(extracted_path: str, max_depth: int = 3) -> str:
 
             if len(uniq) == 1:
                 return uniq[0]
+
+            # Ambiguous subtree: if most direct children have manifests,
+            # treat current_path as the project root.
+            if len(uniq) > 1 and direct_manifest_majority(current_path):
+                return current_path
+
+            # If this dir has a manifest and no deeper manifest candidates,
+            # keep this directory as root (prevents over-promoting parents).
+            if len(uniq) == 0 and has_manifest(current_path):
+                return current_path
             return None
 
         final_path = search_unique(extracted_path) or extracted_path
@@ -268,10 +448,10 @@ def find_project_root(extracted_path: str, max_depth: int = 3) -> str:
                         and d not in _NOISE_DIRS
                         and d.lower() in _SERVICE_FOLDER_NAMES
                     ]
-                    # Use parent if:
-                    # - parent has no dep file of its own (it's a container, not a project), OR
-                    # - parent has 2+ service-named children (monorepo root)
-                    if not parent_has_dep or len(siblings) >= 2:
+                    # Use parent only when it looks like a real multi-service container:
+                    # - parent has no dep file of its own, AND
+                    # - parent has 2+ service-named children
+                    if not parent_has_dep and len(siblings) >= 2:
                         final_path = parent
                 except (PermissionError, OSError):
                     pass
@@ -295,7 +475,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
     print(f"Project Path: {project_path}")
     print(f"ML Mode: {'Enabled' if use_ml else 'Disabled'}\n")
     
-    actual_path = find_project_root(project_path, max_depth=3)
+    actual_path = find_project_root(project_path, max_depth=5)
     
     results: Dict = {
         "framework": "Unknown",
@@ -356,15 +536,18 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             try:
                 ml_analyzer = get_ml_analyzer()
                 ml_results = ml_analyzer.analyze_project(actual_path)
-                
-                if ml_results.get("language_confidence", 0) > 0.6 and heur_lang == "Unknown":
+
+                ml_lang_conf = ml_results.get("language_confidence", 0)
+                ml_fw_conf = ml_results.get("framework_confidence", 0)
+
+                if ml_lang_conf > (heur_lang_conf + 0.2):
                     results["language"] = ml_results["language"]
-                    results["detection_confidence"]["language"] = ml_results["language_confidence"]
+                    results["detection_confidence"]["language"] = ml_lang_conf
                     results["detection_confidence"]["method"] = "hybrid (ML language)"
-                
-                if ml_results.get("framework_confidence", 0) > 0.6 and heur_fw == "Unknown":
+
+                if ml_fw_conf > (heur_fw_conf + 0.2):
                     results["framework"] = ml_results["framework"]
-                    results["detection_confidence"]["framework"] = ml_results["framework_confidence"]
+                    results["detection_confidence"]["framework"] = ml_fw_conf
                     # if we changed framework via ML, mark method accordingly
                     if results["detection_confidence"]["method"] == "heuristic":
                         results["detection_confidence"]["method"] = "hybrid (ML framework)"
@@ -390,7 +573,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
 
 
         # Runtime defaults (may include default port)
-        runtime_info = get_runtime_info(results["language"], results["framework"])
+        runtime_info = get_runtime_info(results["language"], results["framework"], actual_path)
         results.update(runtime_info)
 
         # --- Smart command extraction from actual project files ---
@@ -469,6 +652,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         }
         
         visited_dep_files = set()
+        detected_files_seen = set(results["detected_files"])
         
         # 1) Root-level dep files
         for filename, file_type in dep_files.items():
@@ -476,8 +660,10 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             if os.path.exists(file_path):
                 deps = parse_dependencies_file(file_path, file_type)
                 results["dependencies"].extend(deps)
-                if filename not in results["detected_files"]:
-                    results["detected_files"].append(filename)
+                rel = os.path.relpath(file_path, actual_path).replace("\\", "/")
+                if rel not in detected_files_seen:
+                    results["detected_files"].append(rel)
+                    detected_files_seen.add(rel)
                 visited_dep_files.add(os.path.abspath(file_path))
         
         # 2) Nested dep files (e.g. mern/client/package.json, mern/server/package.json)
@@ -496,8 +682,10 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                     file_type = dep_files[file]
                     deps = parse_dependencies_file(full_path, file_type)
                     results["dependencies"].extend(deps)
-                    if file not in results["detected_files"]:
-                        results["detected_files"].append(file)
+                    rel = os.path.relpath(full_path, actual_path).replace("\\", "/")
+                    if rel not in detected_files_seen:
+                        results["detected_files"].append(rel)
+                        detected_files_seen.add(rel)
                     
                     visited_dep_files.add(full_path)
         
@@ -567,10 +755,24 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                 actual_path,
                 results.get("language", "Unknown"),
                 results.get("framework", "Unknown"),
-                results
+                results,
+                db_result=db_info,
             )
         except Exception:
             results["services"] = []
+
+        # Propagate resolved framework into the backend/monolith service that matches actual_path.
+        resolved_framework = results.get("framework")
+        if resolved_framework and resolved_framework != "Unknown":
+            for svc in results.get("services", []):
+                if svc.get("type") not in ("backend", "monolith"):
+                    continue
+                if svc.get("language") == "Python":
+                    continue
+                svc_path = svc.get("path", ".").strip("/\\").replace("\\", "/")
+                if svc_path in ("", "."):
+                    svc["framework"] = resolved_framework
+                    break
         
         # =======================================================================
         # PORT CONSOLIDATION: Copy service ports to metadata for consistency
@@ -608,6 +810,56 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         if results.get("database_is_cloud"):
             results["database_port"] = None
             print(f"☁️ Cloud database detected - clearing database_port (no container needed)")
+
+        # =======================================================================
+        # CONSISTENCY RECONCILIATION PASS
+        # Enforce final coherence between language/framework/services/database
+        # =======================================================================
+        consistency_warnings: List[str] = []
+
+        if (
+            results.get("framework") in ("Express.js", "Fastify")
+            and results.get("language") not in ("JavaScript", "TypeScript")
+        ):
+            results["language"] = "JavaScript"
+            consistency_warnings.append(
+                "Framework is Express/Fastify; language normalized to JavaScript."
+            )
+
+        js_frameworks = {
+            "Express.js", "Fastify", "NestJS", "Next.js", "React", "Vue", "Angular", "Vite",
+            "Gatsby", "Remix",
+        }
+        if results.get("language") == "Python" and results.get("framework") in js_frameworks:
+            results["framework"] = "Unknown"
+            consistency_warnings.append(
+                "Python language with JS framework is inconsistent; framework reset to Unknown."
+            )
+
+        services = results.get("services", [])
+        frontend_only = bool(services) and all(s.get("type") == "frontend" for s in services)
+        results["missing_backend"] = frontend_only
+        if frontend_only:
+            consistency_warnings.append(
+                "Only frontend services detected; backend service is missing."
+            )
+
+        has_backend_service = any(
+            s.get("type") in ("backend", "monolith") for s in services
+        )
+        if results.get("database") != "Unknown" and not has_backend_service:
+            warn = (
+                "Database detected without backend/monolith service; keeping database metadata unchanged."
+            )
+            print(f"⚠️ {warn}")
+            consistency_warnings.append(warn)
+
+        if consistency_warnings:
+            existing = results.get("consistency_warnings")
+            if isinstance(existing, list):
+                existing.extend(consistency_warnings)
+            else:
+                results["consistency_warnings"] = consistency_warnings
         
         # =======================================================================
         # DEPLOY BLOCKED CHECK: Backend service requires .env file

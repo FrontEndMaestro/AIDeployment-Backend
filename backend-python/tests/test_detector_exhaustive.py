@@ -40,11 +40,13 @@ from app.utils.detector import (
     _merge_node_python_stubs,
     _suppress_root_if_children_found,
     _drop_empty_shells,
+    infer_services,
     _detect_package_manager,
     _scan_js_for_port_hint,
     _detect_port_from_package_json,
     _classify_docker_service,
     _scan_code_for_ports,
+    detect_ports_for_project,
     _parse_dockerfile_expose_ports,
     _infer_database_port,
     detect_databases,
@@ -56,6 +58,7 @@ from app.utils.detector import (
     FRONTEND_DEPS,
     DB_KEYWORDS,
     PYTHON_BACKEND_DEPS,
+    _normalize_dep_name,
 )
 
 
@@ -244,6 +247,16 @@ class TestEnvParsing:
         assert keys == []
 
 
+class TestNormalizeDepName:
+    """_normalize_dep_name: preserve scoped package names."""
+
+    def test_preserves_scoped_package_with_version_suffix(self):
+        assert _normalize_dep_name("@nestjs/core@10.0.0") == "@nestjs/core"
+
+    def test_preserves_scoped_package_without_version_suffix(self):
+        assert _normalize_dep_name("@types/react-dom") == "@types/react-dom"
+
+
 class TestFindProjectRoot:
     """find_project_root: navigate nested extraction folders."""
 
@@ -262,6 +275,13 @@ class TestFindProjectRoot:
         deep = tmp_path / "a" / "b"
         deep.mkdir(parents=True)
         _write(deep / "requirements.txt", "flask\n")
+        result = find_project_root(str(tmp_path))
+        assert result == str(deep)
+
+    def test_default_max_depth_reaches_five_levels(self, tmp_path):
+        deep = tmp_path / "a" / "b" / "c" / "d" / "e"
+        deep.mkdir(parents=True)
+        _write(deep / "package.json", "{}")
         result = find_project_root(str(tmp_path))
         assert result == str(deep)
 
@@ -288,6 +308,72 @@ class TestFindProjectRoot:
         _write(real / "package.json", "{}")
         result = find_project_root(str(tmp_path))
         assert result == str(real)
+
+    def test_workspace_root_found_inside_archive_wrapper(self, tmp_path):
+        """If workspaces package.json is one level deep, return that workspace root."""
+        repo_root = tmp_path / "repo-main"
+        repo_root.mkdir()
+        _write(repo_root / "package.json", json.dumps({
+            "name": "monorepo",
+            "private": True,
+            "workspaces": ["backend", "frontend"],
+        }))
+        _write(repo_root / "backend" / "package.json", json.dumps({
+            "dependencies": {"express": "4"}
+        }))
+        _write(repo_root / "frontend" / "package.json", json.dumps({
+            "dependencies": {"react": "18"}
+        }))
+
+        result = find_project_root(str(tmp_path), max_depth=3)
+        assert result == str(repo_root)
+
+    def test_ambiguous_children_majority_returns_parent_root(self, tmp_path):
+        """If direct children are mostly manifest services, keep current directory as root."""
+        mern = tmp_path / "mern"
+        mern.mkdir()
+        _write(mern / "backend" / "package.json", json.dumps({
+            "dependencies": {"express": "4"}
+        }))
+        _write(mern / "backend" / "server.js", "const app = require('express')();")
+        _write(mern / "frontend" / "package.json", json.dumps({
+            "dependencies": {"react": "18"}
+        }))
+        _write(mern / "frontend" / "src" / "App.jsx", "export default function App() { return null; }")
+        (mern / "docs").mkdir()
+
+        result = find_project_root(str(tmp_path))
+        assert result == str(mern)
+
+    def test_stale_manifest_wrapper_descends_to_real_source_project(self, tmp_path):
+        """A manifest-only wrapper should not block descent to inner service with source files."""
+        wrapper = tmp_path / "repo-main"
+        wrapper.mkdir()
+        _write(wrapper / "package.json", json.dumps({
+            "name": "workspace-shell",
+            "private": True,
+            "scripts": {"test": "echo ok"},
+        }))
+        _write(wrapper / "backend" / "package.json", json.dumps({
+            "dependencies": {"express": "4"}
+        }))
+        _write(wrapper / "backend" / "server.js", "const app = require('express')(); app.listen(3000);")
+
+        result = find_project_root(str(tmp_path))
+        assert result == str(wrapper / "backend")
+
+    def test_service_parent_not_promoted_with_single_service_child(self, tmp_path):
+        """Single service child should stay selected; parent needs 2+ service siblings."""
+        wrapper = tmp_path / "wrapper"
+        wrapper.mkdir()
+        _write(wrapper / "client" / "package.json", json.dumps({
+            "dependencies": {"react": "18"}
+        }))
+        _write(wrapper / "client" / "src" / "App.jsx", "export default function App() { return null; }")
+        (wrapper / "docs").mkdir()
+
+        result = find_project_root(str(tmp_path))
+        assert result == str(wrapper / "client")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -632,6 +718,23 @@ class TestInferServiceType:
         (tmp_path / "misc").mkdir()
         assert _infer_service_type("misc", "misc", str(tmp_path)) == "other"
 
+    def test_exact_aliases_still_match(self, tmp_path):
+        """Exact alias names remain valid after substring token narrowing."""
+        (tmp_path / "worker").mkdir()
+        (tmp_path / "front").mkdir()
+        assert _infer_service_type("worker", "worker", str(tmp_path)) == "backend"
+        assert _infer_service_type("front", "front", str(tmp_path)) == "frontend"
+
+    def test_backend_substring_auth_no_longer_forces_backend(self, tmp_path):
+        """Names containing auth as substring should not be forced to backend."""
+        (tmp_path / "oauthproxy").mkdir()
+        assert _infer_service_type("oauthproxy", "oauthproxy", str(tmp_path)) == "other"
+
+    def test_frontend_substring_front_no_longer_forces_frontend(self, tmp_path):
+        """Names containing front as substring should not be forced to frontend."""
+        (tmp_path / "confrontation").mkdir()
+        assert _infer_service_type("confrontation", "confrontation", str(tmp_path)) == "other"
+
 
 class TestDetectPackageManager:
     """_detect_package_manager: yarn, pnpm, npm detection."""
@@ -720,6 +823,47 @@ class TestHeuristicFrameworkDetection:
         fw, conf = heuristic_framework_detection(str(tmp_path), "Unknown")
         assert fw == "Unknown"
 
+    def test_typescript_express_detected_from_ts_deps(self, tmp_path):
+        """TypeScript-only Express support deps should still score as Express.js."""
+        _write(tmp_path / "package.json", json.dumps({
+            "devDependencies": {"@types/express": "4.17", "ts-node": "10.9"}
+        }))
+        _write(tmp_path / "src" / "server.ts", "console.log('api');")
+        fw, conf = heuristic_framework_detection(str(tmp_path), "TypeScript")
+        assert fw == "Express.js"
+        assert conf > 0.0
+
+    def test_typescript_react_detected_from_types_deps(self, tmp_path):
+        """TypeScript React type deps should still score as React."""
+        _write(tmp_path / "package.json", json.dumps({
+            "devDependencies": {"@types/react": "18", "@types/react-dom": "18"}
+        }))
+        _write(tmp_path / "src" / "App.tsx", "export default function App() { return null; }")
+        fw, conf = heuristic_framework_detection(str(tmp_path), "TypeScript")
+        assert fw == "React"
+        assert conf > 0.0
+
+    def test_directory_style_file_marker_in_files_list_is_checked_as_dir(self, tmp_path):
+        """A files marker like 'pages/' should match an actual directory."""
+        _write(tmp_path / "pages" / "index.jsx", "export default function Page() { return null; }")
+
+        with patch.dict(
+            "app.utils.detection_language.FRAMEWORK_INDICATORS",
+            {
+                "DirStyleFramework": {
+                    "markers": [],
+                    "files": ["pages/"],
+                    "dependencies": [],
+                    "confidence_weight": 0.95,
+                }
+            },
+            clear=False,
+        ):
+            fw, conf = heuristic_framework_detection(str(tmp_path), "JavaScript")
+
+        assert fw == "DirStyleFramework"
+        assert conf > 0.0
+
 
 class TestGetRuntimeInfo:
     """get_runtime_info: runtime, port defaults per language/framework."""
@@ -768,6 +912,9 @@ class TestDetectFrameworkOrchestrator:
         assert result["language"] == "JavaScript"
         assert result["framework"] == "Express.js"
         assert result["has_package_json"] is True
+        backend_svcs = [s for s in result.get("services", []) if s.get("type") in ("backend", "monolith")]
+        assert len(backend_svcs) >= 1
+        assert backend_svcs[0].get("framework") == "Express.js"
 
     @patch("app.utils.detector.get_ml_analyzer")
     @patch("app.utils.detector.extract_database_info")
@@ -814,6 +961,209 @@ class TestDetectFrameworkOrchestrator:
 
         assert result["language"] == "JavaScript"
         assert result["framework"] == "React"
+
+    @patch("app.utils.detector.infer_services")
+    @patch("app.utils.detector.detect_db_and_ports")
+    @patch("app.utils.detector.detect_env_variables")
+    @patch("app.utils.detector.detect_docker_files")
+    @patch("app.utils.detector.parse_dependencies_file")
+    @patch("app.utils.detector.extract_nodejs_commands")
+    @patch("app.utils.detector.extract_python_commands")
+    @patch("app.utils.detector.heuristic_framework_detection")
+    @patch("app.utils.detector.heuristic_language_detection")
+    @patch("app.utils.detector.find_project_root")
+    def test_heuristics_run_on_resolved_actual_path(
+        self,
+        mock_find_root,
+        mock_heur_lang,
+        mock_heur_fw,
+        mock_py_cmds,
+        mock_node_cmds,
+        mock_parse_deps,
+        mock_docker,
+        mock_env,
+        mock_db_ports,
+        mock_infer_services,
+        tmp_path,
+    ):
+        """Heuristic language/framework scoring must use resolved actual_path."""
+        wrapper = tmp_path / "repo-main"
+        resolved = wrapper / "backend"
+        resolved.mkdir(parents=True)
+
+        mock_find_root.return_value = str(resolved)
+        mock_heur_lang.return_value = ("TypeScript", 0.8)
+        mock_heur_fw.return_value = ("Express.js", 0.9)
+        mock_py_cmds.return_value = {}
+        mock_node_cmds.return_value = {}
+        mock_parse_deps.return_value = []
+        mock_docker.return_value = {"dockerfile": False, "docker_compose": False, "detected_files": []}
+        mock_env.return_value = []
+        mock_db_ports.return_value = (
+            {"primary": "Unknown", "all": [], "details": {}},
+            {"backend_port": None, "frontend_port": None},
+        )
+        mock_infer_services.return_value = []
+
+        result = detect_framework(str(wrapper), use_ml=False)
+
+        mock_heur_lang.assert_called_once_with(str(resolved))
+        mock_heur_fw.assert_called_once_with(str(resolved), "TypeScript")
+        assert mock_infer_services.call_args.kwargs.get("db_result") == {
+            "primary": "Unknown",
+            "all": [],
+            "details": {},
+        }
+        assert result["framework"] == "Express.js"
+
+
+class TestConsistencyReconciliation:
+    @patch("app.utils.detector.infer_services")
+    @patch("app.utils.detector.detect_db_and_ports")
+    @patch("app.utils.detector.detect_env_variables")
+    @patch("app.utils.detector.detect_docker_files")
+    @patch("app.utils.detector.parse_dependencies_file")
+    @patch("app.utils.detector.extract_nodejs_commands")
+    @patch("app.utils.detector.extract_python_commands")
+    @patch("app.utils.detector.heuristic_framework_detection")
+    @patch("app.utils.detector.heuristic_language_detection")
+    @patch("app.utils.detector.find_project_root")
+    def test_express_normalizes_language_to_javascript(
+        self,
+        mock_find_root,
+        mock_heur_lang,
+        mock_heur_fw,
+        mock_py_cmds,
+        mock_node_cmds,
+        mock_parse_deps,
+        mock_docker,
+        mock_env,
+        mock_db_ports,
+        mock_infer_services,
+        tmp_path,
+    ):
+        mock_find_root.return_value = str(tmp_path)
+        mock_heur_lang.return_value = ("Python", 0.9)
+        mock_heur_fw.return_value = ("Express.js", 0.9)
+        mock_py_cmds.return_value = {}
+        mock_node_cmds.return_value = {}
+        mock_parse_deps.return_value = []
+        mock_docker.return_value = {"dockerfile": False, "docker_compose": False, "detected_files": []}
+        mock_env.return_value = []
+        mock_db_ports.return_value = (
+            {"primary": "Unknown", "all": [], "details": {}},
+            {"backend_port": None, "frontend_port": None},
+        )
+        mock_infer_services.return_value = [
+            {"name": "api", "path": ".", "type": "backend", "port": 3000, "port_source": "default", "env_file": "./.env"}
+        ]
+
+        result = detect_framework(str(tmp_path), use_ml=False)
+        assert result["language"] == "JavaScript"
+
+    @patch("app.utils.detector.infer_services")
+    @patch("app.utils.detector.detect_db_and_ports")
+    @patch("app.utils.detector.detect_env_variables")
+    @patch("app.utils.detector.detect_docker_files")
+    @patch("app.utils.detector.parse_dependencies_file")
+    @patch("app.utils.detector.extract_nodejs_commands")
+    @patch("app.utils.detector.extract_python_commands")
+    @patch("app.utils.detector.heuristic_framework_detection")
+    @patch("app.utils.detector.heuristic_language_detection")
+    @patch("app.utils.detector.find_project_root")
+    def test_python_language_with_js_framework_resets_framework(
+        self,
+        mock_find_root,
+        mock_heur_lang,
+        mock_heur_fw,
+        mock_py_cmds,
+        mock_node_cmds,
+        mock_parse_deps,
+        mock_docker,
+        mock_env,
+        mock_db_ports,
+        mock_infer_services,
+        tmp_path,
+    ):
+        mock_find_root.return_value = str(tmp_path)
+        mock_heur_lang.return_value = ("Python", 0.9)
+        mock_heur_fw.return_value = ("React", 0.9)
+        mock_py_cmds.return_value = {}
+        mock_node_cmds.return_value = {}
+        mock_parse_deps.return_value = []
+        mock_docker.return_value = {"dockerfile": False, "docker_compose": False, "detected_files": []}
+        mock_env.return_value = []
+        mock_db_ports.return_value = (
+            {"primary": "Unknown", "all": [], "details": {}},
+            {"backend_port": None, "frontend_port": None},
+        )
+        mock_infer_services.return_value = [
+            {"name": "web", "path": ".", "type": "frontend", "port": 5173, "port_source": "default"}
+        ]
+
+        result = detect_framework(str(tmp_path), use_ml=False)
+        assert result["framework"] == "Unknown"
+
+    @patch("app.utils.detector.infer_services")
+    @patch("app.utils.detector.detect_db_and_ports")
+    @patch("app.utils.detector.detect_env_variables")
+    @patch("app.utils.detector.detect_docker_files")
+    @patch("app.utils.detector.parse_dependencies_file")
+    @patch("app.utils.detector.extract_nodejs_commands")
+    @patch("app.utils.detector.extract_python_commands")
+    @patch("app.utils.detector.heuristic_framework_detection")
+    @patch("app.utils.detector.heuristic_language_detection")
+    @patch("app.utils.detector.find_project_root")
+    def test_frontend_only_flags_missing_backend_and_keeps_db(
+        self,
+        mock_find_root,
+        mock_heur_lang,
+        mock_heur_fw,
+        mock_py_cmds,
+        mock_node_cmds,
+        mock_parse_deps,
+        mock_docker,
+        mock_env,
+        mock_db_ports,
+        mock_infer_services,
+        tmp_path,
+    ):
+        mock_find_root.return_value = str(tmp_path)
+        mock_heur_lang.return_value = ("JavaScript", 0.8)
+        mock_heur_fw.return_value = ("React", 0.9)
+        mock_py_cmds.return_value = {}
+        mock_node_cmds.return_value = {}
+        mock_parse_deps.return_value = []
+        mock_docker.return_value = {"dockerfile": False, "docker_compose": False, "detected_files": []}
+        mock_env.return_value = []
+        mock_db_ports.return_value = (
+            {"primary": "MongoDB", "all": ["MongoDB"], "details": {}, "port": 27017},
+            {"backend_port": None, "frontend_port": 5173},
+        )
+        mock_infer_services.return_value = [
+            {"name": "web", "path": ".", "type": "frontend", "port": 5173, "port_source": "default"}
+        ]
+
+        result = detect_framework(str(tmp_path), use_ml=False)
+        assert result["missing_backend"] is True
+        assert result["database"] == "MongoDB"
+        assert any(
+            "Database detected without backend/monolith service" in w
+            for w in result.get("consistency_warnings", [])
+        )
+
+
+class TestDetectPortsFrameworkOverrides:
+    @pytest.mark.parametrize("framework,expected_port", [
+        ("Express.js", 3000),
+        ("Fastify", 3000),
+        ("NestJS", 3000),
+        ("Next.js", 3000),
+        ("Vite", 5173),
+    ])
+    def test_framework_overrides_apply_before_language_defaults(self, tmp_path, framework, expected_port):
+        ports = detect_ports_for_project(str(tmp_path), "Unknown", framework, base_port=None)
+        assert ports["backend_port"] == expected_port
 
 
 class TestDeployBlockedLogic:
@@ -1063,12 +1413,23 @@ class TestDepBasedServiceDiscovery:
         assert len(svcs) == 0
 
     def test_skips_no_deps(self, tmp_path):
-        """package.json with neither backend nor frontend deps → skipped."""
-        _write(tmp_path / "utils" / "package.json", json.dumps({
+        """No-dep package.json yields type='other', then reclassifies downstream by name."""
+        _write(tmp_path / "api-server" / "package.json", json.dumps({
             "dependencies": {"lodash": "4"}
         }))
         svcs = _find_all_services_by_deps(str(tmp_path))
-        assert len(svcs) == 0
+        assert len(svcs) == 1
+        assert svcs[0]["type"] == "other"
+
+        inferred_svcs = infer_services(
+            str(tmp_path),
+            language="JavaScript",
+            framework="Unknown",
+            metadata={},
+        )
+        assert len(inferred_svcs) == 1
+        assert inferred_svcs[0]["name"] == "api-server"
+        assert inferred_svcs[0]["type"] == "backend"
 
 
 class TestMonolithDetection:
@@ -1239,6 +1600,14 @@ class TestPythonDetection:
         _write(tmp_path / "venv" / "manage.py", "import django")
         svcs = _find_python_services(str(tmp_path))
         assert len(svcs) == 0
+
+    def test_unknown_python_framework_service_not_dropped(self, tmp_path):
+        """Python manifest with no known framework should be kept as framework='Unknown'."""
+        _write(tmp_path / "svc" / "requirements.txt", "requests==2.32")
+        _write(tmp_path / "svc" / "app.py", "print('hello')")
+        svcs = _find_python_services(str(tmp_path))
+        assert len(svcs) == 1
+        assert svcs[0]["framework"] == "Unknown"
 
 
 class TestEmptyShellSuppressed:

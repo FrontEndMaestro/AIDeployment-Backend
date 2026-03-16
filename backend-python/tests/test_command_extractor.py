@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.utils.command_extractor import (
     extract_nodejs_commands,
     extract_python_commands,
+    extract_database_info,
     _parse_vite_config,
     _parse_vue_config,
     _parse_webpack_config,
@@ -270,6 +271,31 @@ module.exports = {
 
         result = _parse_webpack_config(self.test_dir)
         self.assertEqual(result, "build")
+
+
+class TestExtractDatabaseInfo(unittest.TestCase):
+    """Test synthesized DB env defaults when no .env is present."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def test_synthesizes_mongodb_default_env(self):
+        result = extract_database_info(self.test_dir, detected_db="mongodb")
+        self.assertEqual(result["db_type"], "mongodb")
+        self.assertTrue(result["needs_container"])
+        self.assertEqual(result["env_var_name"], "MONGO_URI=mongodb://mongo:27017/app")
+
+    def test_synthesizes_postgresql_default_env(self):
+        result = extract_database_info(self.test_dir, detected_db="postgresql")
+        self.assertEqual(result["db_type"], "postgresql")
+        self.assertTrue(result["needs_container"])
+        self.assertEqual(
+            result["env_var_name"],
+            "DATABASE_URL=postgresql://postgres:postgres@postgres:5432/app",
+        )
 
 
 if __name__ == "__main__":

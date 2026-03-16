@@ -387,10 +387,13 @@ class TestPortFrameworkDefaults:
 
     @pytest.mark.parametrize("framework,expected", [
         ("Express.js", 3000),
+        ("Fastify", 3000),
+        ("NestJS", 3000),
         ("Flask", 5000),
         ("Django", 8000),
         ("FastAPI", 8000),
         ("Next.js", 3000),
+        ("Vite", 5173),
         ("Spring Boot", 8080),
     ])
     def test_framework_defaults(self, tmp_path, framework, expected):
@@ -907,3 +910,181 @@ class TestEndToEndMERNRepos:
         # Should detect React frontend
         fe_svcs = [s for s in services if s["type"] == "frontend"]
         assert len(fe_svcs) >= 1
+
+
+class TestWorkspaceSupportInferServices:
+    """Workspace-aware service discovery should use workspace paths as authoritative."""
+
+    @patch("app.utils.detection_services.extract_database_info")
+    def test_workspace_exact_backend_frontend(self, mock_db, tmp_path):
+        mock_db.return_value = {"db_type": None}
+
+        _write(tmp_path / "package.json", json.dumps({
+            "name": "workspace-root",
+            "private": True,
+            "workspaces": ["backend", "frontend"],
+        }))
+        _pkg(tmp_path / "backend", "backend", deps={"express": "4"}, scripts={"start": "node server.js"})
+        _write(tmp_path / "backend" / "server.js", "require('express')().listen(5000)")
+        _pkg(
+            tmp_path / "frontend",
+            "frontend",
+            deps={"react": "18", "react-dom": "18"},
+            dev_deps={"vite": "5"},
+            scripts={"dev": "vite", "build": "vite build"},
+        )
+        _write(tmp_path / "frontend" / "src" / "App.jsx", "export default () => <div />")
+
+        services = infer_services(str(tmp_path), "JavaScript", "Unknown", {"database": "Unknown"})
+        svc_types = {s["type"] for s in services}
+        assert "backend" in svc_types
+        assert "frontend" in svc_types
+
+
+    @patch("app.utils.detection_services.extract_database_info")
+    def test_workspace_wildcard_packages(self, mock_db, tmp_path):
+        mock_db.return_value = {"db_type": None}
+
+        _write(tmp_path / "package.json", json.dumps({
+            "name": "workspace-root",
+            "private": True,
+            "workspaces": ["packages/*"],
+        }))
+        _pkg(tmp_path / "packages" / "api", "api", deps={"express": "4"}, scripts={"start": "node index.js"})
+        _write(tmp_path / "packages" / "api" / "index.js", "require('express')().listen(4000)")
+        _pkg(
+            tmp_path / "packages" / "web",
+            "web",
+            deps={"react": "18", "react-dom": "18"},
+            dev_deps={"vite": "5"},
+            scripts={"dev": "vite", "build": "vite build"},
+        )
+        _write(tmp_path / "packages" / "web" / "src" / "App.jsx", "export default () => <div />")
+        _pkg(tmp_path / "packages" / "worker", "worker", deps={"express": "4"}, scripts={"start": "node worker.js"})
+        _write(tmp_path / "packages" / "worker" / "worker.js", "require('express')().listen(4100)")
+
+        services = infer_services(str(tmp_path), "JavaScript", "Unknown", {"database": "Unknown"})
+        names = {s["name"] for s in services}
+        assert {"api", "web", "worker"}.issubset(names)
+
+    @patch("app.utils.detection_services.extract_database_info")
+    def test_workspace_root_not_classified_as_service(self, mock_db, tmp_path):
+        mock_db.return_value = {"db_type": None}
+
+        _write(tmp_path / "package.json", json.dumps({
+            "name": "workspace-root",
+            "private": True,
+            "dependencies": {"express": "4"},
+            "workspaces": ["backend"],
+        }))
+        _pkg(tmp_path / "backend", "backend", deps={"express": "4"}, scripts={"start": "node server.js"})
+        _write(tmp_path / "backend" / "server.js", "require('express')().listen(5000)")
+
+        services = infer_services(str(tmp_path), "JavaScript", "Unknown", {"database": "Unknown"})
+        assert all(s.get("path") != "." for s in services if s.get("type") != "database")
+        assert any(s.get("path") == "backend/" for s in services)
+
+    @patch("app.utils.detection_services.extract_database_info")
+    def test_non_workspace_repo_behaviour_unchanged(self, mock_db, tmp_path):
+        mock_db.return_value = {"db_type": None}
+
+        _pkg(tmp_path / "backend", "backend", deps={"express": "4"}, scripts={"start": "node server.js"})
+        _write(tmp_path / "backend" / "server.js", "require('express')().listen(5000)")
+        _pkg(
+            tmp_path / "frontend",
+            "frontend",
+            deps={"react": "18", "react-dom": "18"},
+            dev_deps={"vite": "5"},
+            scripts={"dev": "vite", "build": "vite build"},
+        )
+        _write(tmp_path / "frontend" / "src" / "App.jsx", "export default () => <div />")
+
+        services = infer_services(str(tmp_path), "JavaScript", "Unknown", {"database": "Unknown"})
+        svc_types = {s["type"] for s in services}
+        assert "backend" in svc_types
+        assert "frontend" in svc_types
+
+
+class TestInferServicesOtherReclassification:
+    def test_reclassifies_other_stub_by_name(self, tmp_path):
+        _pkg(
+            tmp_path / "api-server",
+            "api-server",
+            deps={"lodash": "4"},
+            scripts={"start": "node server.js"},
+        )
+        _write(tmp_path / "api-server" / "server.js", "console.log('ok')")
+
+        services = infer_services(str(tmp_path), "JavaScript", "Unknown", {"database": "Unknown"})
+        assert any(s.get("type") == "backend" and s.get("name") == "api-server" for s in services)
+
+    @patch("app.utils.detection_services.extract_database_info")
+    def test_uses_other_stub_as_db_fallback_when_no_backend(self, mock_db, tmp_path):
+        mock_db.return_value = {
+            "db_type": "mongodb",
+            "is_cloud": False,
+            "needs_container": True,
+            "env_var_name": "MONGO_URI",
+            "default_port": 27017,
+            "docker_image": "mongo:latest",
+        }
+
+        _pkg(
+            tmp_path / "frontend",
+            "frontend",
+            deps={"react": "18", "react-dom": "18"},
+            dev_deps={"vite": "5"},
+            scripts={"dev": "vite"},
+        )
+        _write(tmp_path / "frontend" / "src" / "App.jsx", "export default () => <div />")
+        _pkg(
+            tmp_path / "misc",
+            "misc",
+            deps={"lodash": "4"},
+            scripts={"start": "node server.js"},
+        )
+        _write(tmp_path / "misc" / "server.js", "console.log('ok')")
+
+        metadata = {"database": "Unknown"}
+        services = infer_services(
+            str(tmp_path),
+            "JavaScript",
+            "Unknown",
+            metadata,
+            db_result={"primary": "MongoDB", "all": ["MongoDB"], "details": {}},
+        )
+
+        called_path, called_detected_db = mock_db.call_args.args
+        assert os.path.normpath(called_path) == os.path.normpath(str(tmp_path / "misc"))
+        assert called_detected_db == "MongoDB"
+        assert any(s.get("type") == "database" for s in services)
+
+    @patch("app.utils.detection_services.extract_database_info")
+    def test_prefers_db_result_over_metadata_database(self, mock_db, tmp_path):
+        mock_db.return_value = {
+            "db_type": "postgresql",
+            "is_cloud": False,
+            "needs_container": True,
+            "env_var_name": "DATABASE_URL",
+            "default_port": 5432,
+            "docker_image": "postgres:15-alpine",
+        }
+
+        _pkg(
+            tmp_path / "backend",
+            "backend",
+            deps={"express": "4"},
+            scripts={"start": "node server.js"},
+        )
+        _write(tmp_path / "backend" / "server.js", "console.log('ok')")
+
+        infer_services(
+            str(tmp_path),
+            "JavaScript",
+            "Unknown",
+            {"database": "MongoDB"},
+            db_result={"primary": "PostgreSQL", "all": ["PostgreSQL"], "details": {}},
+        )
+
+        _, called_detected_db = mock_db.call_args.args
+        assert called_detected_db == "PostgreSQL"

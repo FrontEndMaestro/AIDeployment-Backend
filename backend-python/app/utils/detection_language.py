@@ -6,7 +6,7 @@ Extracted from detector.py to reduce its size.
 import os
 import json
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 try:
     import tomllib  # Python 3.11+
@@ -163,7 +163,61 @@ def parse_dependencies_file(file_path: str, file_type: str) -> List[str]:
     return deduped[:50]
 
 
-def get_runtime_info(language: str, framework: str) -> Dict:
+def _extract_node_major(version_spec: object) -> Optional[int]:
+    if version_spec is None:
+        return None
+    text = str(version_spec).strip()
+    if not text:
+        return None
+
+    matches = re.findall(r"\d{1,2}", text)
+    for raw in matches:
+        try:
+            major = int(raw)
+        except ValueError:
+            continue
+        if 1 <= major <= 99:
+            return major
+    return None
+
+
+def _infer_node_runtime_from_package_json(project_path: Optional[str]) -> Optional[str]:
+    if not project_path:
+        return None
+
+    pkg_path = os.path.join(project_path, "package.json")
+    if not os.path.exists(pkg_path):
+        return None
+
+    try:
+        with open(pkg_path, "r", encoding="utf-8", errors="ignore") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return None
+
+    volta_node = None
+    volta = data.get("volta")
+    if isinstance(volta, dict):
+        volta_node = volta.get("node")
+
+    engines_node = None
+    engines = data.get("engines")
+    if isinstance(engines, dict):
+        engines_node = engines.get("node")
+
+    major = _extract_node_major(volta_node)
+    if major is None:
+        major = _extract_node_major(engines_node)
+    if major is None:
+        return None
+
+    # Map requested major to nearest known Node LTS image tag.
+    lts_majors = [18, 20, 22]
+    nearest_lts = min(lts_majors, key=lambda x: (abs(x - major), -x))
+    return f"node:{nearest_lts}-alpine"
+
+
+def get_runtime_info(language: str, framework: str, project_path: Optional[str] = None) -> Dict:
     """Get runtime, ports, and commands based on detected language/framework"""
     
     runtime_map = {
@@ -232,6 +286,11 @@ def get_runtime_info(language: str, framework: str) -> Dict:
     
     if framework in framework_overrides:
         base_info.update(framework_overrides[framework])
+
+    if language in ("JavaScript", "TypeScript"):
+        inferred_node_runtime = _infer_node_runtime_from_package_json(project_path)
+        if inferred_node_runtime:
+            base_info["runtime"] = inferred_node_runtime
     
     return base_info
 
@@ -300,6 +359,12 @@ def heuristic_framework_detection(project_path: str, language: str) -> Tuple[str
     
     framework_scores: Dict[str, float] = {}
     found_evidence = []
+
+    def _compat_weight(framework: str, base: float) -> float:
+        fw_lang = FRAMEWORK_LANGUAGES.get(framework)
+        if fw_lang and language != "Unknown" and not _languages_compatible(language, fw_lang):
+            return base * 0.5
+        return base
     
     try:
         dependencies = set()
@@ -350,21 +415,41 @@ def heuristic_framework_detection(project_path: str, language: str) -> Tuple[str
         for framework, indicators in FRAMEWORK_INDICATORS.items():
             for dep in indicators["dependencies"]:
                 if dep.lower() in dependencies:
-                    framework_scores[framework] = framework_scores.get(framework, 0.0) + 0.8
+                    framework_scores[framework] = framework_scores.get(framework, 0.0) + _compat_weight(framework, 0.8)
                     found_evidence.append((framework, "dependency", dep))
         
         for root, dirs, files in os.walk(project_path):
             dirs[:] = [d for d in dirs if d not in ['node_modules', '__pycache__', '.git', 'venv', 'dist', 'build']]
+
+            for framework, indicators in FRAMEWORK_INDICATORS.items():
+                indicator_files: List[str] = []
+                directory_style_markers: List[str] = []
+
+                for raw_marker in indicators.get("files", []):
+                    marker = str(raw_marker).strip()
+                    if not marker:
+                        continue
+                    if marker.endswith("/") or marker.endswith("\\"):
+                        dir_marker = marker.rstrip("/\\")
+                        if dir_marker:
+                            directory_style_markers.append(dir_marker)
+                        continue
+                    indicator_files.append(marker.rstrip("/\\"))
+
+                if any(ind_file in files for ind_file in indicator_files if ind_file):
+                    framework_scores[framework] = framework_scores.get(framework, 0.0) + _compat_weight(framework, 0.6)
+                    found_evidence.append((framework, "file", ",".join(indicator_files)))
+
+                indicator_dirs = [d.rstrip('/\\') for d in indicators.get("dirs", []) if str(d).strip()]
+                combined_dirs = indicator_dirs + directory_style_markers
+                if any(ind_dir and os.path.isdir(os.path.join(root, ind_dir)) for ind_dir in combined_dirs):
+                    framework_scores[framework] = framework_scores.get(framework, 0.0) + _compat_weight(framework, 0.6)
+                    found_evidence.append((framework, "dir", ",".join(combined_dirs)))
             
             for file in files:
                 ext = os.path.splitext(file)[1].lower()
                 if ext in ['.py', '.js', '.ts', '.java', '.go', '.rb', '.php']:
                     file_path = os.path.join(root, file)
-                    
-                    for framework, indicators in FRAMEWORK_INDICATORS.items():
-                        if file in indicators["files"]:
-                            framework_scores[framework] = framework_scores.get(framework, 0.0) + 0.6
-                            found_evidence.append((framework, "file", file))
                     
                     try:
                         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -373,7 +458,7 @@ def heuristic_framework_detection(project_path: str, language: str) -> Tuple[str
                             for framework, indicators in FRAMEWORK_INDICATORS.items():
                                 for marker in indicators["markers"]:
                                     if marker.lower() in content.lower():
-                                        framework_scores[framework] = framework_scores.get(framework, 0.0) + 0.5
+                                        framework_scores[framework] = framework_scores.get(framework, 0.0) + _compat_weight(framework, 0.5)
                                         found_evidence.append((framework, "marker", marker))
                                         break
                     except:
@@ -385,14 +470,10 @@ def heuristic_framework_detection(project_path: str, language: str) -> Tuple[str
     best_framework = "Unknown"
     best_score = 0.0
     
-    # Apply a soft penalty for frameworks that don't match the detected language
+    # Compatibility weighting is already applied during score accumulation.
     for framework, score in framework_scores.items():
-        fw_lang = FRAMEWORK_LANGUAGES.get(framework)
-        adjusted_score = score
-        if fw_lang and language != "Unknown" and not _languages_compatible(language, fw_lang):
-            adjusted_score *= 0.5  # penalize mismatched language/framework
-        if adjusted_score > best_score:
-            best_score = adjusted_score
+        if score > best_score:
+            best_score = score
             best_framework = framework
     
     confidence = min(best_score / 2.0, 1.0)

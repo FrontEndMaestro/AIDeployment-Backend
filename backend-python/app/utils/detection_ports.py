@@ -23,6 +23,14 @@ def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
         "backend_path": None,
         "frontend_path": None,
     }
+    _BE_TOKENS = ("backend", "server", "api", "app")
+    _FE_TOKENS = ("frontend", "client", "web", "ui")
+
+    def _matches(folder_name: str, token: str) -> bool:
+        # Keep short tokens strict to avoid cross-classification noise.
+        if len(token) < 5:
+            return folder_name == token
+        return folder_name == token or token in folder_name
     
     for root, dirs, files in os.walk(project_path):
         depth = root.replace(project_path, '').count(os.sep)
@@ -35,14 +43,16 @@ def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
             pkg_path = os.path.join(folder_path, "package.json")
             
             if os.path.exists(pkg_path):
-                if folder_lower in ["backend", "server", "api", "app"]:
+                if any(_matches(folder_lower, t) for t in _BE_TOKENS):
                     structure["has_backend"] = True
-                    structure["backend_path"] = folder_path
+                    if structure["backend_path"] is None:
+                        structure["backend_path"] = folder_path
                     structure["is_fullstack"] = True
                     print(f"🔍 Fullstack: found backend folder '{folder}'")
-                if folder_lower in ["frontend", "client", "web", "ui"]:
+                if any(_matches(folder_lower, t) for t in _FE_TOKENS):
                     structure["has_frontend"] = True
-                    structure["frontend_path"] = folder_path
+                    if structure["frontend_path"] is None:
+                        structure["frontend_path"] = folder_path
                     structure["is_fullstack"] = True
                     print(f"🔍 Fullstack: found frontend folder '{folder}'")
     
@@ -607,19 +617,30 @@ def detect_ports_for_project(
         else:
             backend_port = base_port
             if backend_port is None:
+                framework_default_ports = {
+                    "Express.js": 3000,
+                    "Fastify": 3000,
+                    "NestJS": 3000,
+                    "Next.js": 3000,
+                    "Vite": 5173,
+                }
                 default_ports = {
+                    "JavaScript": 3000,
+                    "TypeScript": 3000,
                     "Python": 8000,
                     "Java": 8080,
                     "Go": 8080,
                     "Ruby": 3000,
                     "PHP": 8000
                 }
-                backend_port = default_ports.get(language, 8000)
+                backend_port = framework_default_ports.get(framework)
+                if backend_port is None:
+                    backend_port = default_ports.get(language, 8000)
 
         # Env overrides for backend
         if backend_env_port is not None:
             backend_port = backend_env_port
-        elif generic_env_port is not None and backend_port is None:
+        elif generic_env_port is not None:
             backend_port = generic_env_port
 
         # Allow explicit frontend env even in non-JS projects (edge multi-service)

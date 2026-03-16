@@ -74,19 +74,20 @@ FRAMEWORK_INDICATORS = {
     "Express.js": {
         "markers": ["require('express')", "const express", "app.listen", "app.get(", "app.post("],
         "files": [],
-        "dependencies": ["express"],
+        "dependencies": ["express", "@types/express", "ts-node", "tsx"],
         "confidence_weight": 0.95
     },
     "Next.js": {
         "markers": ["next/", "getServerSideProps", "getStaticProps", "pages/"],
-        "files": ["next.config.js", "pages/"],
+        "files": ["next.config.js"],
+        "dirs": ["pages"],
         "dependencies": ["next"],
         "confidence_weight": 0.95
     },
     "React": {
         "markers": ["import React", "from 'react'", "useState(", "useEffect(", "JSX"],
         "files": [],
-        "dependencies": ["react"],
+        "dependencies": ["react", "@types/react", "@types/react-dom"],
         "confidence_weight": 0.9
     },
     "Spring Boot": {
@@ -182,7 +183,7 @@ DB_ENV_KEYWORDS = {
 # --- Service classification dep sets (Fix 1 / Fix 4) ---
 BACKEND_DEPS = {
     "express", "fastify", "koa", "hapi", "@nestjs/core",
-    "apollo-server", "graphql-yoga", "@hapi/hapi",
+    "apollo-server", "graphql-yoga", "@hapi/hapi", "hono", "elysia",
 }
 
 FRONTEND_DEPS = {
@@ -198,6 +199,7 @@ SKIP_DIRS = {
 
 PYTHON_BACKEND_DEPS = {
     "fastapi", "flask", "django", "starlette", "tornado", "aiohttp", "sanic",
+    "falcon", "bottle",
 }
 
 DB_KEYWORDS = {
@@ -224,7 +226,11 @@ def _normalize_dep_name(dep: str) -> str:
 
     # Drop environment markers and direct references
     dep = dep.split(";", 1)[0].strip()
-    dep = dep.split("@", 1)[0].strip()
+    if dep.startswith("@"):
+        if "@" in dep[1:]:
+            dep = dep.rsplit("@", 1)[0].strip()
+    else:
+        dep = dep.split("@", 1)[0].strip()
 
     # Strip extras (e.g., fastapi[standard])
     dep = dep.split("[", 1)[0].strip()
