@@ -7,12 +7,18 @@ Extracted from detector.py to reduce its size.
 import os
 import json
 import re
-import yaml
+import shlex
+try:
+    import yaml
+except ImportError:
+    yaml = None
 from typing import Dict, List, Optional
 
 from .detection_constants import (
     BACKEND_DEPS,
     FRONTEND_DEPS,
+    WORKER_DEPS,
+    DB_DRIVER_ONLY_DEPS,
     SKIP_DIRS,
     PYTHON_BACKEND_DEPS,
     PYTHON_SKIP_DIRS,
@@ -26,6 +32,7 @@ from .command_extractor import (
     extract_frontend_port,
     extract_database_info,
 )
+from .detection_ports import _scan_js_for_port_hint
 
 
 _INFRA_DIRS = {
@@ -61,13 +68,29 @@ def _infer_service_type(service_path: str, service_name: str, project_root: str)
     Falls back to name heuristic only if no package.json found.
     """
     pkg_path = os.path.join(project_root, service_path, "package.json")
+    deps = {}
+    is_be = False
+    is_fe = False
     if os.path.exists(pkg_path):
         try:
             with open(pkg_path, "r", encoding="utf-8", errors="ignore") as f:
                 pkg = json.load(f)
             deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
-            is_be = bool(deps.keys() & BACKEND_DEPS)
-            is_fe = bool(deps.keys() & FRONTEND_DEPS)
+            dep_keys = set(deps.keys())
+            ts_express_hint = (
+                "@types/express" in dep_keys
+                and bool(dep_keys & {"typescript", "ts-node", "tsx"})
+                and not bool(dep_keys & FRONTEND_DEPS)
+            )
+            is_be = bool(dep_keys & BACKEND_DEPS) or ts_express_hint
+            is_fe = bool(dep_keys & FRONTEND_DEPS)
+            # Worker classification via deps
+            worker_match = bool(dep_keys & WORKER_DEPS)
+            db_only = bool(dep_keys & DB_DRIVER_ONLY_DEPS) and not is_be and not is_fe
+            if worker_match:
+                return "worker"
+            if db_only:
+                return "backend"  # has DB access but no web framework - treat as backend
             if is_be and is_fe:
                 return "monolith"
             if is_be:
@@ -94,7 +117,7 @@ def _infer_service_type(service_path: str, service_name: str, project_root: str)
 
     }
     _FRONTEND_NAMES = {
-        "frontend", "client", "ui", "web", "app",
+        "frontend", "client", "ui", "web",
         "front-end", "front_end", "front", "react", "vue",
         "angular", "bezkoder-ui", "my-app", "webapp", "web-app",
         "www", "cafe-front", "taskly-frontend",
@@ -135,10 +158,19 @@ def _find_all_services_by_deps(project_path: str) -> List[Dict[str, str]]:
             continue
 
         deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
-        is_be = bool(deps.keys() & BACKEND_DEPS)
-        is_fe = bool(deps.keys() & FRONTEND_DEPS)
+        dep_keys = set(deps.keys())
+        ts_express_hint = (
+            "@types/express" in dep_keys
+            and bool(dep_keys & {"typescript", "ts-node", "tsx"})
+            and not bool(dep_keys & FRONTEND_DEPS)
+        )
+        is_be = bool(dep_keys & BACKEND_DEPS) or ts_express_hint
+        is_fe = bool(dep_keys & FRONTEND_DEPS)
+        worker_match = bool(dep_keys & WORKER_DEPS)
 
-        if is_be and is_fe:
+        if worker_match:
+            svc_type = "worker"
+        elif is_be and is_fe:
             svc_type = "monolith"
         elif is_be:
             svc_type = "backend"
@@ -156,6 +188,33 @@ def _find_all_services_by_deps(project_path: str) -> List[Dict[str, str]]:
         print(f"📦 Dep-scan: found {svc_type} service '{folder_name}' at {root}")
 
     return services
+
+
+ORCHESTRATOR_SIGNALS = {
+    "Makefile", "makefile",
+    ".github",       # directory, check with os.path.isdir
+    "lerna.json",
+    "nx.json",
+    "turbo.json",
+    "pnpm-workspace.yaml",
+}
+
+
+def _is_orchestrator_root(path: str) -> bool:
+    try:
+        entries = set(os.listdir(path))
+    except OSError:
+        return False
+    file_signals = {
+        e for e in entries
+        if e in ORCHESTRATOR_SIGNALS and os.path.isfile(os.path.join(path, e))
+    }
+    dir_signals = {
+        e for e in entries
+        if e in {".github", "scripts", ".circleci"}
+        and os.path.isdir(os.path.join(path, e))
+    }
+    return bool(file_signals or dir_signals)
 
 
 def _suppress_root_if_children_found(
@@ -196,11 +255,28 @@ def _suppress_root_if_children_found(
 
     # Step 4: Root is frontend/other/untyped + >=2 real non-root -> drop root
     if root_type in ("frontend", "other") or root_type is None:
+        if _is_orchestrator_root(project_path):
+            # Root has orchestrator signals — keep everything
+            return services
         real_non_root = [
             s for s in non_root
             if s.get("type") not in ("database", "other")
         ]
-        if len(real_non_root) >= 2:
+        root_has_service_deps = False
+        root_pkg = os.path.join(project_path, "package.json")
+        if os.path.exists(root_pkg):
+            try:
+                with open(root_pkg, "r", encoding="utf-8", errors="ignore") as f:
+                    pkg = json.load(f) or {}
+                deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+                root_has_service_deps = bool(
+                    set(deps.keys()) & (BACKEND_DEPS | FRONTEND_DEPS | WORKER_DEPS)
+                )
+            except Exception:
+                pass
+
+        threshold = 2 if root_has_service_deps else 1
+        if len(real_non_root) >= threshold:
             return non_root
 
     return services
@@ -214,14 +290,63 @@ def _drop_empty_shells(services: List[Dict[str, str]]) -> List[Dict[str, str]]:
     survivors = []
     for s in services:
         stype = s.get("type", "other")
-        if stype in ("database", "other"):
+        has_signal = bool(s.get("port") and s.get("entry_point"))
+        if stype == "database":
             survivors.append(s)
-            continue
-        if s.get("port") or s.get("entry_point"):
+        elif stype == "other":
+            if has_signal:
+                survivors.append(s)
+            else:
+                print(f"Dropping empty shell: {s.get('name')} (no port+entry_point)")
+        elif s.get("port") or s.get("entry_point"):
             survivors.append(s)
-            continue
-        print(f"Dropping empty shell: {s.get('name')} (no port, no entry_point)")
+        else:
+            print(f"Dropping empty shell: {s.get('name')}")
     return survivors
+
+
+def _path_depth(path: str) -> int:
+    np = norm_path(path)
+    if np == ".":
+        return 0
+    return len([part for part in np.split("/") if part])
+
+
+def _norm_cmp_path(path: str) -> str:
+    """
+    Canonical path key for comparisons/dedup across mixed sources.
+    Keeps display paths unchanged while making matching robust on case-insensitive filesystems.
+    """
+    return norm_path(path).lower()
+
+
+def _is_at_least_as_specific_path(candidate_path: str, existing_path: str) -> bool:
+    """
+    True when candidate_path is at least as specific as existing_path.
+    Prevents replacing concrete paths (e.g. server/) with broad compose root (.).
+    """
+    cand = norm_path(candidate_path)
+    existing = norm_path(existing_path)
+    cand_cmp = _norm_cmp_path(candidate_path)
+    existing_cmp = _norm_cmp_path(existing_path)
+
+    if cand_cmp == existing_cmp:
+        return True
+    if existing_cmp == "." and cand_cmp != ".":
+        return True
+    if cand_cmp == "." and existing_cmp != ".":
+        return False
+
+    cand_parts = [p for p in cand_cmp.split("/") if p]
+    existing_parts = [p for p in existing_cmp.split("/") if p]
+    if (
+        existing_parts
+        and len(cand_parts) >= len(existing_parts)
+        and cand_parts[-len(existing_parts):] == existing_parts
+    ):
+        return True
+
+    return _path_depth(cand) > _path_depth(existing)
 
 
 
@@ -231,6 +356,39 @@ def _normalize_service_path(project_path: str, service_path: str) -> str:
     if rel != "." and not rel.endswith("/"):
         rel += "/"
     return rel
+
+
+def _compose_cmd_to_text(value: object) -> Optional[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, list):
+        parts = [str(v).strip() for v in value if str(v).strip()]
+        if parts:
+            return " ".join(parts)
+    return None
+
+
+def _extract_entry_from_command_text(command_text: Optional[str]) -> Optional[str]:
+    if not command_text:
+        return None
+    try:
+        parts = shlex.split(command_text, posix=True)
+    except Exception:
+        parts = str(command_text).split()
+
+    for part in parts:
+        token = str(part).strip().strip('"').strip("'").strip("`").rstrip(";,")
+        if not token:
+            continue
+        low = token.lower()
+        if low in {"node", "nodemon", "npx", "npm", "yarn", "pnpm", "bun", "python", "python3", "uvicorn", "gunicorn"}:
+            continue
+        if token.startswith("-"):
+            continue
+        if any(token.endswith(ext) for ext in (".js", ".ts", ".mjs", ".cjs", ".py")):
+            return token.replace("\\", "/")
+    return None
 
 
 def _detect_package_manager(service_path: str) -> dict:
@@ -306,10 +464,19 @@ def _build_node_stub_for_directory(service_path: str, project_path: str) -> Opti
         return None
 
     deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
-    is_be = bool(deps.keys() & BACKEND_DEPS)
-    is_fe = bool(deps.keys() & FRONTEND_DEPS)
+    dep_keys = set(deps.keys())
+    ts_express_hint = (
+        "@types/express" in dep_keys
+        and bool(dep_keys & {"typescript", "ts-node", "tsx"})
+        and not bool(dep_keys & FRONTEND_DEPS)
+    )
+    is_be = bool(dep_keys & BACKEND_DEPS) or ts_express_hint
+    is_fe = bool(dep_keys & FRONTEND_DEPS)
+    worker_match = bool(dep_keys & WORKER_DEPS)
 
-    if is_be and is_fe:
+    if worker_match:
+        svc_type = "worker"
+    elif is_be and is_fe:
         svc_type = "monolith"
     elif is_be:
         svc_type = "backend"
@@ -404,14 +571,18 @@ def _build_python_stub_for_directory(service_path: str, project_path: str) -> Op
         if os.path.exists(env_path):
             try:
                 with open(env_path, "r", encoding="utf-8", errors="ignore") as f:
+                    PORT_KEYS = ("PORT=", "BACKEND_PORT=", "SERVER_PORT=", "API_PORT=")
                     for line in f:
                         line = line.strip()
-                        if line.startswith("PORT="):
-                            try:
-                                port = int(line.split("=", 1)[1].strip())
-                                port_source = "env"
-                            except ValueError:
-                                pass
+                        if not line or line.startswith("#"):
+                            continue
+                        for key in PORT_KEYS:
+                            if line.upper().startswith(key):
+                                try:
+                                    port = int(line.split("=", 1)[1].strip())
+                                    port_source = "env"
+                                except ValueError:
+                                    pass
             except Exception:
                 pass
             break
@@ -579,14 +750,18 @@ def _find_python_services(project_path: str) -> List[Dict[str, str]]:
             if os.path.exists(env_path):
                 try:
                     with open(env_path, "r", encoding="utf-8", errors="ignore") as f:
+                        PORT_KEYS = ("PORT=", "BACKEND_PORT=", "SERVER_PORT=", "API_PORT=")
                         for line in f:
                             line = line.strip()
-                            if line.startswith("PORT="):
-                                try:
-                                    port = int(line.split("=", 1)[1].strip())
-                                    port_source = "env"
-                                except ValueError:
-                                    pass
+                            if not line or line.startswith("#"):
+                                continue
+                            for key in PORT_KEYS:
+                                if line.upper().startswith(key):
+                                    try:
+                                        port = int(line.split("=", 1)[1].strip())
+                                        port_source = "env"
+                                    except ValueError:
+                                        pass
                 except Exception:
                     pass
                 break
@@ -680,7 +855,7 @@ def infer_services(
     workspace_mode = False
 
     workspace_stubs = _build_workspace_stubs(project_path)
-    if workspace_stubs is not None:
+    if workspace_stubs:
         workspace_mode = True
         raw_stubs = workspace_stubs
     else:
@@ -693,16 +868,37 @@ def infer_services(
         # -- Merge + deduplicate (Python preferred if it has framework) --
         raw_stubs = _merge_node_python_stubs(node_stubs, python_stubs)
     
-    # -- Fix 3/5: Suppress root phantom if children found --
-    raw_stubs = _suppress_root_if_children_found(raw_stubs, project_path)
-
-    # Reclassify dep-unknown stubs via path/name heuristics before population.
-    # This allows "other" stubs (e.g. api-server with no recognized deps) to
-    # become backend/frontend candidates.
+    # Reclassify dep-unknown NON-ROOT stubs before suppress so the threshold
+    # count is accurate. Root stubs are intentionally NOT reclassified here:
+    # if root is "other" when suppress runs, Step 4 correctly drops it when
+    # >=2 real children exist. Reclassifying root to "backend" would trigger
+    # Step 3 ("root backend → keep everything") and produce a phantom root.
+    root_np = norm_path(project_path)
     for stub in raw_stubs:
         if stub.get("type") != "other":
             continue
-        svc_abs_path = stub.get("abs_path")
+        svc_abs_path = stub.get("abs_path", "")
+        if not svc_abs_path:
+            continue
+        if norm_path(svc_abs_path) == root_np:
+            continue  # leave root stub unclassified until after suppress
+        try:
+            rel_stub_path = os.path.relpath(svc_abs_path, project_path).replace("\\", "/")
+            rel_stub_path = "." if rel_stub_path in ("", ".") else rel_stub_path
+        except Exception:
+            rel_stub_path = "."
+        inferred_type = _infer_service_type(rel_stub_path, stub.get("name", ""), project_path)
+        if inferred_type in ("backend", "frontend", "monolith", "worker"):
+            stub["type"] = inferred_type
+
+    # -- Fix 3/5: Suppress root phantom if children found --
+    raw_stubs = _suppress_root_if_children_found(raw_stubs, project_path)
+
+    # Reclassify any remaining "other" stubs (including root if it survived suppress)
+    for stub in raw_stubs:
+        if stub.get("type") != "other":
+            continue
+        svc_abs_path = stub.get("abs_path", "")
         if not svc_abs_path:
             continue
         try:
@@ -711,7 +907,7 @@ def infer_services(
         except Exception:
             rel_stub_path = "."
         inferred_type = _infer_service_type(rel_stub_path, stub.get("name", ""), project_path)
-        if inferred_type in ("backend", "frontend", "monolith"):
+        if inferred_type in ("backend", "frontend", "monolith", "worker"):
             stub["type"] = inferred_type
 
     # -- Populate per-service fields --
@@ -739,6 +935,7 @@ def infer_services(
         if svc_type in ("backend", "monolith"):
             # -- Python stubs already have fields populated by _find_python_services --
             if stub.get("language") == "Python":
+                py_cmds = extract_python_commands(svc_abs_path)
                 svc_dict = {
                     "name": svc_name,
                     "path": svc_rel_path,
@@ -747,7 +944,8 @@ def infer_services(
                     "framework": stub.get("framework"),
                     "port": stub.get("port", 8000),
                     "port_source": stub.get("port_source", "default"),
-                    "entry_point": stub.get("entry_point"),
+                    "entry_point": stub.get("entry_point") or py_cmds.get("entry_point"),
+                    "start_command": py_cmds.get("start_command"),
                     "env_file": env_file,
                     "package_manager": stub.get("package_manager", "pip"),
                     "dockerfile_strategy": "python_backend",
@@ -757,22 +955,68 @@ def infer_services(
                 continue
 
             # -- Node.js backend/monolith --
-            # Extract port from service directory
-            port_info = extract_port_from_project(svc_abs_path, framework, language)
-            port = port_info.get("port", 3000)
+            if os.path.exists(os.path.join(svc_abs_path, "package.json")):
+                svc_language = "JavaScript"
+                if language in ("JavaScript", "TypeScript", "javascript", "typescript"):
+                    svc_framework = framework
+                else:
+                    svc_framework = "Unknown"
+            elif stub.get("language") == "Python":
+                svc_language = "Python"
+                svc_framework = stub.get("framework", "Unknown")
+            else:
+                svc_language = language
+                svc_framework = framework
 
+            # Extract port from service directory
+            port_info = extract_port_from_project(svc_abs_path, svc_framework, svc_language)
+            port = port_info.get("port", 3000)
+            port_source = port_info.get("source", "default")
+            if port_source == "default":
+                hint_port = _scan_js_for_port_hint(svc_abs_path)
+                if hint_port:
+                    port = hint_port
+                    port_source = "source"
             # Extract start command from service's package.json
-            cmds = extract_nodejs_commands(svc_abs_path)
-            entry_point = cmds.get("entry_point", "index.js")
-            start_command = cmds.get("start_command", f"node {entry_point}")
+            if svc_language == "Python":
+                cmds = extract_python_commands(svc_abs_path)
+            else:
+                cmds = extract_nodejs_commands(svc_abs_path)
+            entry_point = cmds.get("entry_point")  # None if genuinely not found
+
+            # Only apply a last-resort default if the probe also found nothing
+            # (extract_nodejs_commands already checked common files — trust its result)
+            if not entry_point and svc_language != "Python":
+                # Final fallback: check a few key names that extract_nodejs_commands
+                # might have missed if pkg_dir differed from svc_abs_path
+                for candidate in (
+                    "server.js", "index.js", "app.js", "main.js",
+                    "src/server.js", "src/index.js", "src/app.js", "src/main.js",
+                    "server/app.js", "server/index.js", "server/server.js",
+                    "js/index.js", "js/app.js",
+                    "bin/www", "bin/www.js",
+                    "src/server.ts", "src/index.ts", "src/app.ts",
+                    "dist/server.js", "dist/index.js",
+                ):
+                    if os.path.exists(os.path.join(svc_abs_path, candidate)):
+                        entry_point = candidate
+                        break
+                # Do NOT hardcode "index.js" if no file was found — leave as None
+                # so the generator knows entry_point is unknown rather than guessing wrong
+
+            start_command = cmds.get("start_command")
+            if not start_command and entry_point and svc_language != "Python":
+                start_command = f"node {entry_point}"
             print(f"📦 {svc_type.title()} service '{svc_name}': entry_point={entry_point}, start_command={start_command}")
 
             svc_dict = {
                 "name": svc_name,
                 "path": svc_rel_path,
                 "type": svc_type,
+                "language": svc_language,
+                "framework": svc_framework,
                 "port": port,
-                "port_source": port_info.get("source", "default"),
+                "port_source": port_source,
                 "entry_point": entry_point,
                 "start_command": start_command,
                 "env_file": env_file,
@@ -796,7 +1040,7 @@ def infer_services(
 
             # Extract frontend port
             fe_port_info = extract_frontend_port(svc_abs_path)
-            fe_port = fe_port_info.get("port", 5173)
+            fe_port = fe_port_info.get("port") or 5173
             print(f"📦 Frontend service '{svc_name}': build_output={build_output}, port={fe_port}")
 
             services.append({
@@ -805,7 +1049,42 @@ def infer_services(
                 "type": "frontend",
                 "build_output": build_output,
                 "port": fe_port,
+                "dev_port": fe_port,
                 "port_source": fe_port_info.get("source", "default"),
+                "entry_point": cmds.get("entry_point"),
+                "start_command": cmds.get("start_command"),
+                "env_file": env_file,
+                "package_manager": _detect_package_manager(svc_abs_path),
+            })
+
+        elif svc_type == "worker":
+            if stub.get("language") == "Python":
+                svc_language = "Python"
+                svc_framework = stub.get("framework", "Unknown")
+            elif os.path.exists(os.path.join(svc_abs_path, "package.json")):
+                svc_language = "JavaScript"
+                if language in ("JavaScript", "TypeScript", "javascript", "typescript"):
+                    svc_framework = framework
+                else:
+                    svc_framework = "Unknown"
+            else:
+                svc_language = language
+                svc_framework = framework
+            if svc_language == "Python":
+                cmds = extract_python_commands(svc_abs_path)
+            else:
+                cmds = extract_nodejs_commands(svc_abs_path)
+            port_info = extract_port_from_project(svc_abs_path, svc_framework, svc_language)
+            services.append({
+                "name": svc_name,
+                "path": svc_rel_path,
+                "type": "worker",
+                "language": svc_language,
+                "framework": svc_framework,
+                "port": port_info.get("port"),
+                "port_source": port_info.get("source", "default"),
+                "entry_point": cmds.get("entry_point"),
+                "start_command": cmds.get("start_command"),
                 "env_file": env_file,
                 "package_manager": _detect_package_manager(svc_abs_path),
             })
@@ -835,7 +1114,15 @@ def infer_services(
         entry_point = node_cmds.get("entry_point") or python_cmds.get("entry_point")
 
         port_info = extract_port_from_project(project_path, framework, language)
-        explicit_port = port_info.get("source") in ("env", "source")
+        port = port_info.get("port", 3000)
+        port_source = port_info.get("source", "default")
+        if port_source == "default":
+            hint_port = _scan_js_for_port_hint(project_path)
+            if hint_port:
+                port = hint_port
+                port_source = "source"
+
+        explicit_port = port_source in ("env", "source")
 
         if not (has_manifest or entry_point or explicit_port):
             return []
@@ -847,7 +1134,10 @@ def infer_services(
                 "name": "frontend",
                 "path": ".",
                 "type": "frontend",
+                "port": 80,
+                "port_source": "default",
                 "build_output": single_build_output,
+                "start_command": None,
                 "env_file": root_env_file,
             })
         else:
@@ -855,19 +1145,39 @@ def infer_services(
             svc_type = "frontend" if framework in ["React", "Next.js"] else "backend"
             if svc_type == "frontend":
                 single_cmds = extract_nodejs_commands(project_path)
-                single_build_output = single_cmds.get("build_output", "dist")
+                fe_port_info = extract_frontend_port(project_path)
                 services.append({
                     "name": svc_name,
                     "path": ".",
                     "type": svc_type,
-                    "build_output": single_build_output,
+                    "port": fe_port_info.get("port") or 5173,
+                    "dev_port": fe_port_info.get("port") or 5173,
+                    "port_source": fe_port_info.get("source", "default"),
+                    "build_output": single_cmds.get("build_output", "dist"),
+                    "entry_point": single_cmds.get("entry_point"),
+                    "start_command": single_cmds.get("start_command"),
                     "env_file": root_env_file,
                 })
             else:
+                fallback_cmds = extract_nodejs_commands(project_path)
+                fallback_entry = fallback_cmds.get("entry_point")
+                fallback_start = fallback_cmds.get("start_command")
+                port_info = extract_port_from_project(project_path, framework, language)
+                port = port_info.get("port", 3000)
+                port_source = port_info.get("source", "default")
+                if port_source == "default":
+                    hint_port = _scan_js_for_port_hint(project_path)
+                    if hint_port:
+                        port = hint_port
+                        port_source = "source"
                 services.append({
                     "name": svc_name,
                     "path": ".",
                     "type": svc_type,
+                    "port": port,
+                    "port_source": port_source,
+                    "entry_point": fallback_entry,
+                    "start_command": fallback_start,
                     "env_file": root_env_file,
                 })
 
@@ -886,12 +1196,14 @@ def infer_services(
             break
 
     if compose_path and yaml is not None:
+        compose_svc_name = "<unknown>"
         try:
             with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
                 compose_data = yaml.safe_load(f) or {}
             compose_services = compose_data.get("services") or {}
 
             for svc_name, svc_def in compose_services.items():
+                compose_svc_name = svc_name
                 build_ctx = None
                 build_field = svc_def.get("build")
                 if isinstance(build_field, str):
@@ -908,13 +1220,23 @@ def infer_services(
 
                 rel_ctx = _normalize_service_path(project_path, abs_ctx)
                 svc_type = _infer_service_type(rel_ctx, svc_name, project_path)
+                compose_command = _compose_cmd_to_text(svc_def.get("command"))
+                compose_entrypoint = _compose_cmd_to_text(svc_def.get("entrypoint"))
+                compose_runtime_cmd = " ".join(
+                    part for part in [compose_entrypoint, compose_command] if part
+                ) or None
+                compose_entry = _extract_entry_from_command_text(compose_runtime_cmd)
 
                 # Try to match by path
                 matched = False
                 for svc in services:
-                    if svc.get("path") == rel_ctx:
+                    if _norm_cmp_path(svc.get("path", "")) == _norm_cmp_path(rel_ctx):
                         svc["name"] = svc_name  # align name to compose
                         svc.setdefault("type", svc_type)
+                        if compose_runtime_cmd and not svc.get("start_command"):
+                            svc["start_command"] = compose_runtime_cmd
+                        if compose_entry and not svc.get("entry_point"):
+                            svc["entry_point"] = compose_entry
                         matched = True
                         break
 
@@ -924,8 +1246,14 @@ def infer_services(
                 # Match by name
                 for svc in services:
                     if svc.get("name") == svc_name:
-                        svc["path"] = rel_ctx
+                        existing_path = svc.get("path", ".")
+                        if _is_at_least_as_specific_path(rel_ctx, existing_path):
+                            svc["path"] = rel_ctx
                         svc.setdefault("type", svc_type)
+                        if compose_runtime_cmd and not svc.get("start_command"):
+                            svc["start_command"] = compose_runtime_cmd
+                        if compose_entry and not svc.get("entry_point"):
+                            svc["entry_point"] = compose_entry
                         matched = True
                         break
 
@@ -938,9 +1266,21 @@ def infer_services(
                         "name": svc_name,
                         "path": rel_ctx,
                         "type": svc_type,
+                        "start_command": compose_runtime_cmd,
+                        "entry_point": compose_entry,
                     })
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Compose hints error for {compose_svc_name}: {e}")
+
+    deduped_by_path_type: Dict[tuple, Dict[str, str]] = {}
+    for svc in services:
+        key = (_norm_cmp_path(svc.get("path", ".")), str(svc.get("type", "other")))
+        if key not in deduped_by_path_type:
+            deduped_by_path_type[key] = dict(svc)
+            continue
+        deduped_by_path_type[key].update({k: v for k, v in svc.items() if v is not None})
+
+    services = list(deduped_by_path_type.values())
 
     # Root monolith can coexist with compose hints that add child build contexts.
     # If a root monolith exists, suppress non-database subdirectory services to avoid duplication.
@@ -960,13 +1300,35 @@ def infer_services(
     # If no backend/monolith service survived population, use an "other"-typed
     # raw stub as fallback DB probe target.
     if not backend_path:
+        fallback_candidates: List[tuple[int, str]] = []
         for stub in raw_stubs:
             if stub.get("type") != "other":
                 continue
             candidate = stub.get("abs_path")
-            if candidate and os.path.isdir(candidate):
-                backend_path = candidate
-                break
+            if not (candidate and os.path.isdir(candidate)):
+                continue
+            score = 0
+            try:
+                files = set(os.listdir(candidate))
+            except (PermissionError, OSError):
+                files = set()
+            if "package.json" in files:
+                score += 3
+            if any(f in files for f in ("requirements.txt", "pyproject.toml", "Pipfile", "manage.py")):
+                score += 2
+            name_lower = str(stub.get("name", "")).lower()
+            if any(tok in name_lower for tok in ("backend", "server", "api", "worker")):
+                score += 1
+            try:
+                rel_candidate = os.path.relpath(candidate, project_path).replace("\\", "/")
+            except Exception:
+                rel_candidate = candidate
+            depth = _path_depth(rel_candidate)
+            fallback_candidates.append((score * 10 + depth, candidate))
+
+        if fallback_candidates:
+            fallback_candidates.sort(key=lambda item: item[0], reverse=True)
+            backend_path = fallback_candidates[0][1]
 
     db_info: Dict[str, any] = {}
     authoritative_db = None
@@ -992,6 +1354,15 @@ def infer_services(
                     "SQLite": "sqlite",
                 }.get(scored_primary, str(scored_primary).lower())
                 db_info["db_type"] = normalized
+                db_defaults = {
+                    "mongodb": {"port": 27017, "image": "mongo:latest"},
+                    "postgresql": {"port": 5432, "image": "postgres:15-alpine"},
+                    "mysql": {"port": 3306, "image": "mysql:8"},
+                    "redis": {"port": 6379, "image": "redis:alpine"},
+                }
+                if normalized in db_defaults:
+                    db_info["default_port"] = db_defaults[normalized]["port"]
+                    db_info["docker_image"] = db_defaults[normalized]["image"]
 
     if backend_path and db_info.get("db_type"):
         metadata["database_is_cloud"] = db_info["is_cloud"]
@@ -1044,4 +1415,3 @@ def infer_services(
                 break
 
     return services
-

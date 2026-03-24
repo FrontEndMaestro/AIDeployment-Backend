@@ -89,7 +89,9 @@ def extract_file(file_path: str, project_id: str, user_workspace: str) -> Dict:
 def get_files_list(dir_path: str) -> List[Dict]:
     files_list = []
     
-    def scan_directory(directory: str, relative_path: str = ""):
+    def scan_directory(directory: str, relative_path: str = "", depth: int = 0):
+        if depth > 20:
+            return
         try:
             items = os.listdir(directory)
             for item in items:
@@ -103,7 +105,7 @@ def get_files_list(dir_path: str) -> List[Dict]:
                         "type": "folder",
                         "size": 0
                     })
-                    scan_directory(item_path, rel_path)
+                    scan_directory(item_path, rel_path, depth + 1)
                 else:
                     files_list.append({
                         "name": item,

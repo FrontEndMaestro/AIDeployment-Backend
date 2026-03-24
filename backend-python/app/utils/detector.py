@@ -1,18 +1,5 @@
 """
 detector.py — Orchestrator + backwards-compatible re-export hub.
-
-All domain logic has been extracted into focused modules:
-  - detection_constants   : shared constants & tiny helpers
-  - detection_language    : language/framework detection, dependency parsing
-  - detection_ports       : port detection (package.json, source scan, Docker)
-  - detection_database    : database detection
-  - detection_services    : service inference
-
-This file keeps:
-  1. Re-exports so that `from app.utils.detector import X` keeps working
-  2. detect_framework()   — the main orchestrator
-  3. Docker / env helpers tightly coupled to the orchestrator
-  4. find_project_root()
 """
 
 import os
@@ -132,7 +119,7 @@ def detect_docker_files(project_path: str) -> Dict:
 def detect_env_variables(project_path: str) -> List[str]:
     """Detect environment variables from .env files (keys only)"""
     env_vars = []
-    env_files = ['.env', '.env.example', '.env.sample', '.env.local']
+    env_files = ['.env', '.env.local', '.env.development', '.env.production', '.env.test', '.env.example', '.env.sample']
     
     for env_file in env_files:
         env_path = os.path.join(project_path, env_file)
@@ -154,7 +141,12 @@ def detect_env_variables(project_path: str) -> List[str]:
 def _read_env_key_values(project_path: str) -> Dict[str, str]:
     """Internal helper: read key=value pairs from typical .env files (for DB/port hints)."""
     env_values: Dict[str, str] = {}
-    port_override_keys = {"PORT", "VITE_PORT", "REACT_APP_PORT"}
+    port_override_keys = {
+        "PORT",
+        "BACKEND_PORT", "SERVER_PORT", "API_PORT",
+        "FRONTEND_PORT", "CLIENT_PORT",
+        "VITE_PORT", "REACT_APP_PORT", "NEXT_PUBLIC_PORT", "VITE_DEV_PORT",
+    }
 
     def _parse_env_line(line: str) -> Optional[tuple[str, str]]:
         line = line.strip()
@@ -315,6 +307,10 @@ def find_project_root(extracted_path: str, max_depth: int = 5) -> str:
                 return False
 
         def has_source_files(path: str) -> bool:
+            source_hint_dirs = {
+                "src", "app", "lib", "client", "server", "backend",
+                "frontend", "api", "web", "ui", "packages",
+            }
             try:
                 for name in os.listdir(path):
                     abs_path = os.path.join(path, name)
@@ -322,16 +318,19 @@ def find_project_root(extracted_path: str, max_depth: int = 5) -> str:
                         _, ext = os.path.splitext(name)
                         if ext.lower() in source_extensions:
                             return True
-                    # Accept conventional code folders for source signal (e.g. src/App.jsx).
-                    if os.path.isdir(abs_path) and name.lower() in {"src", "app", "lib"}:
+                    # Accept conventional code folders for source signal.
+                    if os.path.isdir(abs_path) and name.lower() in source_hint_dirs:
                         try:
-                            for child in os.listdir(abs_path):
-                                child_path = os.path.join(abs_path, child)
-                                if not os.path.isfile(child_path):
+                            base_depth = abs_path.count(os.sep)
+                            for sub_root, sub_dirs, sub_files in os.walk(abs_path):
+                                depth = sub_root.count(os.sep) - base_depth
+                                if depth > 2:
+                                    sub_dirs[:] = []
                                     continue
-                                _, child_ext = os.path.splitext(child)
-                                if child_ext.lower() in source_extensions:
-                                    return True
+                                for child in sub_files:
+                                    _, child_ext = os.path.splitext(child)
+                                    if child_ext.lower() in source_extensions:
+                                        return True
                         except Exception:
                             continue
             except Exception:
@@ -505,6 +504,8 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         "database_port": None,
         "backend_port": None,
         "frontend_port": None,
+        "backend_port_source": None,
+        "frontend_port_source": None,
         # docker-aware ports (HOST ports)
         "docker_backend_ports": None,
         "docker_frontend_ports": None,
@@ -617,6 +618,37 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             if has_package_json and has_requirements_txt and has_manage_py:
                 break
 
+        has_deno = (
+            os.path.exists(os.path.join(actual_path, "deno.json")) or
+            os.path.exists(os.path.join(actual_path, "deno.jsonc")) or
+            os.path.exists(os.path.join(actual_path, "deps.ts"))
+        )
+        has_bun = (
+            os.path.exists(os.path.join(actual_path, "bun.lockb")) or
+            os.path.exists(os.path.join(actual_path, "bunfig.toml"))
+        )
+
+        # Deep signal: scan .ts files for runtime serve calls
+        if not has_deno and not has_bun:
+            try:
+                _deno_bun_entries = os.listdir(actual_path)
+            except OSError:
+                _deno_bun_entries = []
+            for fname in _deno_bun_entries:
+                if fname.endswith(".ts") or fname.endswith(".js"):
+                    try:
+                        fpath = os.path.join(actual_path, fname)
+                        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                            snippet = f.read(2000)
+                        if "Deno.serve(" in snippet or "Deno.listen(" in snippet:
+                            has_deno = True
+                            break
+                        if "Bun.serve(" in snippet:
+                            has_bun = True
+                            break
+                    except Exception:
+                        pass
+
         results["has_package_json"] = has_package_json
         results["has_requirements_txt"] = has_requirements_txt
         results["has_manage_py"] = has_manage_py
@@ -627,6 +659,8 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             and not has_package_json
             and not has_requirements_txt
             and not has_manage_py
+            and not has_deno
+            and not has_bun
         )
 
         if results["static_only"]:
@@ -636,6 +670,28 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             results["port"] = 80
             results["build_command"] = None
             results["start_command"] = None
+
+        if has_deno and not has_package_json:
+            results["runtime"] = "denoland/deno:latest"
+            _DENO_CANDIDATES = ["main.ts", "server.ts", "index.ts", "app.ts", "mod.ts"]
+            deno_entry = next(
+                (f for f in _DENO_CANDIDATES
+                 if os.path.exists(os.path.join(actual_path, f))),
+                "main.ts"  # fallback if none found
+            )
+            results["start_command"] = (
+                f"deno run --allow-net --allow-env {deno_entry}"
+            )
+
+        if has_bun and not has_package_json:
+            results["runtime"] = "oven/bun:latest"
+            _BUN_CANDIDATES = ["index.ts", "server.ts", "main.ts", "app.ts", "index.js"]
+            bun_entry = next(
+                (f for f in _BUN_CANDIDATES
+                 if os.path.exists(os.path.join(actual_path, f))),
+                "index.ts"  # fallback if none found
+            )
+            results["start_command"] = f"bun run {bun_entry}"
 
         
         # Dependencies (root + nested subprojects like client/server)
@@ -709,6 +765,11 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             results.get("env_variables", []),
             base_port=results.get("port")
         )
+
+        project_backend_port = ports_info.get("backend_port")
+        project_frontend_port = ports_info.get("frontend_port")
+        project_backend_port_source = ports_info.get("backend_port_source") or "unknown"
+        project_frontend_port_source = ports_info.get("frontend_port_source") or "unknown"
         
         results["database"] = db_info.get("primary", "Unknown")
         results["databases"] = db_info.get("all", [])
@@ -722,13 +783,16 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         else:
             results["database_port"] = db_info.get("port")
         
-        if ports_info.get("backend_port") is not None:
-            results["backend_port"] = ports_info["backend_port"]
-            # Keep existing 'port' field as backend port for backwards compatibility
-            results["port"] = ports_info["backend_port"]
+        # Seed top-level ports only when project-level signal is explicit.
+        # Service-level inference remains the primary source of truth.
+        if project_backend_port is not None and project_backend_port_source in ("env", "source", "compose"):
+            results["backend_port"] = project_backend_port
+            results["port"] = project_backend_port  # backwards compatibility
+            results["backend_port_source"] = project_backend_port_source
         
-        if ports_info.get("frontend_port") is not None:
-            results["frontend_port"] = ports_info["frontend_port"]
+        if project_frontend_port is not None and project_frontend_port_source in ("env", "source", "compose"):
+            results["frontend_port"] = project_frontend_port
+            results["frontend_port_source"] = project_frontend_port_source
         
         if "docker_backend_ports" in ports_info:
             results["docker_backend_ports"] = ports_info.get("docker_backend_ports")
@@ -761,18 +825,45 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         except Exception:
             results["services"] = []
 
-        # Propagate resolved framework into the backend/monolith service that matches actual_path.
+        # Prefer backend/monolith service path for runtime image inference.
+        # This avoids relying only on root package.json when services live in subfolders.
+        backend_service_for_runtime = next(
+            (s for s in results.get("services", []) if s.get("type") in ("backend", "monolith")),
+            None,
+        )
+        if backend_service_for_runtime:
+            svc_rel = str(backend_service_for_runtime.get("path", ".") or ".")
+            svc_rel_clean = svc_rel.strip("/\\")
+            svc_abs = actual_path if svc_rel_clean in ("", ".") else os.path.join(actual_path, svc_rel_clean.replace("/", os.sep))
+            svc_lang = backend_service_for_runtime.get("language") or results.get("language")
+            svc_fw = backend_service_for_runtime.get("framework") or results.get("framework")
+            svc_runtime_info = get_runtime_info(svc_lang, svc_fw, svc_abs)
+            if svc_runtime_info.get("runtime"):
+                results["runtime"] = svc_runtime_info["runtime"]
+
+        # Prefer per-service backend/monolith runtime command hints over root-level defaults.
+        for svc in results.get("services", []):
+            if svc.get("type") not in ("backend", "monolith"):
+                continue
+            if svc.get("start_command"):
+                results["start_command"] = svc["start_command"]
+            if svc.get("entry_point"):
+                results["entry_point"] = svc["entry_point"]
+            if svc.get("start_command") or svc.get("entry_point"):
+                break
+
+        # Propagate resolved framework into the selected Node backend/monolith service.
         resolved_framework = results.get("framework")
-        if resolved_framework and resolved_framework != "Unknown":
-            for svc in results.get("services", []):
-                if svc.get("type") not in ("backend", "monolith"):
-                    continue
-                if svc.get("language") == "Python":
-                    continue
-                svc_path = svc.get("path", ".").strip("/\\").replace("\\", "/")
-                if svc_path in ("", "."):
-                    svc["framework"] = resolved_framework
-                    break
+        if (
+            resolved_framework
+            and resolved_framework != "Unknown"
+            and backend_service_for_runtime
+            and backend_service_for_runtime.get("type") in ("backend", "monolith")
+            and backend_service_for_runtime.get("language") != "Python"
+        ):
+            current_framework = backend_service_for_runtime.get("framework")
+            if not current_framework or current_framework == "Unknown":
+                backend_service_for_runtime["framework"] = resolved_framework
         
         # =======================================================================
         # PORT CONSOLIDATION: Copy service ports to metadata for consistency
@@ -786,21 +877,33 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             
             if svc_type in ("backend", "monolith") and svc_port:
                 # Only override if service port came from a reliable source
-                if svc_port_source in ("env", "source"):
+                if svc_port_source in ("env", "source", "compose"):
                     print(f"🔧 Consolidating: backend_port = {svc_port} (from {svc_port_source})")
                     results["backend_port"] = svc_port
                     results["port"] = svc_port  # backwards compat
-                elif results.get("backend_port") is None:
-                    # Use service port as fallback if no port detected yet
-                    results["backend_port"] = svc_port
-                    results["port"] = svc_port
+                    results["backend_port_source"] = f"service_{svc_port_source}"
             
             elif svc_type == "frontend" and svc_port:
-                if svc_port_source in ("env", "source", "vite_default", "cra_default"):
+                if svc_port_source in (
+                    "env", "source", "vite_default", "cra_default",
+                    "next_default", "vue_default", "angular_default",
+                ):
                     print(f"🔧 Consolidating: frontend_port = {svc_port} (from {svc_port_source})")
                     results["frontend_port"] = svc_port
-                elif results.get("frontend_port") is None:
+                    results["frontend_port_source"] = f"service_{svc_port_source}"
+                elif svc_port_source == "default" and results.get("frontend_port") is None:
                     results["frontend_port"] = svc_port
+                    results["frontend_port_source"] = "service_default"
+
+        # Fallback to project-level inference only when service-level did not produce a value.
+        if results.get("backend_port") is None and project_backend_port is not None:
+            results["backend_port"] = project_backend_port
+            results["port"] = project_backend_port
+            results["backend_port_source"] = f"project_{project_backend_port_source}"
+
+        if results.get("frontend_port") is None and project_frontend_port is not None:
+            results["frontend_port"] = project_frontend_port
+            results["frontend_port_source"] = f"project_{project_frontend_port_source}"
         
         # =======================================================================
         # CLOUD DATABASE: Clear database_port if database is cloud
@@ -815,6 +918,8 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         # CONSISTENCY RECONCILIATION PASS
         # Enforce final coherence between language/framework/services/database
         # =======================================================================
+        pre_consistency_language = results.get("language")
+        pre_consistency_framework = results.get("framework")
         consistency_warnings: List[str] = []
 
         if (
@@ -837,6 +942,36 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             )
 
         services = results.get("services", [])
+        if (
+            results.get("language") != pre_consistency_language
+            or results.get("framework") != pre_consistency_framework
+        ):
+            refreshed_runtime = get_runtime_info(
+                results.get("language", "Unknown"),
+                results.get("framework", "Unknown"),
+                actual_path,
+            )
+            if refreshed_runtime.get("runtime"):
+                results["runtime"] = refreshed_runtime["runtime"]
+
+            backend_runtime_service = next(
+                (s for s in services if s.get("type") in ("backend", "monolith")),
+                None,
+            )
+            if backend_runtime_service:
+                svc_rel = str(backend_runtime_service.get("path", ".") or ".")
+                svc_rel_clean = svc_rel.strip("/\\")
+                svc_abs = (
+                    actual_path
+                    if svc_rel_clean in ("", ".")
+                    else os.path.join(actual_path, svc_rel_clean.replace("/", os.sep))
+                )
+                svc_lang = backend_runtime_service.get("language") or results.get("language")
+                svc_fw = backend_runtime_service.get("framework") or results.get("framework")
+                svc_runtime = get_runtime_info(svc_lang, svc_fw, svc_abs)
+                if svc_runtime.get("runtime"):
+                    results["runtime"] = svc_runtime["runtime"]
+
         frontend_only = bool(services) and all(s.get("type") == "frontend" for s in services)
         results["missing_backend"] = frontend_only
         if frontend_only:
@@ -898,7 +1033,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             results["deploy_warning"] = None
         
         # Deduplicate detected_files
-        results["detected_files"] = list(set(results["detected_files"]))
+        results["detected_files"] = sorted(set(results["detected_files"]))
 
         # Safe debug print
         try:

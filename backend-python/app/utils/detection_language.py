@@ -126,7 +126,7 @@ def parse_dependencies_file(file_path: str, file_type: str) -> List[str]:
             else:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
-                deps.extend(re.findall(r'(?m)^name\\s*=\\s*\"([^\"]+)\"\\s*$', content))
+                deps.extend(re.findall(r'(?m)^name\s*=\s*"([^"]+)"\s*$', content))
             dependencies = deps
 
         elif file_type == "composer.json":

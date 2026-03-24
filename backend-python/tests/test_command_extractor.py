@@ -72,10 +72,23 @@ class TestExtractNodejsCommands(unittest.TestCase):
         pkg_content = {"main": "index.js", "dependencies": {}}
         with open(os.path.join(self.test_dir, "package.json"), "w") as f:
             json.dump(pkg_content, f)
+        with open(os.path.join(self.test_dir, "index.js"), "w", encoding="utf-8") as f:
+            f.write("console.log('ok')")
 
         result = extract_nodejs_commands(self.test_dir)
         self.assertEqual(result["entry_point"], "index.js")
         self.assertEqual(result["start_command"], "node index.js")
+
+    def test_main_missing_file_not_used(self):
+        """main field pointing to missing file should not be accepted."""
+        pkg_content = {"main": "dist/server.js", "dependencies": {}}
+        with open(os.path.join(self.test_dir, "package.json"), "w") as f:
+            json.dump(pkg_content, f)
+        with open(os.path.join(self.test_dir, "server.js"), "w", encoding="utf-8") as f:
+            f.write("console.log('ok')")
+
+        result = extract_nodejs_commands(self.test_dir)
+        self.assertEqual(result["entry_point"], "server.js")
 
     def test_detect_vite_build_output(self):
         """TC034: Verify Vite project uses 'dist' as build output."""
@@ -286,15 +299,17 @@ class TestExtractDatabaseInfo(unittest.TestCase):
         result = extract_database_info(self.test_dir, detected_db="mongodb")
         self.assertEqual(result["db_type"], "mongodb")
         self.assertTrue(result["needs_container"])
-        self.assertEqual(result["env_var_name"], "MONGO_URI=mongodb://mongo:27017/app")
+        self.assertEqual(result["env_var_name"], "MONGO_URI")
+        self.assertEqual(result["connection_url"], "mongodb://mongo:27017/app")
 
     def test_synthesizes_postgresql_default_env(self):
         result = extract_database_info(self.test_dir, detected_db="postgresql")
         self.assertEqual(result["db_type"], "postgresql")
         self.assertTrue(result["needs_container"])
+        self.assertEqual(result["env_var_name"], "DATABASE_URL")
         self.assertEqual(
-            result["env_var_name"],
-            "DATABASE_URL=postgresql://postgres:postgres@postgres:5432/app",
+            result["connection_url"],
+            "postgresql://postgres:postgres@postgres:5432/app",
         )
 
 

@@ -192,6 +192,17 @@ FRONTEND_DEPS = {
     "@vue/cli-service", "gatsby", "@sveltejs/kit",
 }
 
+WORKER_DEPS = {
+    "celery", "dramatiq", "rq", "huey",          # Python workers
+    "bull", "bullmq", "bee-queue", "agenda",      # Node workers
+    "amqplib", "amqp", "kafkajs", "kafka-node",  # Message queue clients
+}
+
+DB_DRIVER_ONLY_DEPS = {
+    "pg", "pg-promise", "mysql2", "mongoose",
+    "pymongo", "psycopg2", "asyncpg",
+}
+
 SKIP_DIRS = {
     "node_modules", ".git", "__pycache__", "dist", "build",
     ".next", "coverage", "test", "tests", ".cache",

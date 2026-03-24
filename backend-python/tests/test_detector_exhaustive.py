@@ -679,6 +679,14 @@ class TestFullstackStructure:
         result = _detect_fullstack_structure(str(tmp_path))
         assert result["is_fullstack"] is False
 
+    def test_detects_nested_structure_with_depth_three(self, tmp_path):
+        _write(tmp_path / "repo" / "apps" / "backend" / "package.json", "{}")
+        _write(tmp_path / "repo" / "apps" / "frontend" / "package.json", "{}")
+        result = _detect_fullstack_structure(str(tmp_path))
+        assert result["is_fullstack"] is True
+        assert result["has_backend"] is True
+        assert result["has_frontend"] is True
+
 
 class TestInferServiceType:
     """_infer_service_type: classify service by deps then name heuristic (Fix 4)."""

@@ -199,6 +199,13 @@ class TestEntryPointMainFieldFallback:
         r = extract_nodejs_commands(str(tmp_path))
         assert r["entry_point"] == "index.js"
 
+    def test_main_missing_build_artifact_falls_back_to_real_entry(self, tmp_path):
+        """Missing main artifact should not be accepted as entry_point."""
+        _pkg(tmp_path, "api", deps={"express": "4"}, main="dist/server.js")
+        _write(tmp_path / "server.js", "")
+        r = extract_nodejs_commands(str(tmp_path))
+        assert r["entry_point"] == "server.js"
+
 
 class TestEntryPointFilesystemFallback:
     """No start script, no main field — scans filesystem for common entry files."""
@@ -373,6 +380,13 @@ class TestPortFromSourceCode:
         r = extract_port_from_project(str(tmp_path), language="JavaScript")
         assert r["port"] == 7000
 
+    def test_recursive_scan_ignores_frontend_config_files(self, tmp_path):
+        """Recursive scan should ignore config-file port hints."""
+        _write(tmp_path / "api.js", "app.listen(5050)")
+        _write(tmp_path / "vite.config.js", "export default { server: { port: 3000 } }")
+        r = extract_port_from_project(str(tmp_path), language="JavaScript")
+        assert r["port"] == 5050
+
     def test_dynamic_port_not_detected(self, tmp_path):
         """app.listen(PORT) with only variable — no hardcoded port visible."""
         _write(tmp_path / "server.js",
@@ -467,17 +481,26 @@ class TestFrontendPortDetection:
         assert r["port"] == 3333
 
     def test_env_port_for_frontend(self, tmp_path):
-        """Frontend PORT in .env."""
+        """Generic PORT in .env should not override frontend defaults."""
         _pkg(tmp_path, "web", dev_deps={"vite": "5"})
         _write(tmp_path / ".env", "PORT=8888")
         r = extract_frontend_port(str(tmp_path))
-        # vite.config not found → checks .env → finds PORT=8888
-        assert r["port"] == 8888
+        assert r["port"] == 5173
+        assert r["source"] == "vite_default"
+
+    def test_env_frontend_keys_override_generic_port(self, tmp_path):
+        """Frontend-specific env keys should override generic PORT."""
+        _pkg(tmp_path, "web", dev_deps={"vite": "5"})
+        _write(tmp_path / ".env", "PORT=8000\nVITE_PORT=5173\n")
+        r = extract_frontend_port(str(tmp_path))
+        assert r["port"] == 5173
+        assert r["source"] == "env"
 
     def test_no_package_json_defaults(self, tmp_path):
-        """No package.json → default 3000."""
+        """No package.json -> unknown frontend port (caller applies fallback)."""
         r = extract_frontend_port(str(tmp_path))
-        assert r["port"] == 3000
+        assert r["port"] is None
+        assert r["source"] == "default"
 
 
 # ═══════════════════════════════════════════════════════════════════════

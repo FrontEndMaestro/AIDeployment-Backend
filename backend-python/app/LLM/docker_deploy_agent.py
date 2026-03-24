@@ -267,7 +267,11 @@ def _format_metadata(metadata: Dict) -> str:
     if start_cmd and not has_service_entry_points:
         lines.append(f"START_COMMAND: {start_cmd}")
     if entry_point and not has_service_entry_points:
-        lines.append(f"ENTRY_POINT: {entry_point} ← USE IN: CMD [\"node\", \"{entry_point}\"]")
+        meta_lang = str(metadata.get("language", "")).lower()
+        if meta_lang == "python":
+            lines.append(f"ENTRY_POINT: {entry_point} ← USE IN: CMD [\"python\", \"{entry_point}\"]")
+        else:
+            lines.append(f"ENTRY_POINT: {entry_point} ← USE IN: CMD [\"node\", \"{entry_point}\"]")
     elif has_service_entry_points:
         # Show the service entry_points for clarity
         backend_entries = [f"{svc.get('name')}: {svc.get('entry_point')}" 
@@ -374,13 +378,21 @@ def build_deploy_message(
             svc_line = f"- name: {svc.get('name', 'unknown')}, path: {svc.get('path', '.')}, type: {svc.get('type', 'unknown')}"
             
             # Include port for all services (CRITICAL for correct EXPOSE and ports)
-            if svc.get('port'):
+            if svc.get('type') == 'frontend':
+                host_port = svc.get('dev_port') or svc.get('port') or 3000
+                svc_line += f", PORT: 80 (nginx container), host_port: {host_port} (USE: \"{host_port}:80\")"
+            elif svc.get('port'):
                 port_src = svc.get('port_source', 'default')
                 svc_line += f", PORT: {svc.get('port')} (from {port_src} - USE THIS VALUE!)"
             
             # Include entry_point for backend services (CRITICAL for correct CMD path)
             if svc.get('entry_point'):
-                svc_line += f", entry_point: {svc.get('entry_point')} (USE THIS IN CMD: node {svc.get('entry_point')})"
+                svc_lang = str(svc.get("language", "")).lower()
+                if svc_lang == "python":
+                    cmd_hint = f"python {svc.get('entry_point')}"
+                else:
+                    cmd_hint = f"node {svc.get('entry_point')}"
+                svc_line += f", entry_point: {svc.get('entry_point')} (USE THIS IN CMD: {cmd_hint})"
             
             # Include build_output for frontend services (CRITICAL for correct COPY path)
             if svc.get('build_output'):

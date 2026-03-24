@@ -6,7 +6,10 @@ Extracted from detector.py to reduce its size.
 import os
 import json
 import re
-import yaml
+try:
+    import yaml
+except ImportError:
+    yaml = None
 from collections import Counter
 from typing import Dict, List, Tuple, Optional
 
@@ -23,8 +26,8 @@ def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
         "backend_path": None,
         "frontend_path": None,
     }
-    _BE_TOKENS = ("backend", "server", "api", "app")
-    _FE_TOKENS = ("frontend", "client", "web", "ui")
+    _BE_TOKENS = ("backend", "server", "api", "rest-api", "api-server", "backend-api")
+    _FE_TOKENS = ("frontend", "client", "web", "ui", "webapp", "frontend-app", "client-app")
 
     def _matches(folder_name: str, token: str) -> bool:
         # Keep short tokens strict to avoid cross-classification noise.
@@ -33,8 +36,12 @@ def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
         return folder_name == token or token in folder_name
     
     for root, dirs, files in os.walk(project_path):
-        depth = root.replace(project_path, '').count(os.sep)
-        if depth > 2:
+        try:
+            rel = os.path.relpath(root, project_path)
+            depth = 0 if rel == "." else len(rel.split(os.sep))
+        except ValueError:
+            continue  # different drive on Windows — skip
+        if depth > 5:
             continue
         
         for folder in dirs:
@@ -67,60 +74,69 @@ def _scan_js_for_port_hint(service_path: str, max_files: int = 50) -> Optional[i
     Returns the first reasonable port it finds, or None.
     """
     exts = {".js", ".jsx", ".ts", ".tsx"}
-    patterns = [
-        # process.env.PORT || 5050
-        re.compile(r"process\.env\.PORT\s*\|\|\s*(\d{2,5})"),
-        # generic 'PORT ... 5050'
-        re.compile(r"\bPORT\b[^;\n]*\b(\d{2,5})\b"),
-        # app.listen(5050) / listen(5050)
-        re.compile(r"\blist(?:en)?\s*\(\s*(\d{2,5})")
+    priority_patterns = [
+        re.compile(r"\.listen\s*\(\s*(\d{2,5})\s*[,)]", re.IGNORECASE),
+        re.compile(r"process\.env\.PORT\s*\|\|\s*(\d{2,5})", re.IGNORECASE),
+        re.compile(r"process\.env\.\w+\s*\|\|\s*(\d{2,5})", re.IGNORECASE),
+        re.compile(r"(?:const|let|var)\s+PORT\s*=\s*(\d{2,5})", re.IGNORECASE),
     ]
-    
-    ports: List[int] = []
-    files_scanned = 0
-    
-    for root, dirs, files in os.walk(service_path):
-        dirs[:] = [
-            d for d in dirs
-            if d not in ["node_modules", "dist", "build", ".next", ".vite", ".git"]
-        ]
-        
-        for file in files:
-            if files_scanned >= max_files:
-                break
-            
-            _, ext = os.path.splitext(file)
-            if ext.lower() not in exts:
-                continue
-            
-            file_path = os.path.join(root, file)
-            try:
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read(10000)
-            except Exception:
-                files_scanned += 1
-                continue
-            
-            for pat in patterns:
-                for m in pat.finditer(content):
-                    # last non-None group first
-                    for g in reversed(m.groups()):
-                        if g and g.isdigit():
+    fallback_patterns = [
+        re.compile(r"port\s*:\s*(\d{2,5})", re.IGNORECASE),
+    ]
+
+    ignore_name_parts = (
+        ".test.", ".spec.",
+        "vite.config", "webpack.config", "next.config", "jest.config",
+    )
+
+    def _scan_with(patterns: List[re.Pattern]) -> Optional[int]:
+        files_scanned = 0
+        for root, dirs, files in os.walk(service_path):
+            dirs[:] = [
+                d for d in dirs
+                if d not in ["node_modules", "dist", "build", ".next", ".vite", ".git"]
+            ]
+
+            for file in files:
+                if files_scanned >= max_files:
+                    break
+
+                _, ext = os.path.splitext(file)
+                if ext.lower() not in exts:
+                    continue
+
+                file_lower = file.lower()
+                if any(part in file_lower for part in ignore_name_parts):
+                    continue
+
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read(10000)
+                except Exception:
+                    files_scanned += 1
+                    continue
+
+                for pat in patterns:
+                    for m in pat.finditer(content):
+                        for g in reversed(m.groups()):
+                            if not (g and g.isdigit()):
+                                continue
                             p = int(g)
                             if 1024 <= p <= 65535:
-                                ports.append(p)
-                                break
-                    if ports:
-                        break
-                if ports:
-                    break
-            
-            files_scanned += 1
-        
-        if files_scanned >= max_files:
-            break
-    
-    return ports[0] if ports else None
+                                return p
+
+                files_scanned += 1
+
+            if files_scanned >= max_files:
+                break
+        return None
+
+    port = _scan_with(priority_patterns)
+    if port is not None:
+        return port
+
+    return _scan_with(fallback_patterns)
 
 
 def _detect_port_from_package_json(project_path: str, prefer_frontend: bool = False) -> Optional[int]:
@@ -396,12 +412,18 @@ def _classify_docker_service(name: str) -> str:
     """
     n = name.lower()
 
-    if any(k in n for k in ["front", "client", "web", "ui","public"]):
-        return "frontend"
-    if any(k in n for k in ["back", "api", "server", "app"]):
-        return "backend"
-    if any(k in n for k in ["mongo", "mysql", "postgres", "pgsql", "redis", "db"]):
+    FRONTEND_EXACT = {"frontend", "client", "web", "ui", "webapp", "react"}
+    FRONTEND_SUBSTR = ["front", "client", "ui"]
+    BACKEND_EXACT = {"backend", "api", "server", "express", "node"}
+    BACKEND_SUBSTR = ["back", "api", "server"]
+    DB_KEYS = ["mongo", "mysql", "postgres", "pgsql", "redis", "db"]
+
+    if any(k in n for k in DB_KEYS):
         return "database"
+    if n in FRONTEND_EXACT or any(k in n for k in FRONTEND_SUBSTR):
+        return "frontend"
+    if n in BACKEND_EXACT or any(k in n for k in BACKEND_SUBSTR):
+        return "backend"
     return "other"
 
 
@@ -437,6 +459,8 @@ def detect_ports_for_project(
 
     backend_port: Optional[int] = None
     frontend_port: Optional[int] = None
+    backend_port_source: Optional[str] = None
+    frontend_port_source: Optional[str] = None
 
     # ---- read env key/values at the project root ----
     root_env_kv = _read_env_key_values(project_path)
@@ -463,7 +487,7 @@ def detect_ports_for_project(
         """
         Given a mapping of env key -> value, extract:
           - backend_env_port: from BACKEND_PORT/SERVER_PORT/API_PORT
-          - frontend_env_port: from FRONTEND_PORT/CLIENT_PORT/VITE_PORT/REACT_APP_PORT
+          - frontend_env_port: from FRONTEND_PORT/CLIENT_PORT/VITE_PORT/REACT_APP_PORT/NEXT_PUBLIC_PORT/VITE_DEV_PORT
           - generic_env_port: from PORT
         """
         backend_env_port: Optional[int] = None
@@ -483,7 +507,10 @@ def detect_ports_for_project(
                 continue
 
             # explicit frontend hints
-            if ku in ("FRONTEND_PORT", "CLIENT_PORT", "VITE_PORT", "REACT_APP_PORT"):
+            if ku in (
+                "FRONTEND_PORT", "CLIENT_PORT", "VITE_PORT",
+                "REACT_APP_PORT", "NEXT_PUBLIC_PORT", "VITE_DEV_PORT",
+            ):
                 if frontend_env_port is None:
                     frontend_env_port = p
                 continue
@@ -525,43 +552,56 @@ def detect_ports_for_project(
             # Frontend-specific env: frontend/.env overrides root .env
             if frontend_path:
                 frontend_env_kv = _read_env_key_values(frontend_path)
-                _, f_frontend_env_port, _ = _extract_env_ports(frontend_env_kv)
+                _, f_frontend_env_port, f_generic_env_port = _extract_env_ports(frontend_env_kv)
 
                 if f_frontend_env_port is not None:
                     frontend_env_port = f_frontend_env_port
-                # We intentionally do NOT use generic PORT for frontend in fullstack,
-                # to keep the original semantics.
+                elif f_generic_env_port is not None:
+                    frontend_env_port = f_generic_env_port
 
             # Backend: env override > package.json + code scan > generic PORT
             if backend_env_port is not None:
                 backend_port = backend_env_port
+                backend_port_source = "env"
             else:
                 if fullstack.get("has_backend") and backend_path:
-                    backend_port = _detect_port_from_package_json(
+                    pkg_port = _detect_port_from_package_json(
                         backend_path, prefer_frontend=False
                     )
+                    if pkg_port is not None:
+                        backend_port = pkg_port
+                        backend_port_source = "package"
                     code_port = _scan_js_for_port_hint(backend_path)
                     if code_port is not None:
                         backend_port = code_port
+                        backend_port_source = "source"
                 else:
-                    backend_port = _detect_port_from_package_json(
+                    pkg_port = _detect_port_from_package_json(
                         project_path, prefer_frontend=False
                     )
+                    if pkg_port is not None:
+                        backend_port = pkg_port
+                        backend_port_source = "package"
                     code_port = _scan_js_for_port_hint(project_path)
                     if code_port is not None:
                         backend_port = code_port
+                        backend_port_source = "source"
 
                 if backend_port is None and generic_env_port is not None:
                     backend_port = generic_env_port
+                    backend_port_source = "env"
 
             # Frontend: env override > package.json (frontend preference)
             if fullstack.get("has_frontend") and frontend_path:
                 if frontend_env_port is not None:
                     frontend_port = frontend_env_port
+                    frontend_port_source = "env"
                 else:
                     frontend_port = _detect_port_from_package_json(
                         frontend_path, prefer_frontend=True
                     )
+                    if frontend_port is not None:
+                        frontend_port_source = "package"
             # we do NOT use generic PORT for frontend in fullstack case
 
         # ---- SINGLE JS/TS PROJECT (no separate client/server folders) ----
@@ -573,49 +613,67 @@ def detect_ports_for_project(
                 # FRONTEND: env > generic PORT > package.json + JS scan
                 if frontend_env_port is not None:
                     frontend_port = frontend_env_port
+                    frontend_port_source = "env"
                 elif generic_env_port is not None:
                     frontend_port = generic_env_port
+                    frontend_port_source = "env"
                 else:
-                    frontend_port = _detect_port_from_package_json(
+                    pkg_port = _detect_port_from_package_json(
                         project_path, prefer_frontend=True
                     )
+                    if pkg_port is not None:
+                        frontend_port = pkg_port
+                        frontend_port_source = "package"
                     code_port = _scan_js_for_port_hint(project_path)
                     if code_port is not None:
                         frontend_port = code_port
+                        frontend_port_source = "source"
 
                 # BACKEND: only if explicitly defined in env
                 if backend_env_port is not None:
                     backend_port = backend_env_port
+                    backend_port_source = "env"
                 else:
                     backend_port = None
+                    backend_port_source = None
 
             else:
                 # Non-React/Next single JS/TS: treat as backend app
                 # Backend: env > package.json + JS scan > generic PORT
                 if backend_env_port is not None:
                     backend_port = backend_env_port
+                    backend_port_source = "env"
                 else:
-                    backend_port = _detect_port_from_package_json(
+                    pkg_port = _detect_port_from_package_json(
                         project_path, prefer_frontend=False
                     )
+                    if pkg_port is not None:
+                        backend_port = pkg_port
+                        backend_port_source = "package"
                     code_port = _scan_js_for_port_hint(project_path)
                     if code_port is not None:
                         backend_port = code_port
+                        backend_port_source = "source"
 
                     if backend_port is None and generic_env_port is not None:
                         backend_port = generic_env_port
+                        backend_port_source = "env"
 
                 # Frontend only if explicitly given in env
                 if frontend_env_port is not None:
                     frontend_port = frontend_env_port
+                    frontend_port_source = "env"
 
     else:
         # ---- NON JS/TS PROJECTS ----
         detected = _scan_code_for_ports(project_path)
         if detected:
             backend_port = detected
+            backend_port_source = "source"
         else:
             backend_port = base_port
+            if backend_port is not None:
+                backend_port_source = "base"
             if backend_port is None:
                 framework_default_ports = {
                     "Express.js": 3000,
@@ -636,16 +694,20 @@ def detect_ports_for_project(
                 backend_port = framework_default_ports.get(framework)
                 if backend_port is None:
                     backend_port = default_ports.get(language, 8000)
+                backend_port_source = "default"
 
         # Env overrides for backend
         if backend_env_port is not None:
             backend_port = backend_env_port
+            backend_port_source = "env"
         elif generic_env_port is not None:
             backend_port = generic_env_port
+            backend_port_source = "env"
 
         # Allow explicit frontend env even in non-JS projects (edge multi-service)
         if frontend_env_port is not None:
             frontend_port = frontend_env_port
+            frontend_port_source = "env"
 
     # ---- Docker-compose ports ----
     docker_service_ports = _parse_docker_compose_ports(project_path)
@@ -702,13 +764,17 @@ def detect_ports_for_project(
     # Only use compose HOST ports if we did not find a better hint earlier.
     if backend_port is None and docker_backend_ports:
         backend_port = docker_backend_ports[0]
+        backend_port_source = "compose"
 
     if frontend_port is None and docker_frontend_ports:
         frontend_port = docker_frontend_ports[0]
+        frontend_port_source = "compose"
 
     return {
         "backend_port": backend_port,
         "frontend_port": frontend_port,
+        "backend_port_source": backend_port_source,
+        "frontend_port_source": frontend_port_source,
 
         # HOST ports from docker-compose (what you bind on the machine)
         "docker_backend_ports": docker_backend_ports or None,

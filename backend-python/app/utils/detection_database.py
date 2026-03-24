@@ -140,19 +140,26 @@ def detect_databases(
     
     # read env key/values for DB hints (root + nested backend/frontend .env files)
     env_kv_root = _read_env_key_values(project_path)
-    env_kv: Dict[str, str] = dict(env_kv_root)
+    env_kv: Dict[str, str] = {}
 
     try:
         fullstack = _detect_fullstack_structure(project_path)
         backend_path = fullstack.get("backend_path")
         frontend_path = fullstack.get("frontend_path")
 
-        if backend_path:
-            env_kv.update(_read_env_key_values(backend_path) or {})
         if frontend_path:
             env_kv.update(_read_env_key_values(frontend_path) or {})
+        if backend_path:
+            env_kv.update(_read_env_key_values(backend_path) or {})
+        # Root env fills in any keys not found in either subdir
+        for k, v in env_kv_root.items():
+            env_kv.setdefault(k, v)
     except Exception as e:
         print(f"Error reading nested .env files for DB detection: {e}")
+
+    # Guarantee root env is always present regardless of try outcome
+    for k, v in env_kv_root.items():
+        env_kv.setdefault(k, v)
 
     # env var keys for DB indicator scoring:
     # - from the original env_vars list (root)

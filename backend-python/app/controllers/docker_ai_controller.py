@@ -264,9 +264,15 @@ async def docker_chat_handler(
         if svc.get("type") == "backend" and not svc.get("entry_point"):
             from ..utils.command_extractor import extract_nodejs_commands
             backend_cmds = extract_nodejs_commands(svc_dir)
-            entry_point = backend_cmds.get("entry_point", "index.js")
-            svc["entry_point"] = entry_point
-            print(f"🔧 Dynamic entry_point detected for {svc.get('name')}: {entry_point}")
+            entry_point = backend_cmds.get("entry_point")
+            if not entry_point:
+                for candidate in ("server.js", "index.js", "app.js", "main.js"):
+                    if os.path.exists(os.path.join(svc_dir, candidate)):
+                        entry_point = candidate
+                        break
+            if entry_point:
+                svc["entry_point"] = entry_point
+                print(f"🔧 Dynamic entry_point detected for {svc.get('name')}: {entry_point}")
     
     # Debug: Print services to verify env_file and entry_point are present
     print(f"📦 Services being sent to LLM: {services}")
@@ -340,8 +346,14 @@ def docker_chat_stream_handler(
         if svc.get("type") == "backend" and not svc.get("entry_point"):
             from ..utils.command_extractor import extract_nodejs_commands
             backend_cmds = extract_nodejs_commands(svc_dir)
-            entry_point = backend_cmds.get("entry_point", "index.js")
-            svc["entry_point"] = entry_point
+            entry_point = backend_cmds.get("entry_point")
+            if not entry_point:
+                for candidate in ("server.js", "index.js", "app.js", "main.js"):
+                    if os.path.exists(os.path.join(svc_dir, candidate)):
+                        entry_point = candidate
+                        break
+            if entry_point:
+                svc["entry_point"] = entry_point
 
     # Yield tokens from streaming LLM
     for chunk in run_docker_deploy_chat_stream(
@@ -397,8 +409,14 @@ async def docker_chat_stream_setup(
         if svc.get("type") == "backend" and not svc.get("entry_point"):
             from ..utils.command_extractor import extract_nodejs_commands
             backend_cmds = extract_nodejs_commands(svc_dir)
-            entry_point = backend_cmds.get("entry_point", "index.js")
-            svc["entry_point"] = entry_point
+            entry_point = backend_cmds.get("entry_point")
+            if not entry_point:
+                for candidate in ("server.js", "index.js", "app.js", "main.js"):
+                    if os.path.exists(os.path.join(svc_dir, candidate)):
+                        entry_point = candidate
+                        break
+            if entry_point:
+                svc["entry_point"] = entry_point
 
     return {
         "project_name": project.get("project_name", "project"),
