@@ -6,7 +6,6 @@ import { LoadingSpinner } from './LoadingSpinner';
 
 interface AWSDeployPanelProps {
   projectId: string;
-  projectName: string;
   onStatusChange?: () => void;
 }
 
@@ -53,7 +52,6 @@ const DB_ENGINES = [
 
 const AWSDeployPanel: React.FC<AWSDeployPanelProps> = ({ 
   projectId, 
-  projectName,
   onStatusChange 
 }) => {
   const [status, setStatus] = useState<AWSStatus | null>(null);

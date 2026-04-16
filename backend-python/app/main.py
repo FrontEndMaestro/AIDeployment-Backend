@@ -31,11 +31,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# In development, allow all localhost origins
+# In development, allow local frontend origins (localhost/127.0.0.1/LAN).
 if settings.ENVIRONMENT == "development":
+    dev_origins = list(dict.fromkeys(settings.ALLOWED_ORIGINS))
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=r"http://localhost:\d+",
+        allow_origins=dev_origins,
+        allow_origin_regex=r"http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

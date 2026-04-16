@@ -1,0 +1,8 @@
+Settings loaded: development mode
+Upload directory: ./uploads
+Extracted directory: ./extracted
+Warning: Docker Hub credentials not set in environment (.env or OS vars)
+MongoDB connected: devops_autopilot
+Application started
+INFO:     127.0.0.1:61704 - "OPTIONS /api/auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61704 - "POST /api/auth/login HTTP/1.1" 500 Internal Server Error
