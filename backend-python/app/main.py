@@ -12,8 +12,7 @@ from .middleware.error_handler import (
     http_exception_handler,
     validation_exception_handler,
 )
-from .routes import analyze, auth, aws_deploy, deploy, docker_ai, extract, upload
-
+from .routes import analyze, auth, aws_deploy, deploy, docker_ai, extract, monitor, upload
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -63,7 +62,7 @@ app.include_router(analyze.router)
 app.include_router(deploy.router)
 app.include_router(docker_ai.router)
 app.include_router(aws_deploy.router)
-
+app.include_router(monitor.router)
 
 @app.get("/")
 async def root():

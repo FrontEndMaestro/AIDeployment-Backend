@@ -3,7 +3,8 @@ import json
 import os
 import tempfile
 import time
-from typing import Dict
+import asyncio
+from typing import Dict, AsyncGenerator
 
 
 def check_kubernetes_connection() -> Dict:
@@ -281,3 +282,108 @@ def cleanup_deployment(deployment_name: str) -> Dict:
             "success": False,
             "message": str(e)
         }
+
+
+async def stream_pod_logs(deployment_name: str) -> AsyncGenerator[str, None]:
+    """Streams live pod logs for a deployment using asyncio subprocess."""
+    # First get the pod name
+    pod_status = get_pod_status(deployment_name)
+    pod_name = pod_status.get("pod_name")
+    
+    if not pod_name:
+        yield "data: {\"type\": \"error\", \"message\": \"No pod found for deployment\"}\n\n"
+        return
+        
+    yield f"data: {{\"type\": \"info\", \"message\": \"Streaming logs for {pod_name}...\"}}\n\n"
+    
+    # Run kubectl logs -f asynchronously so it doesn't block the thread
+    process = await asyncio.create_subprocess_exec(
+        "kubectl", "logs", "-f", pod_name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    
+    try:
+        # Read lines asynchronously
+        while True:
+            # We must handle both stdout and stderr in real-time, but for simplicity primarily stdout
+            line = await process.stdout.readline()
+            if not line:
+                break
+            
+            decoded_line = line.decode('utf-8', errors='replace').strip()
+            # Send as Server-Sent Event (SSE)
+            yield f"data: {{\"type\": \"log\", \"message\": {json.dumps(decoded_line)}}}\n\n"
+            
+    except asyncio.CancelledError:
+        # Client disconnected
+        process.terminate()
+        try:
+            await process.wait()
+        except Exception:
+            pass
+        raise
+        
+    # Check if process exited with an error
+    await process.wait()
+    if process.returncode != 0:
+        err = await process.stderr.read()
+        err_msg = err.decode('utf-8', errors='replace').strip()
+        if err_msg:
+             yield f"data: {{\"type\": \"error\", \"message\": {json.dumps(err_msg)}}}\n\n"
+
+
+def diagnose_pod_health(deployment_name: str) -> Dict:
+    """Gets detailed health info including restarts and current state reasons."""
+    try:
+        cmd = ["kubectl", "get", "pods", "-l", f"app={deployment_name}", "-o", "json"]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout_bytes, _ = process.communicate(timeout=10)
+        
+        if process.returncode != 0:
+            return {"healthy": False, "reason": "Failed to get pod"}
+            
+        pods_data = json.loads(stdout_bytes)
+        if not pods_data.get("items"):
+             return {"healthy": False, "reason": "Pod Not Found", "restart_count": 0}
+             
+        pod = pods_data["items"][0]
+        status = pod.get("status", {})
+        container_statuses = status.get("containerStatuses", [])
+        
+        restart_count = 0
+        state = "Unknown"
+        reason = "None"
+        healthy = False
+        
+        if container_statuses:
+            c_status = container_statuses[0]
+            restart_count = c_status.get("restartCount", 0)
+            state_dict = c_status.get("state", {})
+            
+            if "running" in state_dict:
+                state = "Running"
+                healthy = True
+            elif "waiting" in state_dict:
+                state = "Waiting"
+                reason = state_dict["waiting"].get("reason", "Unknown")
+            elif "terminated" in state_dict:
+                state = "Terminated"
+                reason = state_dict["terminated"].get("reason", "Unknown")
+                
+        # Phase fallback
+        if state == "Unknown":
+            state = status.get("phase", "Unknown")
+            if state == "Running":
+                healthy = True
+
+        return {
+            "healthy": healthy,
+            "state": state,
+            "reason": reason,
+            "restart_count": restart_count,
+            "pod_name": pod["metadata"]["name"],
+            "pod_ip": status.get("podIP")
+        }
+    except Exception as e:
+        return {"healthy": False, "reason": str(e), "restart_count": 0}
