@@ -9,8 +9,9 @@ import {
   DockerfileInfo,
   FileNode,
 } from "../types/api";
+import { MonitoringDashboard } from "../components/MonitoringDashboard";
 
-type DeployMode = "docker" | "aws";
+type DeployMode = "docker" | "aws" | "monitor";
 
 interface ChatMessage {
   role: "user" | "ai";
@@ -592,7 +593,11 @@ export const DeployPage: React.FC = () => {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-3xl font-bold text-white">
-              {deployMode === "docker" ? "🐳 Docker Deploy" : "☁️ AWS Deploy"}
+              {deployMode === "docker" 
+                ? "🐳 Docker Deploy" 
+                : deployMode === "aws" 
+                  ? "☁️ AWS Deploy" 
+                  : "📊 Live Monitoring"}
             </h1>
             <p className="text-gray-400">
               Project: {context.project.project_name} (powered by Llama 3.1)
@@ -620,6 +625,16 @@ export const DeployPage: React.FC = () => {
                 }`}
               >
                 ☁️ AWS
+              </button>
+              <button
+                onClick={() => setDeployMode("monitor")}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                  deployMode === "monitor"
+                    ? "bg-purple-500 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                📊 Monitor
               </button>
             </div>
             <Button variant="secondary" onClick={() => navigate("/dashboard")}>
@@ -716,6 +731,9 @@ export const DeployPage: React.FC = () => {
 
           {/* Center panel: tabs + editor */}
           <div className="lg:col-span-6 flex flex-col space-y-3">
+            {deployMode === "monitor" && projectId ? (
+              <MonitoringDashboard projectId={projectId} />
+            ) : (
             <Card className="p-0 bg-gray-800 border-gray-700 flex flex-col h-full">
               <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
                 <div className="flex flex-wrap gap-2">
@@ -774,6 +792,7 @@ export const DeployPage: React.FC = () => {
                 </div>
               </div>
             </Card>
+            )}
           </div>
 
           {/* Right sidebar: actions + chat */}
