@@ -251,12 +251,12 @@ export const DeployPage: React.FC = () => {
               ...prev,
               {
                 role: "ai",
-                content: `${action} failed, sending logs to Llama 3.1 for analysis...`,
+                content: `${action} failed, sending logs to Docker AI for validation...`,
               },
             ]);
             apiClient
               .sendDockerChat(projectId, {
-                message: `${action} failed. Analyze these logs and fix Dockerfile.`,
+                message: `${action} failed. Validate existing Docker files against these logs and identify the minimal fix. Do not generate full files unless required.`,
                 logs: summary ? summary.split("\n") : undefined,
               })
               .then((resp) =>
@@ -269,8 +269,8 @@ export const DeployPage: React.FC = () => {
                     role: "ai",
                     content:
                       err instanceof Error
-                        ? `Error sending logs to Llama 3.1: ${err.message}`
-                        : "Error sending logs to Llama 3.1",
+                        ? `Error sending logs to Docker AI: ${err.message}`
+                        : "Error sending logs to Docker AI",
                   },
                 ])
               );

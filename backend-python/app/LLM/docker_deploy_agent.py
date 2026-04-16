@@ -1,6 +1,14 @@
+import json
+import os
+import re
 from typing import Dict, List, Optional
 
-from .llm_client import call_llama
+from .llm_client import (
+    call_gemini,
+    call_llama,
+    call_llama_stream,
+    get_docker_llm_provider,
+)
 from ..utils.detection_constants import (
     DEV_SERVER_START_TOKENS,
     PORT_SCHEMA_VERSION,
@@ -983,6 +991,493 @@ def build_deploy_message(
     return "\n\n".join(sections)
 
 
+GEMINI_DOCKER_SYSTEM_PROMPT = """Generate minimal working Docker files from the JSON input only.
+Return only this structure:
+STATUS: Generated
+GENERATED FILES:
+**path/Dockerfile**
+```dockerfile
+...
+```
+**docker-compose.yml**
+```yaml
+...
+```
+Rules:
+- Write one Dockerfile at each app service dockerfile_path.
+- Write docker-compose.yml at the project root.
+- Compose must have services only, no top-level version.
+- Every app service must have image, build, and ports using runtime_port:container_port.
+- Use env_file only when the service has env_file.
+- Add a database container only when database_is_cloud is false and database is MongoDB, PostgreSQL, MySQL, or Redis.
+- Backend/monolith/worker/other Dockerfiles are single-stage and use ENV PORT plus EXPOSE container_port.
+- static_nginx frontend Dockerfiles use builder_runtime as builder, nginx:alpine final stage, and EXPOSE 80.
+- ssr/dev_server frontend Dockerfiles do not use nginx and EXPOSE container_port.
+- COPY paths are relative to each service build context; never prefix COPY with the service path.
+- No placeholders, no comments, no extra prose.
+"""
+
+
+GEMINI_DOCKER_VALIDATION_PROMPT = """Validate existing Docker files from the JSON input and logs.
+Do not generate full files unless the user explicitly asks for regenerated file contents.
+Return only this structure:
+STATUS: Valid | Invalid
+REASON: one concise root cause
+FIXES:
+- minimal actionable fix
+Rules:
+- Use existing_dockerfiles, existing_compose_files, services, and logs.
+- For build context errors, compare compose build.context with service path and dockerfile_path.
+- For build/run/push errors, cite the exact failing service/file when possible.
+- No placeholders, no comments, no extra prose.
+"""
+
+
+def _clean_path(path_value: object) -> str:
+    path = str(path_value or ".").replace("\\", "/").strip()
+    path = re.sub(r"^\./+", "", path)
+    while "//" in path:
+        path = path.replace("//", "/")
+    return path.strip("/") or "."
+
+
+def _expected_dockerfile_path(service: Dict) -> str:
+    svc_path = _clean_path(service.get("path", "."))
+    return "Dockerfile" if svc_path == "." else f"{svc_path}/Dockerfile"
+
+
+def _is_app_service(service: Dict) -> bool:
+    return str(service.get("type", "")).lower() != "database"
+
+
+def _frontend_builder_runtime(metadata: Dict, service: Dict) -> str:
+    candidates = [
+        metadata.get("runtime"),
+        service.get("builder_runtime"),
+        service.get("runtime"),
+    ]
+    for candidate in candidates:
+        runtime = str(candidate or "").strip()
+        if runtime and "nginx" not in runtime.lower() and runtime != "alpine:latest":
+            return runtime
+    return "node:20-alpine"
+
+
+def _minimal_service_for_prompt(metadata: Dict, service: Dict) -> Dict:
+    svc = {
+        "name": service.get("name") or os.path.basename(_clean_path(service.get("path", "."))) or "app",
+        "path": _clean_path(service.get("path", ".")),
+        "type": service.get("type", "other"),
+        "runtime": service.get("runtime"),
+        "runtime_port": service.get("runtime_port"),
+        "container_port": service.get("container_port"),
+        "dockerfile_path": _expected_dockerfile_path(service),
+        "entry_point": service.get("entry_point"),
+        "start_command": service.get("start_command"),
+        "build_output": service.get("build_output"),
+        "frontend_mode": service.get("frontend_mode"),
+        "env_file": service.get("env_file"),
+        "package_manager": service.get("package_manager"),
+        "language": service.get("language"),
+        "framework": service.get("framework"),
+    }
+    if str(service.get("type", "")).lower() == "frontend" and service.get("frontend_mode") == "static_nginx":
+        svc["builder_runtime"] = _frontend_builder_runtime(metadata, service)
+        svc["final_runtime"] = "nginx:alpine"
+        svc.pop("runtime", None)
+    return {key: value for key, value in svc.items() if value not in (None, "", [])}
+
+
+def build_gemini_deploy_message(
+    project_name: str,
+    metadata: Dict,
+    dockerfiles: List[Dict[str, str]],
+    compose_files: List[Dict[str, str]],
+    file_tree: Optional[str],
+    user_message: str,
+    logs: Optional[List[str]] = None,
+    extra_instructions: Optional[str] = None,
+    services: Optional[List[Dict[str, str]]] = None,
+    mode: str = "VALIDATE_EXISTING",
+) -> str:
+    metadata, normalized_services = _normalize_ports_v2_contract(metadata, services)
+    app_services = [svc for svc in normalized_services if _is_app_service(svc)]
+
+    payload = {
+        "schema_version": metadata.get("schema_version", PROMPT_SCHEMA_VERSION),
+        "mode": mode,
+        "project_name": project_name,
+        "database": metadata.get("database"),
+        "database_port": metadata.get("database_port"),
+        "database_is_cloud": metadata.get("database_is_cloud"),
+        "database_env_var": metadata.get("database_env_var"),
+        "services": [_minimal_service_for_prompt(metadata, svc) for svc in app_services],
+        "user_message": user_message,
+    }
+    if dockerfiles:
+        payload["existing_dockerfiles"] = dockerfiles
+    if compose_files:
+        payload["existing_compose_files"] = compose_files
+    if logs:
+        payload["logs"] = logs[-10:]
+    if extra_instructions:
+        payload["extra_instructions"] = extra_instructions
+    return json.dumps(payload, indent=2, ensure_ascii=True)
+
+
+def _response_message(
+    project_name: str,
+    metadata: Dict,
+    dockerfiles: List[Dict[str, str]],
+    compose_files: List[Dict[str, str]],
+    file_tree: Optional[str],
+    user_message: str,
+    logs: Optional[List[str]],
+    extra_instructions: Optional[str],
+    services: Optional[List[Dict[str, str]]],
+    mode: str,
+) -> tuple[str, str]:
+    if get_docker_llm_provider() == "gemini":
+        system_prompt = (
+            GEMINI_DOCKER_SYSTEM_PROMPT
+            if mode == "GENERATE_MISSING"
+            else GEMINI_DOCKER_VALIDATION_PROMPT
+        )
+        return (
+            system_prompt,
+            build_gemini_deploy_message(
+                project_name=project_name,
+                metadata=metadata,
+                dockerfiles=dockerfiles,
+                compose_files=compose_files,
+                file_tree=file_tree,
+                user_message=user_message,
+                logs=logs,
+                extra_instructions=extra_instructions,
+                services=services,
+                mode=mode,
+            ),
+        )
+    return (
+        DOCKER_DEPLOY_SYSTEM_PROMPT,
+        build_deploy_message(
+            project_name=project_name,
+            metadata=metadata,
+            dockerfiles=dockerfiles,
+            compose_files=compose_files,
+            file_tree=file_tree,
+            user_message=user_message,
+            logs=logs,
+            extra_instructions=extra_instructions,
+            services=services,
+            mode=mode,
+        ),
+    )
+
+
+def _normalize_generated_path(path: str) -> str:
+    path = str(path or "").strip().strip("`").replace("\\", "/")
+    path = re.sub(r"^\./+", "", path)
+    path = path.strip("/ ")
+    if not path:
+        return ""
+    normalized = os.path.normpath(path).replace("\\", "/")
+    return "" if normalized.startswith("../") or normalized == ".." or os.path.isabs(normalized) else normalized
+
+
+def parse_generated_docker_files(response_text: str) -> Dict[str, str]:
+    files: Dict[str, str] = {}
+    patterns = [
+        r"\*\*(?P<path>[^*\n]*(?:Dockerfile|docker-compose\.ya?ml))\*\*\s*```(?P<lang>[a-zA-Z0-9_-]*)\s*(?P<content>[\s\S]*?)```",
+        r"(?:^|\n)#+\s*(?P<path>[^\n]*(?:Dockerfile|docker-compose\.ya?ml))\s*```(?P<lang>[a-zA-Z0-9_-]*)\s*(?P<content>[\s\S]*?)```",
+        r"(?:^|\n)(?P<path>[A-Za-z0-9_.\-/\\]+(?:Dockerfile|docker-compose\.ya?ml))\s*```(?P<lang>[a-zA-Z0-9_-]*)\s*(?P<content>[\s\S]*?)```",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, response_text or "", re.IGNORECASE):
+            path = _normalize_generated_path(match.group("path"))
+            content = (match.group("content") or "").strip()
+            if path and content:
+                files[path] = content
+    return files
+
+
+def _compose_path(files: Dict[str, str]) -> Optional[str]:
+    for path in files:
+        if os.path.basename(path).lower() in {"docker-compose.yml", "docker-compose.yaml"}:
+            return path
+    return None
+
+
+def _compose_build_context(value: object) -> str:
+    if isinstance(value, str):
+        return _clean_path(value)
+    if isinstance(value, dict):
+        return _clean_path(value.get("context", "."))
+    return "."
+
+
+def _compose_port_matches(value: object, runtime_port: object, container_port: object) -> bool:
+    expected = f"{runtime_port}:{container_port}"
+    if isinstance(value, str):
+        return value.split("/", 1)[0].strip('"').strip("'") == expected
+    if isinstance(value, dict):
+        published = value.get("published") or value.get("host_port")
+        target = value.get("target") or value.get("container_port")
+        return str(published) == str(runtime_port) and str(target) == str(container_port)
+    return False
+
+
+def _env_file_values(value: object) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [_clean_path(value)]
+    if isinstance(value, list):
+        return [_clean_path(item) for item in value]
+    return []
+
+
+def _is_database_compose_service(name: str, service: Dict) -> bool:
+    joined = f"{name} {service.get('image', '')}".lower()
+    return any(token in joined for token in ("mongo", "postgres", "mysql", "redis", "database", "db"))
+
+
+def _requires_database_container(metadata: Dict) -> bool:
+    database = str(metadata.get("database") or "").strip().lower()
+    if database in {"", "unknown", "sqlite"}:
+        return False
+    supported_local = {"mongodb", "postgresql", "postgres", "mysql", "redis"}
+    return database in supported_local and not bool(metadata.get("database_is_cloud"))
+
+
+def _validate_compose(
+    compose_content: str,
+    metadata: Dict,
+    app_services: List[Dict],
+) -> List[str]:
+    try:
+        import yaml
+    except Exception as exc:
+        return [f"PyYAML is unavailable for compose validation: {exc}"]
+
+    errors: List[str] = []
+    try:
+        data = yaml.safe_load(compose_content) or {}
+    except Exception as exc:
+        return [f"docker-compose.yml is not valid YAML: {exc}"]
+
+    if not isinstance(data, dict):
+        return ["docker-compose.yml must be a YAML object."]
+    if "version" in data:
+        errors.append("docker-compose.yml must not contain a top-level version field.")
+
+    compose_services = data.get("services")
+    if not isinstance(compose_services, dict) or not compose_services:
+        return errors + ["docker-compose.yml must contain a services mapping."]
+
+    expected_names = {str(svc.get("name") or "").strip(): svc for svc in app_services}
+    expected_names = {name: svc for name, svc in expected_names.items() if name}
+
+    for name, svc in expected_names.items():
+        compose_svc = compose_services.get(name)
+        if not isinstance(compose_svc, dict):
+            errors.append(f"docker-compose.yml is missing service '{name}'.")
+            continue
+
+        if "image" not in compose_svc:
+            errors.append(f"compose service '{name}' is missing image.")
+        if "build" not in compose_svc:
+            errors.append(f"compose service '{name}' is missing build.")
+
+        expected_context = _clean_path(svc.get("path", "."))
+        actual_context = _compose_build_context(compose_svc.get("build"))
+        if actual_context != expected_context:
+            errors.append(
+                f"compose service '{name}' build context is '{actual_context}', expected '{expected_context}'."
+            )
+
+        runtime_port = svc.get("runtime_port")
+        container_port = svc.get("container_port")
+        ports = compose_svc.get("ports") or []
+        if runtime_port is not None and container_port is not None:
+            if not any(_compose_port_matches(port, runtime_port, container_port) for port in ports):
+                errors.append(
+                    f"compose service '{name}' must map port {runtime_port}:{container_port}."
+                )
+
+        expected_env_file = svc.get("env_file")
+        if expected_env_file:
+            env_files = _env_file_values(compose_svc.get("env_file"))
+            if _clean_path(expected_env_file) not in env_files:
+                errors.append(f"compose service '{name}' must include env_file {expected_env_file}.")
+
+    database = str(metadata.get("database") or "").strip().lower()
+    if database and database != "unknown":
+        db_services = [
+            name for name, svc in compose_services.items()
+            if isinstance(svc, dict) and name not in expected_names and _is_database_compose_service(name, svc)
+        ]
+        if bool(metadata.get("database_is_cloud")) and db_services:
+            errors.append("docker-compose.yml must not add a database container when database_is_cloud is true.")
+        if _requires_database_container(metadata) and not db_services:
+            errors.append("docker-compose.yml must add a database container when database_is_cloud is false.")
+
+    return errors
+
+
+def _validate_dockerfile(path: str, content: str, service: Dict) -> List[str]:
+    errors: List[str] = []
+    lower = content.lower()
+    from_lines = re.findall(r"^\s*from\s+", content, flags=re.IGNORECASE | re.MULTILINE)
+    svc_type = str(service.get("type", "")).lower()
+    svc_path = _clean_path(service.get("path", "."))
+    container_port = service.get("container_port")
+
+    if not from_lines:
+        errors.append(f"{path} is missing FROM.")
+    if "..." in content or "${" in content:
+        errors.append(f"{path} contains placeholders.")
+    if svc_path != "." and re.search(rf"^\s*COPY\s+\.?/?{re.escape(svc_path)}/", content, flags=re.IGNORECASE | re.MULTILINE):
+        errors.append(f"{path} uses service-path-prefixed COPY even though build context is {svc_path}.")
+    if container_port is not None and not re.search(rf"^\s*EXPOSE\s+{re.escape(str(container_port))}\b", content, flags=re.IGNORECASE | re.MULTILINE):
+        errors.append(f"{path} must EXPOSE {container_port}.")
+
+    if svc_type == "frontend":
+        mode = str(service.get("frontend_mode") or "").lower()
+        if mode == "static_nginx":
+            if len(from_lines) < 2:
+                errors.append(f"{path} static frontend must use a builder stage plus nginx final stage.")
+            if "nginx:alpine" not in lower:
+                errors.append(f"{path} static frontend must use nginx:alpine final stage.")
+            if "copy --from" not in lower:
+                errors.append(f"{path} static frontend must copy build output from builder.")
+            build_output = service.get("build_output")
+            if build_output and f"/app/{build_output}".lower() not in lower:
+                errors.append(f"{path} must copy /app/{build_output}.")
+        else:
+            if "nginx" in lower:
+                errors.append(f"{path} {mode or 'runtime'} frontend must not use nginx.")
+    else:
+        if len(from_lines) > 1:
+            errors.append(f"{path} backend-like service must be single-stage.")
+        if "nginx" in lower:
+            errors.append(f"{path} backend-like service must not use nginx.")
+        entry_point = service.get("entry_point")
+        if entry_point and str(entry_point) not in content:
+            errors.append(f"{path} must reference entry_point {entry_point}.")
+
+    return errors
+
+
+def validate_generated_docker_files(
+    files: Dict[str, str],
+    metadata: Dict,
+    services: Optional[List[Dict]],
+    require_dockerfiles: bool = True,
+    require_compose: bool = True,
+) -> List[str]:
+    metadata, normalized_services = _normalize_ports_v2_contract(metadata, services)
+    app_services = [svc for svc in normalized_services if _is_app_service(svc)]
+    errors: List[str] = []
+
+    expected_dockerfiles = {_expected_dockerfile_path(svc): svc for svc in app_services}
+    generated_dockerfiles = {
+        path: content for path, content in files.items()
+        if os.path.basename(path).lower() == "dockerfile"
+    }
+
+    if require_dockerfiles:
+        for path in expected_dockerfiles:
+            if path not in generated_dockerfiles:
+                errors.append(f"Missing required Dockerfile: {path}.")
+        for path in generated_dockerfiles:
+            if path not in expected_dockerfiles:
+                errors.append(f"Unexpected Dockerfile path: {path}.")
+
+    for path, svc in expected_dockerfiles.items():
+        if path in generated_dockerfiles:
+            errors.extend(_validate_dockerfile(path, generated_dockerfiles[path], svc))
+
+    compose_file_path = _compose_path(files)
+    if require_compose and not compose_file_path:
+        errors.append("Missing required docker-compose.yml.")
+    if compose_file_path:
+        if _clean_path(compose_file_path) != "docker-compose.yml":
+            errors.append("docker-compose.yml must be generated at the project root.")
+        errors.extend(_validate_compose(files[compose_file_path], metadata, app_services))
+
+    return errors
+
+
+def parse_and_validate_generated_docker_response(
+    response_text: str,
+    metadata: Dict,
+    services: Optional[List[Dict]],
+    require_dockerfiles: bool = True,
+    require_compose: bool = True,
+) -> tuple[Dict[str, str], List[str]]:
+    files = parse_generated_docker_files(response_text)
+    errors = validate_generated_docker_files(
+        files=files,
+        metadata=metadata,
+        services=services,
+        require_dockerfiles=require_dockerfiles,
+        require_compose=require_compose,
+    )
+    return files, errors
+
+
+def _call_gemini_docker_with_repair(
+    messages: List[Dict[str, str]],
+    project_name: str,
+    metadata: Dict,
+    dockerfiles: List[Dict[str, str]],
+    compose_files: List[Dict[str, str]],
+    file_tree: Optional[str],
+    user_message: str,
+    logs: Optional[List[str]],
+    extra_instructions: Optional[str],
+    services: Optional[List[Dict[str, str]]],
+    mode: str,
+) -> str:
+    response = call_gemini(messages, custom_options={"temperature": 0.0})
+    if response.startswith("ERROR:") or mode != "GENERATE_MISSING" or not services:
+        return response
+
+    _, validation_errors = parse_and_validate_generated_docker_response(
+        response,
+        metadata,
+        services,
+        require_dockerfiles=True,
+        require_compose=True,
+    )
+    if not validation_errors:
+        return response
+
+    repair_system_prompt, repair_message = _response_message(
+        project_name=project_name,
+        metadata=metadata,
+        dockerfiles=dockerfiles,
+        compose_files=compose_files,
+        file_tree=file_tree,
+        user_message=(
+            "Regenerate complete Docker files. Fix these validation errors exactly:\n"
+            + "\n".join(f"- {err}" for err in validation_errors)
+        ),
+        logs=(logs or []) + validation_errors,
+        extra_instructions=f"Previous invalid response:\n{response[:4000]}",
+        services=services,
+        mode=mode,
+    )
+    return call_gemini(
+        [
+            {"role": "system", "content": repair_system_prompt},
+            {"role": "user", "content": repair_message},
+        ],
+        custom_options={"temperature": 0.0},
+    )
+
+
 def run_docker_deploy_chat(
     project_name: str,
     metadata: Dict,
@@ -1004,7 +1499,7 @@ def run_docker_deploy_chat(
     else:
         mode = "GENERATE_MISSING"
 
-    message = build_deploy_message(
+    system_prompt, message = _response_message(
         project_name=project_name,
         metadata=metadata,
         dockerfiles=dockerfiles,
@@ -1017,12 +1512,25 @@ def run_docker_deploy_chat(
         mode=mode,
     )
 
-    return call_llama(
-        [
-            {"role": "system", "content": DOCKER_DEPLOY_SYSTEM_PROMPT},
-            {"role": "user", "content": message},
-        ]
-    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": message},
+    ]
+    if get_docker_llm_provider() == "gemini":
+        return _call_gemini_docker_with_repair(
+            messages=messages,
+            project_name=project_name,
+            metadata=metadata,
+            dockerfiles=dockerfiles,
+            compose_files=compose_files,
+            file_tree=file_tree,
+            user_message=user_message,
+            logs=logs,
+            extra_instructions=extra_instructions,
+            services=services,
+            mode=mode,
+        )
+    return call_llama(messages)
 
 
 def run_docker_deploy_chat_stream(
@@ -1040,15 +1548,13 @@ def run_docker_deploy_chat_stream(
     Streaming version of run_docker_deploy_chat.
     Yields tokens as they're generated by the LLM.
     """
-    from .llm_client import call_llama_stream
-    
     # Decide mode based on presence of Dockerfiles / compose
     if dockerfiles or compose_files:
         mode = "VALIDATE_EXISTING"
     else:
         mode = "GENERATE_MISSING"
 
-    message = build_deploy_message(
+    system_prompt, message = _response_message(
         project_name=project_name,
         metadata=metadata,
         dockerfiles=dockerfiles,
@@ -1061,12 +1567,32 @@ def run_docker_deploy_chat_stream(
         mode=mode,
     )
 
-    # Yield tokens from the streaming LLM call
-    for chunk in call_llama_stream(
-        [
-            {"role": "system", "content": DOCKER_DEPLOY_SYSTEM_PROMPT},
-            {"role": "user", "content": message},
-        ]
-    ):
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": message},
+    ]
+    if get_docker_llm_provider() == "gemini":
+        response = _call_gemini_docker_with_repair(
+            messages=messages,
+            project_name=project_name,
+            metadata=metadata,
+            dockerfiles=dockerfiles,
+            compose_files=compose_files,
+            file_tree=file_tree,
+            user_message=user_message,
+            logs=logs,
+            extra_instructions=extra_instructions,
+            services=services,
+            mode=mode,
+        )
+        if response.startswith("ERROR:"):
+            yield {"token": response, "done": True, "error": True}
+            return
+        yield {"token": response, "done": False}
+        yield {"token": "", "done": True}
+        return
+
+    stream = call_llama_stream(messages)
+    for chunk in stream:
         yield chunk
 

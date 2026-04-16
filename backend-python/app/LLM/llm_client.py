@@ -9,6 +9,67 @@ MODEL_NAME = settings.LLM_MODEL_NAME
 LLM_TEMPERATURE = settings.LLM_TEMPERATURE
 LLM_TOP_P = settings.LLM_TOP_P
 LLM_TIMEOUT = settings.LLM_TIMEOUT
+DOCKER_LLM_PROVIDER = settings.DOCKER_LLM_PROVIDER
+GEMINI_API_KEY = settings.GEMINI_API_KEY
+GEMINI_API_BASE = settings.GEMINI_API_BASE.rstrip("/")
+GEMINI_MODEL_NAME = settings.GEMINI_MODEL_NAME
+GEMINI_MAX_OUTPUT_TOKENS = settings.GEMINI_MAX_OUTPUT_TOKENS
+
+
+def _messages_to_prompt(messages: List[Dict[str, str]]) -> str:
+    prompt = ""
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "system":
+            prompt += f"System: {content}\n\n"
+        elif role == "user":
+            prompt += f"User: {content}\n\n"
+        elif content:
+            prompt += f"{content}\n\n"
+    return prompt + "Assistant:"
+
+
+def _split_messages_for_gemini(messages: List[Dict[str, str]]) -> tuple[str, str]:
+    system_parts: List[str] = []
+    user_parts: List[str] = []
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if not content:
+            continue
+        if role == "system":
+            system_parts.append(content)
+        else:
+            user_parts.append(content)
+    return "\n\n".join(system_parts), "\n\n".join(user_parts)
+
+
+def _gemini_generation_config(custom_options: Optional[Dict] = None) -> Dict:
+    config = {
+        "temperature": LLM_TEMPERATURE,
+        "topP": LLM_TOP_P,
+        "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS,
+    }
+    if not custom_options:
+        return config
+
+    option_map = {
+        "temperature": "temperature",
+        "top_p": "topP",
+        "topP": "topP",
+        "max_output_tokens": "maxOutputTokens",
+        "maxOutputTokens": "maxOutputTokens",
+    }
+    for src, dest in option_map.items():
+        if src in custom_options:
+            config[dest] = custom_options[src]
+    return config
+
+
+def get_docker_llm_provider() -> str:
+    provider = str(DOCKER_LLM_PROVIDER or "ollama").strip().lower()
+    return provider if provider in {"ollama", "gemini"} else "ollama"
 
 
 def call_llama(messages: List[Dict[str, str]], custom_options: Optional[Dict] = None) -> str:
@@ -24,17 +85,7 @@ def call_llama(messages: List[Dict[str, str]], custom_options: Optional[Dict] = 
         The LLM's response content as a string.
     """
     try:
-        # Convert messages to a single prompt
-        prompt = ""
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "system":
-                prompt += f"System: {content}\n\n"
-            elif role == "user":
-                prompt += f"User: {content}\n\n"
-        
-        prompt += "Assistant:"
+        prompt = _messages_to_prompt(messages)
         
         # Build options with defaults
         options = {
@@ -99,17 +150,7 @@ def call_llama_stream(messages: List[Dict[str, str]], custom_options: Optional[D
     import json
     
     try:
-        # Convert messages to a single prompt
-        prompt = ""
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "system":
-                prompt += f"System: {content}\n\n"
-            elif role == "user":
-                prompt += f"User: {content}\n\n"
-        
-        prompt += "Assistant:"
+        prompt = _messages_to_prompt(messages)
         
         # Build options with defaults
         options = {
@@ -157,3 +198,91 @@ def call_llama_stream(messages: List[Dict[str, str]], custom_options: Optional[D
     except Exception as e:
         import traceback
         yield {"token": f"ERROR: LLM stream failed - {str(e)}", "done": True, "error": True}
+
+
+def call_gemini(messages: List[Dict[str, str]], custom_options: Optional[Dict] = None) -> str:
+    """
+    Call Gemini for Docker generation. This is intentionally separate from
+    call_llama so Terraform and other Ollama paths keep their existing behavior.
+    """
+    if not GEMINI_API_KEY:
+        return "ERROR: GEMINI_API_KEY is not set. Set it in backend-python/.env to use Gemini."
+
+    try:
+        system_text, user_text = _split_messages_for_gemini(messages)
+        model_path = GEMINI_MODEL_NAME if GEMINI_MODEL_NAME.startswith("models/") else f"models/{GEMINI_MODEL_NAME}"
+        url = f"{GEMINI_API_BASE}/{model_path}:generateContent"
+
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": user_text}],
+                }
+            ],
+            "generationConfig": _gemini_generation_config(custom_options),
+        }
+        if system_text:
+            payload["systemInstruction"] = {"parts": [{"text": system_text}]}
+
+        resp = requests.post(
+            url,
+            params={"key": GEMINI_API_KEY},
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=LLM_TIMEOUT,
+        )
+
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+
+        if resp.status_code >= 400:
+            detail = (data.get("error") or {}).get("message") or resp.text[:500]
+            return f"ERROR: Gemini HTTP {resp.status_code} - {detail}"
+
+        candidates = data.get("candidates") or []
+        if not candidates:
+            feedback = data.get("promptFeedback") or {}
+            return f"ERROR: Gemini returned no candidates. Feedback: {feedback}"
+
+        parts = ((candidates[0].get("content") or {}).get("parts") or [])
+        text = "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
+        if not text.strip():
+            finish_reason = candidates[0].get("finishReason")
+            return f"ERROR: Gemini returned an empty response. Finish reason: {finish_reason}"
+        return text
+    except requests.exceptions.ConnectionError as e:
+        return f"ERROR: Cannot connect to Gemini API at {GEMINI_API_BASE}. Details: {str(e)}"
+    except requests.exceptions.Timeout:
+        return f"ERROR: Gemini request timed out after {LLM_TIMEOUT} seconds."
+    except Exception as e:
+        import traceback
+        return f"ERROR: Gemini call failed - {str(e)}\nTraceback: {traceback.format_exc()[:500]}"
+
+
+def call_gemini_stream(messages: List[Dict[str, str]], custom_options: Optional[Dict] = None):
+    """
+    Minimal streaming adapter: Gemini is called once and emitted as one SSE token.
+    The frontend already accepts token chunks, so this preserves the endpoint shape.
+    """
+    response = call_gemini(messages, custom_options=custom_options)
+    if response.startswith("ERROR:"):
+        yield {"token": response, "done": True, "error": True}
+        return
+    yield {"token": response, "done": False}
+    yield {"token": "", "done": True}
+
+
+def call_docker_llm(messages: List[Dict[str, str]], custom_options: Optional[Dict] = None) -> str:
+    if get_docker_llm_provider() == "gemini":
+        return call_gemini(messages, custom_options=custom_options)
+    return call_llama(messages, custom_options=custom_options)
+
+
+def call_docker_llm_stream(messages: List[Dict[str, str]], custom_options: Optional[Dict] = None):
+    if get_docker_llm_provider() == "gemini":
+        yield from call_gemini_stream(messages, custom_options=custom_options)
+        return
+    yield from call_llama_stream(messages, custom_options=custom_options)

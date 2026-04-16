@@ -75,11 +75,11 @@ async def upload_file_handler(file: UploadFile, project_name: str = None, curren
         collection = get_projects_collection()
         result = await collection.insert_one(project_data)
         
-        print(f"✅ File uploaded: {file.filename} ({format_file_size(file_size)})")
+        print(f"File uploaded: {file.filename} ({format_file_size(file_size)})")
         
         return {
             "success": True,
-            "message": "File uploaded successfully! ✅",
+            "message": "File uploaded successfully!",
             "data": {
                 "project_id": str(result.inserted_id),
                 "project_name": project_data["project_name"],
@@ -95,7 +95,7 @@ async def upload_file_handler(file: UploadFile, project_name: str = None, curren
         # Cleanup file if database save fails
         if os.path.exists(file_path):
             os.remove(file_path)
-        print(f"❌ Upload error: {str(e)}")
+        print(f"Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 

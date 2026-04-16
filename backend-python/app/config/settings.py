@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.1
     LLM_TOP_P: float = 0.9
     LLM_TIMEOUT: int = 600
+
+
+    DOCKER_LLM_PROVIDER: str = "ollama"  # "ollama" or "gemini"
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_API_BASE: str = "https://generativelanguage.googleapis.com/v1beta"
+    GEMINI_MODEL_NAME: str = "gemini-2.5-flash"
+    GEMINI_MAX_OUTPUT_TOKENS: int = 8192
     
     # AWS Deployment Configuration
     AWS_PROFILE: Optional[str] = None  # AWS CLI profile name (e.g., "my-terraform")
