@@ -441,12 +441,11 @@ class TestDetectPortFromPackageJson:
         _write(tmp_path / "package.json", "NOT JSON")
         assert _detect_port_from_package_json(str(tmp_path)) is None
 
-    def test_defaults_to_3000(self, tmp_path):
+    def test_no_explicit_port_returns_none(self, tmp_path):
         _write(tmp_path / "package.json", json.dumps({
             "scripts": {"start": "node index.js"},
         }))
-        # No explicit port => default 3000
-        assert _detect_port_from_package_json(str(tmp_path)) == 3000
+        assert _detect_port_from_package_json(str(tmp_path)) is None
 
     @pytest.mark.parametrize("port_in_script, expected", [
         ("PORT=8080 node .", 8080),
@@ -970,6 +969,41 @@ class TestDetectFrameworkOrchestrator:
         assert result["language"] == "JavaScript"
         assert result["framework"] == "React"
 
+    @patch("app.utils.detector.get_ml_analyzer")
+    @patch("app.utils.detector.extract_database_info")
+    @patch("app.utils.detector.extract_port_from_project")
+    @patch("app.utils.detector.extract_frontend_port")
+    @patch("app.utils.detector.extract_nodejs_commands")
+    @patch("app.utils.detector.extract_python_commands")
+    def test_backend_service_does_not_inherit_frontend_framework(
+        self, mock_py_cmds, mock_node_cmds, mock_fe_port,
+        mock_port, mock_db_info, mock_ml, tmp_path
+    ):
+        """
+        If project framework is frontend (e.g. React), backend service framework
+        must not inherit it blindly.
+        """
+        mock_ml.return_value = MagicMock()
+        mock_node_cmds.return_value = {}
+        mock_py_cmds.return_value = {}
+        mock_port.return_value = {"port": None, "source": "default"}
+        mock_fe_port.return_value = {"port": 5173, "source": "default"}
+        mock_db_info.return_value = {"db_type": "mongodb", "is_cloud": False, "database_env_var": None}
+
+        _make_react_frontend(tmp_path / "frontend")
+        _write(tmp_path / "backend" / "package.json", json.dumps({
+            "name": "backend",
+            "dependencies": {},
+            "scripts": {"start": "node server.js"},
+        }))
+        _write(tmp_path / "backend" / "server.js", "console.log('backend')\n")
+
+        result = detect_framework(str(tmp_path), use_ml=False)
+
+        backend_svcs = [s for s in result.get("services", []) if s.get("type") in ("backend", "monolith")]
+        assert backend_svcs
+        assert backend_svcs[0].get("framework") == "Unknown"
+
     @patch("app.utils.detector.infer_services")
     @patch("app.utils.detector.detect_db_and_ports")
     @patch("app.utils.detector.detect_env_variables")
@@ -1172,6 +1206,37 @@ class TestDetectPortsFrameworkOverrides:
     def test_framework_overrides_apply_before_language_defaults(self, tmp_path, framework, expected_port):
         ports = detect_ports_for_project(str(tmp_path), "Unknown", framework, base_port=None)
         assert ports["backend_port"] == expected_port
+
+
+class TestDetectPortsComposeHints:
+    def test_compose_environment_sets_backend_runtime_port(self, tmp_path):
+        _write(tmp_path / "docker-compose.yml", """
+            services:
+              server:
+                build: .
+                environment:
+                  - PORT=2727
+                ports:
+                  - "8080:2727"
+        """)
+
+        ports = detect_ports_for_project(str(tmp_path), "JavaScript", "Express.js", base_port=None)
+        assert ports["backend_port"] == 2727
+        assert ports["backend_port_source"] == "compose_env"
+        assert ports["backend_compose_env_port"] == 2727
+
+    def test_frontend_compose_runtime_prefers_container_port_for_non_nginx_mapping(self, tmp_path):
+        _write(tmp_path / "docker-compose.yml", """
+            services:
+              frontend:
+                build: .
+                ports:
+                  - "8000:3000"
+        """)
+
+        ports = detect_ports_for_project(str(tmp_path), "JavaScript", "React", base_port=None)
+        assert ports["frontend_port"] == 3000
+        assert ports["frontend_port_source"] == "compose"
 
 
 class TestDeployBlockedLogic:

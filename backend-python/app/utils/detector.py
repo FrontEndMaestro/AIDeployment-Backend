@@ -4,10 +4,12 @@ detector.py — Orchestrator + backwards-compatible re-export hub.
 
 import os
 import json
+import sys
 from typing import Dict, List, Optional
 
 # ── Re-exports from detection_constants ────────────────────────────────
 from .detection_constants import (                          # noqa: F401
+    PORT_SCHEMA_VERSION,
     LANGUAGE_INDICATORS,
     FRAMEWORK_INDICATORS,
     FRAMEWORK_LANGUAGES,
@@ -81,6 +83,20 @@ from .command_extractor import (
 # =====================================================================
 # Functions that remain in detector.py
 # =====================================================================
+
+def _ensure_utf8_stdout() -> None:
+    """
+    Best-effort safeguard for Windows cp1252 consoles.
+    Some debug logs in detection helpers contain non-ASCII characters;
+    if stdout is not UTF-8 those prints can raise UnicodeEncodeError and
+    incorrectly trip the broad detect_framework exception path.
+    """
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        # Logging should never block detection flow.
+        pass
 
 def detect_docker_files(project_path: str) -> Dict:
     """Detect Docker files"""
@@ -469,7 +485,8 @@ def find_project_root(extracted_path: str, max_depth: int = 5) -> str:
 
 def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
     """Hybrid detection: Heuristics first, ML as supplement"""
-    
+    _ensure_utf8_stdout()
+
     print(f"\nStarting Hybrid Framework Detection")
     print(f"Project Path: {project_path}")
     print(f"ML Mode: {'Enabled' if use_ml else 'Disabled'}\n")
@@ -477,6 +494,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
     actual_path = find_project_root(project_path, max_depth=5)
     
     results: Dict = {
+        "schema_version": PORT_SCHEMA_VERSION,
         "framework": "Unknown",
         "language": "Unknown",
         "runtime": "alpine:latest",
@@ -502,6 +520,17 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         "databases": [],
         "database_detection": {},
         "database_port": None,
+        # Runtime ports (service-internal app ports used by the app process)
+        "backend_runtime_port": None,
+        "frontend_runtime_port": None,
+        "backend_runtime_port_source": None,
+        "frontend_runtime_port_source": None,
+        # Container ports (ports exposed inside containers)
+        "backend_container_port": None,
+        "frontend_container_port": None,
+        "backend_container_port_source": None,
+        "frontend_container_port_source": None,
+        # Backward-compatible aliases (runtime semantics)
         "backend_port": None,
         "frontend_port": None,
         "backend_port_source": None,
@@ -563,7 +592,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
 
         if fw_lang and results["language"] != "Unknown" and not _languages_compatible(results["language"], fw_lang):
             print(
-                f"⚠️ Inconsistent detection: framework {results['framework']} "
+                f"Inconsistent detection: framework {results['framework']} "
                 f"normally uses {fw_lang}, but language detected as {results['language']}. "
                 f"Keeping framework and adjusting language."
             )
@@ -583,20 +612,20 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             nodejs_cmds = extract_nodejs_commands(actual_path)
             if nodejs_cmds.get("start_command"):
                 results["start_command"] = nodejs_cmds["start_command"]
-                print(f"📦 Overriding start_command with: {results['start_command']}")
+                print(f"Overriding start_command with: {results['start_command']}")
             if nodejs_cmds.get("entry_point"):
                 results["entry_point"] = nodejs_cmds["entry_point"]
             if nodejs_cmds.get("build_command"):
                 results["build_command"] = nodejs_cmds["build_command"]
             if nodejs_cmds.get("build_output"):
                 results["build_output"] = nodejs_cmds["build_output"]
-                print(f"📦 Detected build_output: {results['build_output']}")
+                print(f"Detected build_output: {results['build_output']}")
         
         elif results["language"] == "Python":
             python_cmds = extract_python_commands(actual_path)
             if python_cmds.get("start_command"):
                 results["start_command"] = python_cmds["start_command"]
-                print(f"🐍 Overriding start_command with: {results['start_command']}")
+                print(f"Overriding start_command with: {results['start_command']}")
         # --- Lightweight presence flags for key files ---
         has_package_json = False
         has_requirements_txt = False
@@ -665,7 +694,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
 
         if results["static_only"]:
             # Prefer a static server image; do NOT invent Node/Django commands
-            print("🔍 Detected static-only JS/TS project (no package.json/manage.py/requirements.txt).")
+            print("Detected static-only JS/TS project (no package.json/manage.py/requirements.txt).")
             results["runtime"] = "nginx:alpine"
             results["port"] = 80
             results["build_command"] = None
@@ -770,6 +799,8 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         project_frontend_port = ports_info.get("frontend_port")
         project_backend_port_source = ports_info.get("backend_port_source") or "unknown"
         project_frontend_port_source = ports_info.get("frontend_port_source") or "unknown"
+        project_backend_compose_env_port = ports_info.get("backend_compose_env_port")
+        project_frontend_compose_env_port = ports_info.get("frontend_compose_env_port")
         
         results["database"] = db_info.get("primary", "Unknown")
         results["databases"] = db_info.get("all", [])
@@ -779,18 +810,22 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         # Cloud databases (is_cloud=True) should have NO port to avoid confusing LLM
         if results.get("database_is_cloud"):
             results["database_port"] = None  # Cloud DB - no container needed
-            print(f"☁️ Database is cloud - clearing database_port")
+            print("Database is cloud - clearing database_port")
         else:
             results["database_port"] = db_info.get("port")
         
-        # Seed top-level ports only when project-level signal is explicit.
+        # Seed runtime ports only when project-level signal is explicit.
         # Service-level inference remains the primary source of truth.
-        if project_backend_port is not None and project_backend_port_source in ("env", "source", "compose"):
+        if project_backend_port is not None and project_backend_port_source in ("env", "source", "compose", "compose_env"):
+            results["backend_runtime_port"] = project_backend_port
+            results["backend_runtime_port_source"] = project_backend_port_source
             results["backend_port"] = project_backend_port
-            results["port"] = project_backend_port  # backwards compatibility
             results["backend_port_source"] = project_backend_port_source
+            results["port"] = project_backend_port  # backwards compatibility
         
-        if project_frontend_port is not None and project_frontend_port_source in ("env", "source", "compose"):
+        if project_frontend_port is not None and project_frontend_port_source in ("env", "source", "compose", "compose_env"):
+            results["frontend_runtime_port"] = project_frontend_port
+            results["frontend_runtime_port_source"] = project_frontend_port_source
             results["frontend_port"] = project_frontend_port
             results["frontend_port_source"] = project_frontend_port_source
         
@@ -825,32 +860,108 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         except Exception:
             results["services"] = []
 
-        # Prefer backend/monolith service path for runtime image inference.
-        # This avoids relying only on root package.json when services live in subfolders.
-        backend_service_for_runtime = next(
-            (s for s in results.get("services", []) if s.get("type") in ("backend", "monolith")),
-            None,
-        )
-        if backend_service_for_runtime:
-            svc_rel = str(backend_service_for_runtime.get("path", ".") or ".")
-            svc_rel_clean = svc_rel.strip("/\\")
-            svc_abs = actual_path if svc_rel_clean in ("", ".") else os.path.join(actual_path, svc_rel_clean.replace("/", os.sep))
-            svc_lang = backend_service_for_runtime.get("language") or results.get("language")
-            svc_fw = backend_service_for_runtime.get("framework") or results.get("framework")
-            svc_runtime_info = get_runtime_info(svc_lang, svc_fw, svc_abs)
-            if svc_runtime_info.get("runtime"):
-                results["runtime"] = svc_runtime_info["runtime"]
+        # Ensure cloud/local DB metadata is present even if service inference fails.
+        if results.get("database") != "Unknown" and "database_is_cloud" not in results:
+            try:
+                db_runtime_info = extract_database_info(actual_path, results.get("database"))
+                if db_runtime_info.get("db_type"):
+                    results["database_is_cloud"] = db_runtime_info.get("is_cloud", False)
+                    if db_runtime_info.get("env_var_name"):
+                        results["database_env_var"] = db_runtime_info["env_var_name"]
+                    if results["database_is_cloud"]:
+                        results["database_port"] = None
+                    elif results.get("database_port") is None and db_runtime_info.get("default_port") is not None:
+                        results["database_port"] = db_runtime_info["default_port"]
+            except Exception:
+                pass
 
-        # Prefer per-service backend/monolith runtime command hints over root-level defaults.
-        for svc in results.get("services", []):
-            if svc.get("type") not in ("backend", "monolith"):
-                continue
-            if svc.get("start_command"):
-                results["start_command"] = svc["start_command"]
-            if svc.get("entry_point"):
-                results["entry_point"] = svc["entry_point"]
-            if svc.get("start_command") or svc.get("entry_point"):
-                break
+        def _get_backend_service() -> Optional[Dict]:
+            return next(
+                (s for s in results.get("services", []) if s.get("type") in ("backend", "monolith")),
+                None,
+            )
+
+        def _service_abs_path(service: Dict) -> str:
+            svc_rel = str(service.get("path", ".") or ".")
+            svc_rel_clean = svc_rel.strip("/\\")
+            if svc_rel_clean in ("", "."):
+                return actual_path
+            return os.path.join(actual_path, svc_rel_clean.replace("/", os.sep))
+
+        def _finalize_runtime_and_commands() -> Optional[Dict]:
+            backend_service = _get_backend_service()
+            if backend_service:
+                svc_abs = _service_abs_path(backend_service)
+                svc_lang = backend_service.get("language")
+                if not svc_lang:
+                    if os.path.exists(os.path.join(svc_abs, "package.json")):
+                        svc_lang = "JavaScript"
+                    elif any(
+                        os.path.exists(os.path.join(svc_abs, marker))
+                        for marker in ("requirements.txt", "pyproject.toml", "Pipfile", "manage.py")
+                    ):
+                        svc_lang = "Python"
+                    else:
+                        svc_lang = results.get("language")
+                svc_fw = backend_service.get("framework") or results.get("framework")
+                svc_runtime_info = get_runtime_info(svc_lang, svc_fw, svc_abs)
+                if svc_runtime_info.get("runtime"):
+                    results["runtime"] = svc_runtime_info["runtime"]
+
+                if svc_lang == "Python":
+                    svc_cmds = extract_python_commands(svc_abs)
+                else:
+                    svc_cmds = extract_nodejs_commands(svc_abs)
+
+                final_start = backend_service.get("start_command") or svc_cmds.get("start_command")
+                final_entry = backend_service.get("entry_point") or svc_cmds.get("entry_point")
+                results["start_command"] = final_start if final_start else None
+                results["entry_point"] = final_entry if final_entry else None
+                if svc_cmds.get("build_command"):
+                    results["build_command"] = svc_cmds["build_command"]
+                if svc_cmds.get("build_output"):
+                    results["build_output"] = svc_cmds["build_output"]
+                return backend_service
+
+            if results.get("static_only"):
+                results["runtime"] = "nginx:alpine"
+                results["port"] = 80
+                results["build_command"] = None
+                results["start_command"] = None
+                return None
+
+            if results.get("runtime") in ("denoland/deno:latest", "oven/bun:latest"):
+                return None
+
+            refreshed_runtime = get_runtime_info(
+                results.get("language", "Unknown"),
+                results.get("framework", "Unknown"),
+                actual_path,
+            )
+            if refreshed_runtime.get("runtime"):
+                results["runtime"] = refreshed_runtime["runtime"]
+
+            if (
+                results.get("language") in ("JavaScript", "TypeScript")
+                or results.get("framework") in ("Express.js", "Next.js", "React")
+            ):
+                nodejs_cmds = extract_nodejs_commands(actual_path)
+                if nodejs_cmds.get("start_command"):
+                    results["start_command"] = nodejs_cmds["start_command"]
+                if nodejs_cmds.get("entry_point"):
+                    results["entry_point"] = nodejs_cmds["entry_point"]
+                if nodejs_cmds.get("build_command"):
+                    results["build_command"] = nodejs_cmds["build_command"]
+                if nodejs_cmds.get("build_output"):
+                    results["build_output"] = nodejs_cmds["build_output"]
+            elif results.get("language") == "Python":
+                python_cmds = extract_python_commands(actual_path)
+                if python_cmds.get("start_command"):
+                    results["start_command"] = python_cmds["start_command"]
+
+            return None
+
+        backend_service_for_runtime = _finalize_runtime_and_commands()
 
         # Propagate resolved framework into the selected Node backend/monolith service.
         resolved_framework = results.get("framework")
@@ -866,44 +977,164 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                 backend_service_for_runtime["framework"] = resolved_framework
         
         # =======================================================================
-        # PORT CONSOLIDATION: Copy service ports to metadata for consistency
-        # The per-service ports (from extract_port_from_project) are authoritative
-        # because they check the actual service directory's .env and source files.
+        # PORT CONSOLIDATION (single precedence engine)
         # =======================================================================
-        for svc in results.get("services", []):
+        def _normalize_source(source: Optional[str]) -> str:
+            s = str(source or "unknown").lower()
+            if s.startswith("service_"):
+                s = s[len("service_"):]
+            if s.startswith("project_"):
+                s = s[len("project_"):]
+            return s
+
+        def _runtime_rank(source: Optional[str]) -> int:
+            s = _normalize_source(source)
+            ranks = {
+                "env": 100,
+                "compose_env": 98,
+                "compose": 95,
+                "source": 90,
+                "package": 70,
+                "pkg_json": 70,
+                "vite_default": 30,
+                "cra_default": 30,
+                "next_default": 30,
+                "vue_default": 30,
+                "angular_default": 30,
+                "default": 10,
+                "unknown": 0,
+            }
+            return ranks.get(s, 20)
+
+        def _container_rank(source: Optional[str]) -> int:
+            s = _normalize_source(source)
+            ranks = {
+                "compose": 100,
+                "docker_compose": 100,
+                "compose_expose": 95,
+                "dockerfile_expose": 90,
+                "service": 60,
+                "dev_server": 30,
+                "ssr_default": 26,
+                "next_default": 25,
+                "nginx_default": 20,
+                "frontend_default": 20,
+                "runtime_fallback": 15,
+                "default": 10,
+                "unknown": 0,
+            }
+            return ranks.get(s, 20)
+
+        def _set_runtime(side: str, port: Optional[int], source: str) -> None:
+            if port is None:
+                return
+            if side == "backend":
+                port_key = "backend_runtime_port"
+                source_key = "backend_runtime_port_source"
+                alias_key = "backend_port"
+                alias_source_key = "backend_port_source"
+            else:
+                port_key = "frontend_runtime_port"
+                source_key = "frontend_runtime_port_source"
+                alias_key = "frontend_port"
+                alias_source_key = "frontend_port_source"
+
+            current_port = results.get(port_key)
+            current_source = results.get(source_key, "unknown")
+            if current_port is None or _runtime_rank(source) > _runtime_rank(current_source):
+                results[port_key] = port
+                results[source_key] = source
+                results[alias_key] = port
+                results[alias_source_key] = source
+
+        def _set_container(side: str, port: Optional[int], source: str) -> None:
+            if port is None:
+                return
+            if side == "backend":
+                port_key = "backend_container_port"
+                source_key = "backend_container_port_source"
+            else:
+                port_key = "frontend_container_port"
+                source_key = "frontend_container_port_source"
+
+            current_port = results.get(port_key)
+            current_source = results.get(source_key, "unknown")
+            if current_port is None or _container_rank(source) > _container_rank(current_source):
+                results[port_key] = port
+                results[source_key] = source
+
+        def _service_depth(path_value: object) -> int:
+            path = str(path_value or ".").replace("\\", "/").strip("/")
+            return 0 if not path or path == "." else len([p for p in path.split("/") if p])
+
+        service_list = results.get("services", [])
+        service_list = sorted(
+            service_list,
+            key=lambda s: (
+                0 if str(s.get("type", "")).lower() in ("backend", "monolith") else (1 if str(s.get("type", "")).lower() == "frontend" else 2),
+                -_service_depth(s.get("path")),
+                str(s.get("path", ".")).replace("\\", "/").lower(),
+                str(s.get("name", "")).lower(),
+            ),
+        )
+        has_backend_like_service = any(
+            s.get("type") in ("backend", "monolith", "worker") for s in service_list
+        )
+        has_frontend_service = any(s.get("type") == "frontend" for s in service_list)
+
+        # Project-level candidates are baseline; service-level candidates (below) can override
+        # when they have stronger evidence.
+        if project_backend_compose_env_port is not None:
+            _set_runtime("backend", project_backend_compose_env_port, "project_compose_env")
+        if project_frontend_compose_env_port is not None:
+            _set_runtime("frontend", project_frontend_compose_env_port, "project_compose_env")
+
+        if project_backend_port is not None and (has_backend_like_service or not service_list):
+            _set_runtime("backend", project_backend_port, f"project_{project_backend_port_source}")
+        if project_frontend_port is not None:
+            _set_runtime("frontend", project_frontend_port, f"project_{project_frontend_port_source}")
+
+        for svc in service_list:
             svc_type = svc.get("type")
-            svc_port = svc.get("port")
-            svc_port_source = svc.get("port_source", "unknown")
-            
-            if svc_type in ("backend", "monolith") and svc_port:
-                # Only override if service port came from a reliable source
-                if svc_port_source in ("env", "source", "compose"):
-                    print(f"🔧 Consolidating: backend_port = {svc_port} (from {svc_port_source})")
-                    results["backend_port"] = svc_port
-                    results["port"] = svc_port  # backwards compat
-                    results["backend_port_source"] = f"service_{svc_port_source}"
-            
-            elif svc_type == "frontend" and svc_port:
-                if svc_port_source in (
-                    "env", "source", "vite_default", "cra_default",
-                    "next_default", "vue_default", "angular_default",
-                ):
-                    print(f"🔧 Consolidating: frontend_port = {svc_port} (from {svc_port_source})")
-                    results["frontend_port"] = svc_port
-                    results["frontend_port_source"] = f"service_{svc_port_source}"
-                elif svc_port_source == "default" and results.get("frontend_port") is None:
-                    results["frontend_port"] = svc_port
-                    results["frontend_port_source"] = "service_default"
+            svc_runtime_port = (
+                svc.get("runtime_port")
+                if svc.get("runtime_port") is not None
+                else (svc.get("dev_port") if svc.get("dev_port") is not None else svc.get("port"))
+            )
+            svc_container_port = svc.get("container_port")
+            svc_port_source = str(svc.get("port_source", "unknown"))
+            svc_container_port_source = str(svc.get("container_port_source", "service"))
 
-        # Fallback to project-level inference only when service-level did not produce a value.
-        if results.get("backend_port") is None and project_backend_port is not None:
-            results["backend_port"] = project_backend_port
-            results["port"] = project_backend_port
-            results["backend_port_source"] = f"project_{project_backend_port_source}"
+            if svc_type in ("backend", "monolith"):
+                _set_runtime("backend", svc_runtime_port, f"service_{svc_port_source}")
+            if svc_type in ("backend", "monolith", "worker"):
+                if svc_container_port is None:
+                    svc_container_port = svc_runtime_port
+                _set_container("backend", svc_container_port, f"service_{svc_container_port_source}")
 
-        if results.get("frontend_port") is None and project_frontend_port is not None:
-            results["frontend_port"] = project_frontend_port
-            results["frontend_port_source"] = f"project_{project_frontend_port_source}"
+            if svc_type == "frontend":
+                _set_runtime("frontend", svc_runtime_port, f"service_{svc_port_source}")
+                _set_container("frontend", svc_container_port, f"service_{svc_container_port_source}")
+
+        if results.get("backend_container_port") is None:
+            backend_container_ports = results.get("docker_backend_container_ports") or []
+            if backend_container_ports:
+                _set_container("backend", backend_container_ports[0], "docker_compose")
+            elif results.get("backend_runtime_port") is not None:
+                _set_container("backend", results["backend_runtime_port"], "runtime_fallback")
+
+        if results.get("frontend_container_port") is None:
+            frontend_container_ports = results.get("docker_frontend_container_ports") or []
+            if frontend_container_ports:
+                _set_container("frontend", frontend_container_ports[0], "docker_compose")
+            elif has_frontend_service:
+                _set_container("frontend", 80, "frontend_default")
+
+        if results.get("backend_runtime_port") is not None:
+            results["backend_port"] = results["backend_runtime_port"]
+            results["port"] = results["backend_runtime_port"]  # legacy alias
+        if results.get("frontend_runtime_port") is not None:
+            results["frontend_port"] = results["frontend_runtime_port"]
         
         # =======================================================================
         # CLOUD DATABASE: Clear database_port if database is cloud
@@ -912,7 +1143,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
         # =======================================================================
         if results.get("database_is_cloud"):
             results["database_port"] = None
-            print(f"☁️ Cloud database detected - clearing database_port (no container needed)")
+            print("Cloud database detected - clearing database_port (no container needed)")
 
         # =======================================================================
         # CONSISTENCY RECONCILIATION PASS
@@ -942,35 +1173,31 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             )
 
         services = results.get("services", [])
+        backend_runtime_port = results.get("backend_runtime_port")
+        frontend_runtime_port = results.get("frontend_runtime_port")
+        has_backend_service_for_collision = any(
+            s.get("type") in ("backend", "monolith", "worker") for s in services
+        )
+        has_frontend_service_for_collision = any(
+            s.get("type") == "frontend" for s in services
+        )
+
+        if (
+            has_backend_service_for_collision
+            and has_frontend_service_for_collision
+            and backend_runtime_port is not None
+            and frontend_runtime_port is not None
+            and backend_runtime_port == frontend_runtime_port
+        ):
+            consistency_warnings.append(
+                f"Backend/frontend runtime ports collide at {backend_runtime_port}; review service port hints before compose generation."
+            )
+
         if (
             results.get("language") != pre_consistency_language
             or results.get("framework") != pre_consistency_framework
         ):
-            refreshed_runtime = get_runtime_info(
-                results.get("language", "Unknown"),
-                results.get("framework", "Unknown"),
-                actual_path,
-            )
-            if refreshed_runtime.get("runtime"):
-                results["runtime"] = refreshed_runtime["runtime"]
-
-            backend_runtime_service = next(
-                (s for s in services if s.get("type") in ("backend", "monolith")),
-                None,
-            )
-            if backend_runtime_service:
-                svc_rel = str(backend_runtime_service.get("path", ".") or ".")
-                svc_rel_clean = svc_rel.strip("/\\")
-                svc_abs = (
-                    actual_path
-                    if svc_rel_clean in ("", ".")
-                    else os.path.join(actual_path, svc_rel_clean.replace("/", os.sep))
-                )
-                svc_lang = backend_runtime_service.get("language") or results.get("language")
-                svc_fw = backend_runtime_service.get("framework") or results.get("framework")
-                svc_runtime = get_runtime_info(svc_lang, svc_fw, svc_abs)
-                if svc_runtime.get("runtime"):
-                    results["runtime"] = svc_runtime["runtime"]
+            backend_service_for_runtime = _finalize_runtime_and_commands()
 
         frontend_only = bool(services) and all(s.get("type") == "frontend" for s in services)
         results["missing_backend"] = frontend_only
@@ -986,7 +1213,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
             warn = (
                 "Database detected without backend/monolith service; keeping database metadata unchanged."
             )
-            print(f"⚠️ {warn}")
+            print(f"Warning: {warn}")
             consistency_warnings.append(warn)
 
         if consistency_warnings:
@@ -1016,7 +1243,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                 )
                 results["backend_env_missing"] = True
                 results["deploy_warning"] = None
-                print(f"⚠️ Deploy blocked: Backend .env file missing (database detected)")
+                print("Deploy blocked: Backend .env file missing (database detected)")
             else:
                 # No database + no .env → WARNING only (not blocked)
                 results["deploy_blocked"] = False
@@ -1025,7 +1252,7 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                 results["deploy_warning"] = (
                     "No .env detected. Proceed only if your app doesn't require secrets."
                 )
-                print(f"⚠️ Deploy warning: Backend .env file missing (no database)")
+                print("Deploy warning: Backend .env file missing (no database)")
         else:
             results["deploy_blocked"] = False
             results["deploy_blocked_reason"] = None

@@ -23,6 +23,11 @@ from .detection_constants import (
     PYTHON_BACKEND_DEPS,
     PYTHON_SKIP_DIRS,
     DB_KEYWORDS,
+    DEV_SERVER_START_TOKENS,
+    SSR_FRONTEND_BUILD_OUTPUTS,
+    SSR_FRONTEND_CONFIG_FILES,
+    SSR_FRONTEND_DEP_HINTS,
+    SSR_FRONTEND_START_TOKENS,
     norm_path,
 )
 from .command_extractor import (
@@ -32,7 +37,8 @@ from .command_extractor import (
     extract_frontend_port,
     extract_database_info,
 )
-from .detection_ports import _scan_js_for_port_hint
+from .detection_language import get_runtime_info
+from .detection_ports import _scan_js_for_port_hint, _iter_compose_files
 
 
 _INFRA_DIRS = {
@@ -107,7 +113,7 @@ def _infer_service_type(service_path: str, service_name: str, project_root: str)
 
     # Fallback to name heuristic only if no package.json found
     _BACKEND_NAMES = {
-        "backend", "server", "api", "worker",
+        "backend", "server", "api", "worker", "app",
         "back-end", "back_end", "admin", "dashboard", "auth",
         "auth-service", "api-gateway", "service",
         "services", "express", "node", "bezkoder-api",
@@ -136,6 +142,35 @@ def _infer_service_type(service_path: str, service_name: str, project_root: str)
     return "other"
 
 
+def infer_service_runtime_image_from_code(
+    svc_abs_path: str,
+    svc_type: str,
+    svc_language: Optional[str],
+    svc_framework: Optional[str],
+    frontend_mode: Optional[str] = None,
+) -> str:
+    """
+    Infer Docker runtime image from service code signals only.
+    Never read compose/dockerfile for runtime image inference.
+    """
+    mode = str(frontend_mode or "").strip().lower()
+    if str(svc_type).lower() == "frontend" and mode == "static_nginx":
+        return "nginx:alpine"
+
+    runtime_info = get_runtime_info(
+        str(svc_language or "Unknown"),
+        str(svc_framework or "Unknown"),
+        svc_abs_path,
+    )
+    runtime = runtime_info.get("runtime")
+    if runtime:
+        return str(runtime)
+
+    if str(svc_type).lower() == "frontend" and mode == "static_nginx":
+        return "nginx:alpine"
+    return "alpine:latest"
+
+
 def _find_all_services_by_deps(project_path: str) -> List[Dict[str, str]]:
     """
     Fix 1: Walk all subdirs (excluding SKIP_DIRS), find every package.json,
@@ -145,7 +180,10 @@ def _find_all_services_by_deps(project_path: str) -> List[Dict[str, str]]:
     """
     services = []
     for root, dirs, files in os.walk(project_path):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = sorted(
+            [d for d in dirs if d not in SKIP_DIRS],
+            key=str.lower,
+        )
 
         if "package.json" not in files:
             continue
@@ -187,7 +225,13 @@ def _find_all_services_by_deps(project_path: str) -> List[Dict[str, str]]:
         })
         print(f"📦 Dep-scan: found {svc_type} service '{folder_name}' at {root}")
 
-    return services
+    return sorted(
+        services,
+        key=lambda s: (
+            norm_path(str(s.get("abs_path", "."))).lower(),
+            str(s.get("name", "")).lower(),
+        ),
+    )
 
 
 ORCHESTRATOR_SIGNALS = {
@@ -369,6 +413,179 @@ def _compose_cmd_to_text(value: object) -> Optional[str]:
     return None
 
 
+def _extract_compose_ports(svc_def: Dict[str, object]) -> tuple[Optional[int], Optional[int]]:
+    """
+    Extract first host/container port pair from a compose service definition.
+    Returns (runtime_host_port, container_port), both optional.
+    """
+    ports_field = svc_def.get("ports")
+    if isinstance(ports_field, list):
+        ports_list = ports_field
+    elif ports_field is None:
+        ports_list = []
+    else:
+        ports_list = [ports_field]
+
+    for entry in ports_list:
+        host_port: Optional[int] = None
+        container_port: Optional[int] = None
+
+        if isinstance(entry, int):
+            host_port = entry
+            container_port = entry
+        elif isinstance(entry, str):
+            text = entry.strip().strip('"').strip("'")
+            if "/" in text:
+                text = text.split("/", 1)[0]
+            parts = text.split(":")
+            if len(parts) == 1 and parts[0].isdigit():
+                host_port = int(parts[0])
+                container_port = int(parts[0])
+            elif len(parts) >= 2:
+                maybe_host = parts[-2]
+                maybe_container = parts[-1]
+                if maybe_host.isdigit() and maybe_container.isdigit():
+                    host_port = int(maybe_host)
+                    container_port = int(maybe_container)
+        elif isinstance(entry, dict):
+            target = entry.get("target")
+            published = entry.get("published")
+            if isinstance(target, int):
+                container_port = target
+            elif isinstance(target, str) and target.isdigit():
+                container_port = int(target)
+            if isinstance(published, int):
+                host_port = published
+            elif isinstance(published, str) and published.isdigit():
+                host_port = int(published)
+            if host_port is None and container_port is not None:
+                host_port = container_port
+            if container_port is None and host_port is not None:
+                container_port = host_port
+
+        if host_port is not None or container_port is not None:
+            if host_port is None:
+                host_port = container_port
+            if container_port is None:
+                container_port = host_port
+            return host_port, container_port
+
+    expose_field = svc_def.get("expose")
+    if isinstance(expose_field, list):
+        expose_list = expose_field
+    elif expose_field is None:
+        expose_list = []
+    else:
+        expose_list = [expose_field]
+
+    for entry in expose_list:
+        if isinstance(entry, int):
+            return entry, entry
+        text = str(entry).strip().strip('"').strip("'")
+        if "/" in text:
+            text = text.split("/", 1)[0]
+        if text.isdigit():
+            p = int(text)
+            return p, p
+
+    return None, None
+
+
+def _runtime_source_rank(source: Optional[str]) -> int:
+    s = str(source or "").lower()
+    if s.startswith("service_"):
+        s = s[len("service_"):]
+    if s.startswith("project_"):
+        s = s[len("project_"):]
+    ranks = {
+        "env": 100,
+        "compose_env": 98,
+        "compose": 95,
+        "source": 90,
+        "package": 70,
+        "pkg_json": 70,
+        "vite_default": 30,
+        "cra_default": 30,
+        "next_default": 30,
+        "vue_default": 30,
+        "angular_default": 30,
+        "default": 10,
+        "unknown": 0,
+    }
+    return ranks.get(s, 20)
+
+
+def _container_source_rank(source: Optional[str]) -> int:
+    s = str(source or "").lower()
+    if s.startswith("service_"):
+        s = s[len("service_"):]
+    if s.startswith("project_"):
+        s = s[len("project_"):]
+    ranks = {
+        "compose": 100,
+        "docker_compose": 100,
+        "compose_expose": 95,
+        "dockerfile_expose": 90,
+        "service": 60,
+        "dev_server": 30,
+        "ssr_default": 26,
+        "next_default": 25,
+        "nginx_default": 20,
+        "frontend_default": 20,
+        "runtime_fallback": 15,
+        "default": 10,
+        "unknown": 0,
+    }
+    return ranks.get(s, 20)
+
+
+def _runtime_port_from_service(svc: Dict[str, object]) -> Optional[int]:
+    runtime = svc.get("runtime_port")
+    if runtime is not None:
+        return runtime  # type: ignore[return-value]
+    if svc.get("dev_port") is not None:
+        return svc.get("dev_port")  # type: ignore[return-value]
+    return svc.get("port")  # type: ignore[return-value]
+
+
+def _apply_runtime_candidate(svc: Dict[str, object], port: Optional[int], source: Optional[str]) -> None:
+    if port is None:
+        return
+    current_port = _runtime_port_from_service(svc)
+    current_source = str(svc.get("port_source", "unknown"))
+    if current_port is None or _runtime_source_rank(source) >= _runtime_source_rank(current_source):
+        svc["runtime_port"] = port
+        svc["port"] = port
+        if svc.get("type") == "frontend":
+            svc["dev_port"] = port
+        svc["port_source"] = source or "unknown"
+
+
+def _apply_container_candidate(svc: Dict[str, object], port: Optional[int], source: Optional[str]) -> None:
+    if port is None:
+        return
+    current_port = svc.get("container_port")
+    current_source = str(svc.get("container_port_source", "unknown"))
+    if current_port is None or _container_source_rank(source) >= _container_source_rank(current_source):
+        svc["container_port"] = port
+        svc["container_port_source"] = source or "unknown"
+
+
+def _compose_runtime_candidate(
+    svc_type: str,
+    host_port: Optional[int],
+    container_port: Optional[int],
+    is_ssr_frontend: bool = False,
+) -> Optional[int]:
+    if svc_type == "frontend":
+        if is_ssr_frontend:
+            return container_port if container_port is not None else host_port
+        if container_port in (80, 443):
+            return host_port if host_port is not None else container_port
+        return container_port if container_port is not None else host_port
+    return container_port if container_port is not None else host_port
+
+
 def _extract_entry_from_command_text(command_text: Optional[str]) -> Optional[str]:
     if not command_text:
         return None
@@ -431,7 +648,7 @@ def _resolve_workspace_paths(project_path: str, patterns: List[str]) -> List[str
                 if not os.path.isdir(parent):
                     continue
                 try:
-                    for name in os.listdir(parent):
+                    for name in sorted(os.listdir(parent), key=str.lower):
                         candidate = os.path.join(parent, name)
                         if os.path.isdir(candidate):
                             norm = norm_path(candidate)
@@ -669,7 +886,10 @@ def _find_python_services(project_path: str) -> List[Dict[str, str]]:
     services = []
 
     for root, dirs, files in os.walk(project_path):
-        dirs[:] = [d for d in dirs if d not in PYTHON_SKIP_DIRS]
+        dirs[:] = sorted(
+            [d for d in dirs if d not in PYTHON_SKIP_DIRS],
+            key=str.lower,
+        )
 
         framework = None
         pkg_manager = "pip"
@@ -803,7 +1023,13 @@ def _find_python_services(project_path: str) -> List[Dict[str, str]]:
         })
         print(f"🐍 Python-scan: found {framework} backend '{folder_name}' at {root}")
 
-    return services
+    return sorted(
+        services,
+        key=lambda s: (
+            norm_path(str(s.get("abs_path", "."))).lower(),
+            str(s.get("name", "")).lower(),
+        ),
+    )
 
 
 def _merge_node_python_stubs(
@@ -829,7 +1055,13 @@ def _merge_node_python_stubs(
                 by_path[np] = s
         else:
             by_path[np] = s
-    return list(by_path.values())
+    return sorted(
+        list(by_path.values()),
+        key=lambda s: (
+            norm_path(str(s.get("abs_path", "."))).lower(),
+            str(s.get("name", "")).lower(),
+        ),
+    )
 
 
 def infer_services(
@@ -844,7 +1076,7 @@ def infer_services(
       - name: str
       - path: str (build context relative to project root)
       - type: one of {"backend", "frontend", "monolith", "worker", "other"}
-      - port, port_source, entry_point, build_output, env_file, package_manager
+      - runtime, port, port_source, entry_point, build_output, env_file, package_manager
     
     Fix 1: Uses dep-based scanning instead of folder-name matching.
     Fix 2: Monolith services get dockerfile_strategy.
@@ -853,6 +1085,126 @@ def infer_services(
     """
     static_only = metadata.get("static_only", False)
     workspace_mode = False
+
+    def _package_json_signals(service_path: str) -> tuple[set[str], Dict[str, object]]:
+        pkg_path = os.path.join(service_path, "package.json")
+        if not os.path.exists(pkg_path):
+            return set(), {}
+        try:
+            with open(pkg_path, "r", encoding="utf-8", errors="ignore") as f:
+                pkg = json.load(f) or {}
+            deps = {
+                **(pkg.get("dependencies") or {}),
+                **(pkg.get("devDependencies") or {}),
+            }
+            dep_keys = {str(k).lower() for k in deps.keys()}
+            scripts = pkg.get("scripts") or {}
+            if not isinstance(scripts, dict):
+                scripts = {}
+            return dep_keys, scripts
+        except Exception:
+            return set(), {}
+
+    def _is_nextjs_frontend(service_path: str) -> bool:
+        dep_keys, _ = _package_json_signals(service_path)
+        if "next" in dep_keys:
+            return True
+        for cfg in ("next.config.js", "next.config.mjs", "next.config.ts"):
+            if os.path.exists(os.path.join(service_path, cfg)):
+                return True
+        return False
+
+    def _is_ssr_frontend(
+        service_path: str,
+        cmds: Optional[Dict[str, object]] = None,
+    ) -> bool:
+        dep_keys, _ = _package_json_signals(service_path)
+        build_output = str((cmds or {}).get("build_output") or "").strip().lower()
+        start_command = str((cmds or {}).get("start_command") or "").lower()
+
+        if build_output in SSR_FRONTEND_BUILD_OUTPUTS:
+            return True
+        if _is_nextjs_frontend(service_path):
+            return True
+        if dep_keys & SSR_FRONTEND_DEP_HINTS:
+            return True
+        if any(token in start_command for token in SSR_FRONTEND_START_TOKENS):
+            return True
+        for cfg in SSR_FRONTEND_CONFIG_FILES:
+            if os.path.exists(os.path.join(service_path, cfg)):
+                return True
+        return False
+
+    def _is_dev_server_only_frontend(
+        service_path: str,
+        cmds: Optional[Dict[str, object]] = None,
+    ) -> bool:
+        """
+        Heuristic: frontend project with no build script/output and a dev-server-like
+        command in package scripts should run directly (no nginx static stage).
+        """
+        try:
+            if _is_ssr_frontend(service_path, cmds):
+                return False
+            _, scripts = _package_json_signals(service_path)
+            if not scripts:
+                return False
+
+            build_script = scripts.get("build")
+            if isinstance(build_script, str) and build_script.strip():
+                return False
+
+            if cmds:
+                if cmds.get("build_command"):
+                    return False
+                if cmds.get("build_output"):
+                    return False
+
+            candidate_scripts: List[str] = []
+            for key in ("dev", "start", "serve", "preview"):
+                script = scripts.get(key)
+                if isinstance(script, str) and script.strip():
+                    candidate_scripts.append(script.lower())
+            if not candidate_scripts:
+                return False
+
+            combined = " || ".join(candidate_scripts)
+            return any(token in combined for token in DEV_SERVER_START_TOKENS)
+        except Exception:
+            return False
+
+    def _fallback_backend_framework(project_framework: str) -> str:
+        """
+        Guard against frontend framework bleed (e.g. React -> backend service).
+        Only retain backend-capable project frameworks as a fallback.
+        """
+        fw = str(project_framework or "").strip()
+        if fw in {"Express.js", "Fastify", "NestJS"}:
+            return fw
+        return "Unknown"
+
+    def _infer_node_backend_framework(service_path: str, project_framework: str) -> str:
+        """
+        Prefer service-local dependency evidence for backend framework.
+        """
+        dep_keys, _ = _package_json_signals(service_path)
+        if "@nestjs/core" in dep_keys or "@nestjs/common" in dep_keys:
+            return "NestJS"
+        if "fastify" in dep_keys:
+            return "Fastify"
+        if "express" in dep_keys or "@types/express" in dep_keys:
+            return "Express.js"
+        return _fallback_backend_framework(project_framework)
+
+    def _frontend_mode_from_flags(
+        is_ssr_frontend: bool,
+        is_dev_server_frontend: bool,
+    ) -> str:
+        if is_ssr_frontend:
+            return "ssr"
+        if is_dev_server_frontend:
+            return "dev_server"
+        return "static_nginx"
 
     workspace_stubs = _build_workspace_stubs(project_path)
     if workspace_stubs:
@@ -942,8 +1294,17 @@ def infer_services(
                     "type": svc_type,
                     "language": "Python",
                     "framework": stub.get("framework"),
+                    "runtime": infer_service_runtime_image_from_code(
+                        svc_abs_path,
+                        svc_type,
+                        "Python",
+                        stub.get("framework"),
+                    ),
                     "port": stub.get("port", 8000),
+                    "runtime_port": stub.get("port", 8000),
+                    "container_port": stub.get("port", 8000),
                     "port_source": stub.get("port_source", "default"),
+                    "container_port_source": "service",
                     "entry_point": stub.get("entry_point") or py_cmds.get("entry_point"),
                     "start_command": py_cmds.get("start_command"),
                     "env_file": env_file,
@@ -957,16 +1318,13 @@ def infer_services(
             # -- Node.js backend/monolith --
             if os.path.exists(os.path.join(svc_abs_path, "package.json")):
                 svc_language = "JavaScript"
-                if language in ("JavaScript", "TypeScript", "javascript", "typescript"):
-                    svc_framework = framework
-                else:
-                    svc_framework = "Unknown"
+                svc_framework = _infer_node_backend_framework(svc_abs_path, framework)
             elif stub.get("language") == "Python":
                 svc_language = "Python"
                 svc_framework = stub.get("framework", "Unknown")
             else:
                 svc_language = language
-                svc_framework = framework
+                svc_framework = _fallback_backend_framework(framework)
 
             # Extract port from service directory
             port_info = extract_port_from_project(svc_abs_path, svc_framework, svc_language)
@@ -1009,14 +1367,25 @@ def infer_services(
                 start_command = f"node {entry_point}"
             print(f"📦 {svc_type.title()} service '{svc_name}': entry_point={entry_point}, start_command={start_command}")
 
+            svc_runtime = infer_service_runtime_image_from_code(
+                svc_abs_path,
+                svc_type,
+                svc_language,
+                svc_framework,
+            )
+
             svc_dict = {
                 "name": svc_name,
                 "path": svc_rel_path,
                 "type": svc_type,
                 "language": svc_language,
                 "framework": svc_framework,
+                "runtime": svc_runtime,
                 "port": port,
+                "runtime_port": port,
+                "container_port": port,
                 "port_source": port_source,
+                "container_port_source": "service",
                 "entry_point": entry_point,
                 "start_command": start_command,
                 "env_file": env_file,
@@ -1041,21 +1410,53 @@ def infer_services(
             # Extract frontend port
             fe_port_info = extract_frontend_port(svc_abs_path)
             fe_port = fe_port_info.get("port") or 5173
+            is_next_frontend = _is_nextjs_frontend(svc_abs_path)
+            is_ssr_frontend = _is_ssr_frontend(svc_abs_path, cmds)
+            is_dev_server_frontend = _is_dev_server_only_frontend(svc_abs_path, cmds)
+            container_port = fe_port if (is_ssr_frontend or is_dev_server_frontend) else 80
+            frontend_mode = _frontend_mode_from_flags(
+                is_ssr_frontend=is_ssr_frontend,
+                is_dev_server_frontend=is_dev_server_frontend,
+            )
             print(f"📦 Frontend service '{svc_name}': build_output={build_output}, port={fe_port}")
 
-            services.append({
+            frontend_runtime = infer_service_runtime_image_from_code(
+                svc_abs_path,
+                "frontend",
+                "JavaScript",
+                framework,
+                frontend_mode,
+            )
+
+            frontend_payload = {
                 "name": svc_name,
                 "path": svc_rel_path,
                 "type": "frontend",
+                "runtime": frontend_runtime,
+                "frontend_mode": frontend_mode,
                 "build_output": build_output,
                 "port": fe_port,
+                "runtime_port": fe_port,
+                "container_port": container_port,
                 "dev_port": fe_port,
                 "port_source": fe_port_info.get("source", "default"),
+                "container_port_source": (
+                    "next_default"
+                    if is_next_frontend
+                    else (
+                        "ssr_default"
+                        if is_ssr_frontend
+                        else ("dev_server" if is_dev_server_frontend else "nginx_default")
+                    )
+                ),
                 "entry_point": cmds.get("entry_point"),
                 "start_command": cmds.get("start_command"),
                 "env_file": env_file,
                 "package_manager": _detect_package_manager(svc_abs_path),
-            })
+            }
+            if is_dev_server_frontend:
+                frontend_payload["dockerfile_strategy"] = "frontend_dev_server"
+            services.append(frontend_payload)
 
         elif svc_type == "worker":
             if stub.get("language") == "Python":
@@ -1063,13 +1464,10 @@ def infer_services(
                 svc_framework = stub.get("framework", "Unknown")
             elif os.path.exists(os.path.join(svc_abs_path, "package.json")):
                 svc_language = "JavaScript"
-                if language in ("JavaScript", "TypeScript", "javascript", "typescript"):
-                    svc_framework = framework
-                else:
-                    svc_framework = "Unknown"
+                svc_framework = _infer_node_backend_framework(svc_abs_path, framework)
             else:
                 svc_language = language
-                svc_framework = framework
+                svc_framework = _fallback_backend_framework(framework)
             if svc_language == "Python":
                 cmds = extract_python_commands(svc_abs_path)
             else:
@@ -1081,8 +1479,17 @@ def infer_services(
                 "type": "worker",
                 "language": svc_language,
                 "framework": svc_framework,
+                "runtime": infer_service_runtime_image_from_code(
+                    svc_abs_path,
+                    "worker",
+                    svc_language,
+                    svc_framework,
+                ),
                 "port": port_info.get("port"),
+                "runtime_port": port_info.get("port"),
+                "container_port": port_info.get("port"),
                 "port_source": port_info.get("source", "default"),
+                "container_port_source": "service",
                 "entry_point": cmds.get("entry_point"),
                 "start_command": cmds.get("start_command"),
                 "env_file": env_file,
@@ -1134,8 +1541,13 @@ def infer_services(
                 "name": "frontend",
                 "path": ".",
                 "type": "frontend",
+                "runtime": "nginx:alpine",
+                "frontend_mode": "static_nginx",
                 "port": 80,
+                "runtime_port": 80,
+                "container_port": 80,
                 "port_source": "default",
+                "container_port_source": "nginx_default",
                 "build_output": single_build_output,
                 "start_command": None,
                 "env_file": root_env_file,
@@ -1146,18 +1558,50 @@ def infer_services(
             if svc_type == "frontend":
                 single_cmds = extract_nodejs_commands(project_path)
                 fe_port_info = extract_frontend_port(project_path)
-                services.append({
+                fe_port = fe_port_info.get("port") or 5173
+                is_next_frontend = _is_nextjs_frontend(project_path)
+                is_ssr_frontend = _is_ssr_frontend(project_path, single_cmds)
+                is_dev_server_frontend = _is_dev_server_only_frontend(project_path, single_cmds)
+                container_port = fe_port if (is_ssr_frontend or is_dev_server_frontend) else 80
+                frontend_mode = _frontend_mode_from_flags(
+                    is_ssr_frontend=is_ssr_frontend,
+                    is_dev_server_frontend=is_dev_server_frontend,
+                )
+                frontend_runtime = infer_service_runtime_image_from_code(
+                    project_path,
+                    "frontend",
+                    "JavaScript",
+                    framework,
+                    frontend_mode,
+                )
+                frontend_payload = {
                     "name": svc_name,
                     "path": ".",
                     "type": svc_type,
-                    "port": fe_port_info.get("port") or 5173,
-                    "dev_port": fe_port_info.get("port") or 5173,
+                    "runtime": frontend_runtime,
+                    "frontend_mode": frontend_mode,
+                    "port": fe_port,
+                    "runtime_port": fe_port,
+                    "container_port": container_port,
+                    "dev_port": fe_port,
                     "port_source": fe_port_info.get("source", "default"),
+                    "container_port_source": (
+                        "next_default"
+                        if is_next_frontend
+                        else (
+                            "ssr_default"
+                            if is_ssr_frontend
+                            else ("dev_server" if is_dev_server_frontend else "nginx_default")
+                        )
+                    ),
                     "build_output": single_cmds.get("build_output", "dist"),
                     "entry_point": single_cmds.get("entry_point"),
                     "start_command": single_cmds.get("start_command"),
                     "env_file": root_env_file,
-                })
+                }
+                if is_dev_server_frontend:
+                    frontend_payload["dockerfile_strategy"] = "frontend_dev_server"
+                services.append(frontend_payload)
             else:
                 fallback_cmds = extract_nodejs_commands(project_path)
                 fallback_entry = fallback_cmds.get("entry_point")
@@ -1174,8 +1618,17 @@ def infer_services(
                     "name": svc_name,
                     "path": ".",
                     "type": svc_type,
+                    "runtime": infer_service_runtime_image_from_code(
+                        project_path,
+                        svc_type,
+                        language,
+                        framework,
+                    ),
                     "port": port,
+                    "runtime_port": port,
+                    "container_port": port,
                     "port_source": port_source,
+                    "container_port_source": "service",
                     "entry_point": fallback_entry,
                     "start_command": fallback_start,
                     "env_file": root_env_file,
@@ -1188,89 +1641,216 @@ def infer_services(
         metadata.setdefault("architecture", "multi-service")
 
     # -- Compose hints (optional refinement) --
-    compose_path = None
-    for fname in ("docker-compose.yml", "docker-compose.yaml"):
-        candidate = os.path.join(project_path, fname)
-        if os.path.exists(candidate):
-            compose_path = candidate
-            break
+    compose_paths = _iter_compose_files(project_path)
 
-    if compose_path and yaml is not None:
+    if compose_paths and yaml is not None:
         compose_svc_name = "<unknown>"
-        try:
-            with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
-                compose_data = yaml.safe_load(f) or {}
-            compose_services = compose_data.get("services") or {}
+        compose_source = "<unknown>"
+        for compose_path in compose_paths:
+            try:
+                compose_source = compose_path
+                compose_dir = os.path.dirname(compose_path)
+                with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
+                    compose_data = yaml.safe_load(f) or {}
+                compose_services = compose_data.get("services") or {}
 
-            for svc_name, svc_def in compose_services.items():
-                compose_svc_name = svc_name
-                build_ctx = None
-                build_field = svc_def.get("build")
-                if isinstance(build_field, str):
-                    build_ctx = build_field
-                elif isinstance(build_field, dict):
-                    build_ctx = build_field.get("context") or "."
+                for svc_name, svc_def in compose_services.items():
+                    compose_svc_name = svc_name
+                    build_ctx = None
+                    build_field = svc_def.get("build")
+                    if isinstance(build_field, str):
+                        build_ctx = build_field
+                    elif isinstance(build_field, dict):
+                        build_ctx = build_field.get("context") or "."
 
-                if not build_ctx:
-                    continue
-
-                abs_ctx = os.path.abspath(os.path.join(project_path, build_ctx))
-                if not os.path.isdir(abs_ctx):
-                    continue
-
-                rel_ctx = _normalize_service_path(project_path, abs_ctx)
-                svc_type = _infer_service_type(rel_ctx, svc_name, project_path)
-                compose_command = _compose_cmd_to_text(svc_def.get("command"))
-                compose_entrypoint = _compose_cmd_to_text(svc_def.get("entrypoint"))
-                compose_runtime_cmd = " ".join(
-                    part for part in [compose_entrypoint, compose_command] if part
-                ) or None
-                compose_entry = _extract_entry_from_command_text(compose_runtime_cmd)
-
-                # Try to match by path
-                matched = False
-                for svc in services:
-                    if _norm_cmp_path(svc.get("path", "")) == _norm_cmp_path(rel_ctx):
-                        svc["name"] = svc_name  # align name to compose
-                        svc.setdefault("type", svc_type)
-                        if compose_runtime_cmd and not svc.get("start_command"):
-                            svc["start_command"] = compose_runtime_cmd
-                        if compose_entry and not svc.get("entry_point"):
-                            svc["entry_point"] = compose_entry
-                        matched = True
-                        break
-
-                if matched:
-                    continue
-
-                # Match by name
-                for svc in services:
-                    if svc.get("name") == svc_name:
-                        existing_path = svc.get("path", ".")
-                        if _is_at_least_as_specific_path(rel_ctx, existing_path):
-                            svc["path"] = rel_ctx
-                        svc.setdefault("type", svc_type)
-                        if compose_runtime_cmd and not svc.get("start_command"):
-                            svc["start_command"] = compose_runtime_cmd
-                        if compose_entry and not svc.get("entry_point"):
-                            svc["entry_point"] = compose_entry
-                        matched = True
-                        break
-
-                if not matched:
-                    # Fix 4: only add compose-discovered service if it looks like a real service
-                    abs_ctx_for_check = os.path.abspath(os.path.join(project_path, build_ctx))
-                    if not _is_service_candidate(abs_ctx_for_check, svc_name):
+                    if not build_ctx:
                         continue
-                    services.append({
-                        "name": svc_name,
-                        "path": rel_ctx,
-                        "type": svc_type,
-                        "start_command": compose_runtime_cmd,
-                        "entry_point": compose_entry,
-                    })
-        except Exception as e:
-            print(f"Compose hints error for {compose_svc_name}: {e}")
+
+                    abs_ctx = os.path.abspath(os.path.join(compose_dir, build_ctx))
+                    if not os.path.isdir(abs_ctx):
+                        continue
+
+                    rel_ctx = _normalize_service_path(project_path, abs_ctx)
+                    svc_type = _infer_service_type(rel_ctx, svc_name, project_path)
+                    compose_command = _compose_cmd_to_text(svc_def.get("command"))
+                    compose_entrypoint = _compose_cmd_to_text(svc_def.get("entrypoint"))
+                    compose_runtime_cmd = " ".join(
+                        part for part in [compose_entrypoint, compose_command] if part
+                    ) or None
+                    compose_entry = _extract_entry_from_command_text(compose_runtime_cmd)
+                    compose_host_port, compose_container_port = _extract_compose_ports(svc_def)
+                    compose_has_port = compose_host_port is not None or compose_container_port is not None
+                    is_ssr_compose_frontend = (
+                        svc_type == "frontend" and _is_ssr_frontend(abs_ctx)
+                    )
+                    compose_runtime_port = _compose_runtime_candidate(
+                        svc_type,
+                        compose_host_port,
+                        compose_container_port,
+                        is_ssr_frontend=is_ssr_compose_frontend,
+                    )
+
+                    # Try to match by path
+                    matched = False
+                    for svc in services:
+                        if _norm_cmp_path(svc.get("path", "")) == _norm_cmp_path(rel_ctx):
+                            existing_type = svc.get("type")
+                            if (not existing_type or existing_type == "other") and svc_type:
+                                svc["type"] = svc_type
+                            if compose_runtime_cmd and not svc.get("start_command"):
+                                svc["start_command"] = compose_runtime_cmd
+                            if compose_entry and not svc.get("entry_point"):
+                                svc["entry_point"] = compose_entry
+                            if compose_has_port:
+                                _apply_runtime_candidate(svc, compose_runtime_port, "compose")
+                                if compose_container_port is not None:
+                                    _apply_container_candidate(svc, compose_container_port, "compose")
+                                elif svc.get("type") in ("backend", "monolith", "worker"):
+                                    _apply_container_candidate(svc, compose_runtime_port, "compose")
+                            matched = True
+                            break
+
+                    if matched:
+                        continue
+
+                    # Match by name
+                    for svc in services:
+                        if svc.get("name") == svc_name:
+                            existing_path = svc.get("path", ".")
+                            if _is_at_least_as_specific_path(rel_ctx, existing_path):
+                                svc["path"] = rel_ctx
+                            existing_type = svc.get("type")
+                            if (not existing_type or existing_type == "other") and svc_type:
+                                svc["type"] = svc_type
+                            if compose_runtime_cmd and not svc.get("start_command"):
+                                svc["start_command"] = compose_runtime_cmd
+                            if compose_entry and not svc.get("entry_point"):
+                                svc["entry_point"] = compose_entry
+                            if compose_has_port:
+                                _apply_runtime_candidate(svc, compose_runtime_port, "compose")
+                                if compose_container_port is not None:
+                                    _apply_container_candidate(svc, compose_container_port, "compose")
+                                elif svc.get("type") in ("backend", "monolith", "worker"):
+                                    _apply_container_candidate(svc, compose_runtime_port, "compose")
+                            matched = True
+                            break
+
+                    if not matched:
+                        # Fix 4: only add compose-discovered service if it looks like a real service
+                        abs_ctx_for_check = os.path.abspath(os.path.join(compose_dir, build_ctx))
+                        if not _is_service_candidate(abs_ctx_for_check, svc_name):
+                            continue
+                        svc_data: Dict[str, object] = {
+                            "name": svc_name,
+                            "path": rel_ctx,
+                            "type": svc_type,
+                            "start_command": compose_runtime_cmd,
+                            "entry_point": compose_entry,
+                        }
+
+                        if svc_type == "frontend":
+                            frontend_cmds = extract_nodejs_commands(abs_ctx_for_check)
+                            fe_port_info = extract_frontend_port(abs_ctx_for_check)
+                            fe_runtime_port = fe_port_info.get("port") or 5173
+                            runtime_port = compose_runtime_port or fe_runtime_port
+                            is_next_frontend = _is_nextjs_frontend(abs_ctx_for_check)
+                            is_ssr_frontend = _is_ssr_frontend(abs_ctx_for_check, frontend_cmds)
+                            is_dev_server_frontend = _is_dev_server_only_frontend(
+                                abs_ctx_for_check,
+                                frontend_cmds,
+                            )
+                            default_container_port = (
+                                runtime_port if (is_ssr_frontend or is_dev_server_frontend) else 80
+                            )
+                            container_port = compose_container_port or default_container_port
+                            frontend_mode = _frontend_mode_from_flags(
+                                is_ssr_frontend=is_ssr_frontend,
+                                is_dev_server_frontend=is_dev_server_frontend,
+                            )
+                            frontend_runtime = infer_service_runtime_image_from_code(
+                                abs_ctx_for_check,
+                                "frontend",
+                                "JavaScript",
+                                framework,
+                                frontend_mode,
+                            )
+                            svc_data.update({
+                                "runtime": frontend_runtime,
+                                "port": runtime_port,
+                                "runtime_port": runtime_port,
+                                "container_port": container_port,
+                                "dev_port": runtime_port,
+                                "frontend_mode": frontend_mode,
+                                "port_source": "compose" if compose_has_port else fe_port_info.get("source", "default"),
+                                "container_port_source": (
+                                    "compose"
+                                    if compose_container_port is not None
+                                    else (
+                                        "next_default"
+                                        if is_next_frontend
+                                        else (
+                                            "ssr_default"
+                                            if is_ssr_frontend
+                                            else ("dev_server" if is_dev_server_frontend else "nginx_default")
+                                        )
+                                    )
+                                ),
+                            })
+                            if frontend_cmds.get("build_output"):
+                                svc_data["build_output"] = frontend_cmds.get("build_output")
+                            if frontend_cmds.get("entry_point") and not svc_data.get("entry_point"):
+                                svc_data["entry_point"] = frontend_cmds.get("entry_point")
+                            if frontend_cmds.get("start_command") and not svc_data.get("start_command"):
+                                svc_data["start_command"] = frontend_cmds.get("start_command")
+                            if is_dev_server_frontend:
+                                svc_data["dockerfile_strategy"] = "frontend_dev_server"
+                        else:
+                            has_package_json = os.path.exists(
+                                os.path.join(abs_ctx_for_check, "package.json")
+                            )
+                            has_python_markers = any(
+                                os.path.exists(os.path.join(abs_ctx_for_check, marker))
+                                for marker in ("requirements.txt", "pyproject.toml", "manage.py")
+                            )
+                            if has_package_json:
+                                svc_language = "JavaScript"
+                                svc_framework = _infer_node_backend_framework(
+                                    abs_ctx_for_check,
+                                    framework,
+                                )
+                            elif has_python_markers:
+                                svc_language = "Python"
+                                svc_framework = "Unknown"
+                            else:
+                                svc_language = language
+                                svc_framework = _fallback_backend_framework(framework)
+
+                            port_info = extract_port_from_project(
+                                abs_ctx_for_check,
+                                svc_framework,
+                                svc_language,
+                            )
+                            inferred_port = port_info.get("port")
+                            runtime_port = compose_runtime_port or inferred_port
+                            container_port = compose_container_port or runtime_port
+                            effective_port = runtime_port or container_port
+                            svc_data.update({
+                                "runtime": infer_service_runtime_image_from_code(
+                                    abs_ctx_for_check,
+                                    svc_type,
+                                    svc_language,
+                                    svc_framework,
+                                ),
+                                "port": effective_port,
+                                "runtime_port": runtime_port if runtime_port is not None else effective_port,
+                                "container_port": container_port if container_port is not None else effective_port,
+                                "port_source": "compose" if compose_has_port else port_info.get("source", "default"),
+                                "container_port_source": "compose" if compose_container_port is not None else "service",
+                            })
+
+                        services.append(svc_data)
+            except Exception as e:
+                print(f"Compose hints error for {compose_svc_name} in {compose_source}: {e}")
 
     deduped_by_path_type: Dict[tuple, Dict[str, str]] = {}
     for svc in services:
@@ -1283,17 +1863,32 @@ def infer_services(
     services = list(deduped_by_path_type.values())
 
     # Root monolith can coexist with compose hints that add child build contexts.
-    # If a root monolith exists, suppress non-database subdirectory services to avoid duplication.
+    # Only suppress non-root services when they are not real service candidates.
     if any(s.get("path") == "." and s.get("type") == "monolith" for s in services):
-        services = [
+        root_and_db = [
             s for s in services
             if s.get("path") == "." or s.get("type") == "database"
         ]
+        non_root_non_db = [
+            s for s in services
+            if s.get("path") != "." and s.get("type") != "database"
+        ]
+
+        real_non_root = []
+        for svc in non_root_non_db:
+            rel = str(svc.get("path", ".") or ".").strip("/\\")
+            abs_path = project_path if rel in ("", ".") else os.path.join(project_path, rel.replace("/", os.sep))
+            folder_name = os.path.basename(abs_path) or str(svc.get("name", ""))
+            if _is_service_candidate(abs_path, folder_name):
+                real_non_root.append(svc)
+
+        if not real_non_root:
+            services = root_and_db
 
     # -- Database service detection (smart cloud vs local) --
     backend_path = None
     for svc in services:
-        if svc.get("type") in ("backend", "monolith"):
+        if svc.get("type") in ("backend", "monolith", "worker"):
             backend_path = os.path.join(project_path, svc.get("path", "."))
             break
 
@@ -1317,7 +1912,7 @@ def infer_services(
             if any(f in files for f in ("requirements.txt", "pyproject.toml", "Pipfile", "manage.py")):
                 score += 2
             name_lower = str(stub.get("name", "")).lower()
-            if any(tok in name_lower for tok in ("backend", "server", "api", "worker")):
+            if any(tok in name_lower for tok in ("backend", "server", "api", "worker", "app")):
                 score += 1
             try:
                 rel_candidate = os.path.relpath(candidate, project_path).replace("\\", "/")
@@ -1341,6 +1936,12 @@ def infer_services(
 
     if backend_path and authoritative_db:
         db_info = extract_database_info(backend_path, authoritative_db)
+        if os.path.normpath(backend_path) != os.path.normpath(project_path):
+            root_db_info = extract_database_info(project_path, authoritative_db)
+            # If backend path only produced dependency fallback while root has
+            # an explicit env DB signal, prefer root env-derived cloud/local info.
+            if root_db_info.get("source") == "env" and db_info.get("source") != "env":
+                db_info = root_db_info
 
         # Keep DB type aligned with detector-level scoring when provided.
         if isinstance(db_result, dict):
@@ -1390,12 +1991,8 @@ def infer_services(
             print(f"☁️ Cloud database detected ({db_info['db_type']}), no container needed")
             print(f"   Backend should use env var: {db_info.get('env_var_name')}")
 
-    # Suppress phantom root service when real subdirectory services exist
-    # BUT only if the root folder has no dependency file of its own
-    _DEP_FILES = {
-        "package.json", "requirements.txt", "pyproject.toml",
-        "pom.xml", "go.mod", "manage.py", "Gemfile", "Cargo.toml",
-    }
+    # Suppress phantom root service when real subdirectory services exist.
+    # Keep this consistent with early stub-level suppression rules.
     _subdir_services = [
         s for s in services
         if s.get("path", ".").strip("/\\").replace("\\", "/") not in ("", ".")
@@ -1405,13 +2002,65 @@ def infer_services(
             s for s in services
             if s.get("path", ".").strip("/\\").replace("\\", "/") in ("", ".")
         ]
-        for rs in _root_services:
-            try:
-                root_files = set(os.listdir(project_path))
-            except (PermissionError, OSError):
-                root_files = set()
-            if not (root_files & _DEP_FILES):
-                services = _subdir_services + [s for s in services if s.get("type") == "database"]
-                break
+        if _root_services:
+            root_type = _root_services[0].get("type", "other")
+            real_non_root = [
+                s for s in _subdir_services
+                if s.get("type") not in ("database", "other")
+            ]
 
-    return services
+            root_has_service_deps = False
+            root_pkg = os.path.join(project_path, "package.json")
+            if os.path.exists(root_pkg):
+                try:
+                    with open(root_pkg, "r", encoding="utf-8", errors="ignore") as f:
+                        pkg = json.load(f) or {}
+                    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+                    root_has_service_deps = bool(
+                        set(deps.keys()) & (BACKEND_DEPS | FRONTEND_DEPS | WORKER_DEPS)
+                    )
+                except Exception:
+                    pass
+
+            threshold = 2 if root_has_service_deps else 1
+            if root_type in ("frontend", "other") or root_type is None:
+                if len(real_non_root) >= threshold:
+                    root_databases = [s for s in _root_services if s.get("type") == "database"]
+                    services = _subdir_services + root_databases
+
+    # Ensure every frontend service has an explicit frontend mode label so
+    # downstream prompt construction can treat service-level mode as authoritative.
+    for svc in services:
+        if svc.get("type") != "frontend":
+            continue
+        frontend_mode = str(svc.get("frontend_mode", "")).strip().lower()
+        if frontend_mode in {"ssr", "dev_server", "static_nginx"}:
+            continue
+
+        try:
+            rel_path = str(svc.get("path", ".") or ".").strip("/\\")
+            abs_path = project_path if rel_path in ("", ".") else os.path.join(
+                project_path,
+                rel_path.replace("/", os.sep),
+            )
+            cmds = extract_nodejs_commands(abs_path) if os.path.isdir(abs_path) else {}
+            is_ssr_frontend = _is_ssr_frontend(abs_path, cmds) if os.path.isdir(abs_path) else False
+            is_dev_server_frontend = (
+                _is_dev_server_only_frontend(abs_path, cmds)
+                if os.path.isdir(abs_path)
+                else False
+            )
+            svc["frontend_mode"] = _frontend_mode_from_flags(
+                is_ssr_frontend=is_ssr_frontend,
+                is_dev_server_frontend=is_dev_server_frontend,
+            )
+        except Exception:
+            svc["frontend_mode"] = "static_nginx"
+    return sorted(
+        services,
+        key=lambda s: (
+            norm_path(str(s.get("path", "."))).lower(),
+            str(s.get("type", "")).lower(),
+            str(s.get("name", "")).lower(),
+        ),
+    )

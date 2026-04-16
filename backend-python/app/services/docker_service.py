@@ -639,15 +639,19 @@ def _get_role_ports_from_metadata(metadata: Optional[Dict], role: str) -> List[i
 
     if role == "backend":
         fields = [
+            "backend_container_port",
             "docker_backend_container_ports",
             "docker_backend_ports",
+            "backend_runtime_port",
             "backend_port",
             "port",
         ]
     elif role == "frontend":
         fields = [
+            "frontend_container_port",
             "docker_frontend_container_ports",
             "docker_frontend_ports",
+            "frontend_runtime_port",
             "frontend_port",
         ]
     else:

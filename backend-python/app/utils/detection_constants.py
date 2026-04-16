@@ -6,6 +6,10 @@ Extracted from detector.py to reduce its size.
 from typing import Dict
 
 
+# Canonical detector/LLM metadata contract version.
+PORT_SCHEMA_VERSION = "ports_v2"
+
+
 # Concrete detection rules (these are highly reliable)
 LANGUAGE_INDICATORS = {
     "Python": {
@@ -196,6 +200,88 @@ WORKER_DEPS = {
     "celery", "dramatiq", "rq", "huey",          # Python workers
     "bull", "bullmq", "bee-queue", "agenda",      # Node workers
     "amqplib", "amqp", "kafkajs", "kafka-node",  # Message queue clients
+}
+
+# Frontend runtimes that are served by a Node process (SSR/hybrid),
+# so container port should follow runtime_port instead of nginx:80.
+SSR_FRONTEND_FRAMEWORK_HINTS = {
+    "next",
+    "next.js",
+    "nuxt",
+    "nuxt.js",
+    "sveltekit",
+    "svelte kit",
+    "remix",
+    "astro",
+    "angular universal",
+    "angular ssr",
+}
+
+SSR_FRONTEND_DEP_HINTS = {
+    "next",
+    "nuxt",
+    "nuxt3",
+    "@nuxt/kit",
+    "@nuxtjs/nuxt",
+    "@sveltejs/kit",
+    "remix",
+    "@remix-run/node",
+    "@remix-run/react",
+    "astro",
+    "@angular/ssr",
+    "@angular/platform-server",
+}
+
+SSR_FRONTEND_BUILD_OUTPUTS = {
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".astro",
+    ".output",
+    ".output/server",
+    "build/server",
+}
+
+SSR_FRONTEND_CONFIG_FILES = {
+    "next.config.js",
+    "next.config.mjs",
+    "next.config.ts",
+    "nuxt.config.js",
+    "nuxt.config.mjs",
+    "nuxt.config.ts",
+    "svelte.config.js",
+    "svelte.config.cjs",
+    "svelte.config.mjs",
+    "remix.config.js",
+    "remix.config.cjs",
+    "remix.config.mjs",
+    "astro.config.js",
+    "astro.config.mjs",
+    "astro.config.ts",
+}
+
+SSR_FRONTEND_START_TOKENS = {
+    "next start",
+    "nuxt start",
+    "nuxt preview",
+    "remix-serve",
+    "svelte-kit preview",
+    "astro preview",
+    ".output/server",
+}
+
+DEV_SERVER_START_TOKENS = {
+    "vite",
+    "webpack-dev-server",
+    "react-scripts start",
+    "next dev",
+    "nuxt dev",
+    "astro dev",
+    "parcel",
+    "npm run dev",
+    "yarn dev",
+    "pnpm dev",
+    "bun dev",
 }
 
 DB_DRIVER_ONLY_DEPS = {

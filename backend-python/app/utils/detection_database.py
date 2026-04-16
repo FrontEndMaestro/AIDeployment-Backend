@@ -123,20 +123,18 @@ def detect_databases(
     """
     # Import here to avoid circular imports
     from .detector import _read_env_key_values
-    from .detection_ports import _detect_fullstack_structure
+    from .detection_ports import _detect_fullstack_structure, _iter_compose_files
 
     deps_lower = [d.lower() for d in dependencies]
     
     # docker-compose content
     compose_content = ""
-    for fname in ("docker-compose.yml", "docker-compose.yaml"):
-        cpath = os.path.join(project_path, fname)
-        if os.path.exists(cpath):
-            try:
-                with open(cpath, "r", encoding="utf-8", errors="ignore") as f:
-                    compose_content += f.read().lower()
-            except Exception:
-                pass
+    for cpath in _iter_compose_files(project_path):
+        try:
+            with open(cpath, "r", encoding="utf-8", errors="ignore") as f:
+                compose_content += f.read().lower()
+        except Exception:
+            pass
     
     # read env key/values for DB hints (root + nested backend/frontend .env files)
     env_kv_root = _read_env_key_values(project_path)

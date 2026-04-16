@@ -36,6 +36,7 @@ export interface TokenResponse {
 
 // ============ PROJECT TYPES ============
 export interface ProjectMetadata {
+  schema_version?: string;
   framework: string;
   language: string;
   runtime?: string;
@@ -64,6 +65,14 @@ export interface ProjectMetadata {
   // NEW FIELDS (from detector.py)
   backend_port?: number;
   frontend_port?: number;
+  backend_runtime_port?: number;
+  frontend_runtime_port?: number;
+  backend_runtime_port_source?: string;
+  frontend_runtime_port_source?: string;
+  backend_container_port?: number;
+  frontend_container_port?: number;
+  backend_container_port_source?: string;
+  frontend_container_port_source?: string;
   database?: string;
   database_port?: number | null;
   databases?: string[];
@@ -130,6 +139,7 @@ export interface ProjectUploadResponse {
   success: boolean;
   message: string;
   data: {
+    schema_version?: string;
     project_id: string;
     project_name: string;
     file_name: string;
@@ -181,6 +191,14 @@ export interface AnalysisResponse {
     // NEW (optional) – mirrors metadata
     backend_port?: number;
     frontend_port?: number;
+    backend_runtime_port?: number;
+    frontend_runtime_port?: number;
+    backend_runtime_port_source?: string;
+    frontend_runtime_port_source?: string;
+    backend_container_port?: number;
+    frontend_container_port?: number;
+    backend_container_port_source?: string;
+    frontend_container_port_source?: string;
 
     database?: string;
     databases?: string[];

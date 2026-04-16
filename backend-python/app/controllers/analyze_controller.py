@@ -401,6 +401,7 @@ async def export_metadata_handler(project_id: str, format: str = "json", current
 
         export_data = {
             "project_name": project["project_name"],
+            "schema_version": metadata.get("schema_version", "ports_v2"),
             "framework": metadata.get("framework"),
             "language": metadata.get("language"),
             "runtime": metadata.get("runtime"),
@@ -412,6 +413,14 @@ async def export_metadata_handler(project_id: str, format: str = "json", current
             # explicit ports
             "backend_port": metadata.get("backend_port"),
             "frontend_port": metadata.get("frontend_port"),
+            "backend_runtime_port": metadata.get("backend_runtime_port"),
+            "frontend_runtime_port": metadata.get("frontend_runtime_port"),
+            "backend_runtime_port_source": metadata.get("backend_runtime_port_source"),
+            "frontend_runtime_port_source": metadata.get("frontend_runtime_port_source"),
+            "backend_container_port": metadata.get("backend_container_port"),
+            "frontend_container_port": metadata.get("frontend_container_port"),
+            "backend_container_port_source": metadata.get("backend_container_port_source"),
+            "frontend_container_port_source": metadata.get("frontend_container_port_source"),
             "database": metadata.get("database"),
             "database_port": metadata.get("database_port"),
 

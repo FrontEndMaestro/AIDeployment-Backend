@@ -14,6 +14,40 @@ from collections import Counter
 from typing import Dict, List, Tuple, Optional
 
 
+def _iter_compose_files(project_path: str) -> List[str]:
+    """Discover docker-compose files recursively under project_path."""
+    compose_names = {"docker-compose.yml", "docker-compose.yaml"}
+    skip_dirs = {
+        "node_modules", ".git", "__pycache__", "venv", ".venv",
+        "dist", "build", ".next", ".cache", "coverage",
+    }
+    discovered: List[str] = []
+    seen = set()
+
+    for root, dirs, files in os.walk(project_path):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for fname in compose_names:
+            if fname not in files:
+                continue
+            path = os.path.join(root, fname)
+            norm = os.path.normcase(os.path.normpath(path))
+            if norm in seen:
+                continue
+            seen.add(norm)
+            discovered.append(path)
+
+    def _sort_key(path: str) -> tuple[int, str]:
+        try:
+            rel = os.path.relpath(path, project_path)
+            depth = len(rel.split(os.sep))
+        except ValueError:
+            depth = 9999
+        return depth, path.lower()
+
+    discovered.sort(key=_sort_key)
+    return discovered
+
+
 def _detect_fullstack_structure(project_path: str) -> Dict[str, Optional[str]]:
     """
     Detect typical fullstack structure with separate frontend/backend folders.
@@ -77,6 +111,9 @@ def _scan_js_for_port_hint(service_path: str, max_files: int = 50) -> Optional[i
     priority_patterns = [
         re.compile(r"\.listen\s*\(\s*(\d{2,5})\s*[,)]", re.IGNORECASE),
         re.compile(r"process\.env\.PORT\s*\|\|\s*(\d{2,5})", re.IGNORECASE),
+        re.compile(r"process\.env\.PORT\s*\?\?\s*(\d{2,5})", re.IGNORECASE),
+        re.compile(r"parseInt\s*\(\s*process\.env\.PORT\s*(?:\|\||\?\?)\s*['\"]?(\d{2,5})", re.IGNORECASE),
+        re.compile(r"Number\s*\(\s*process\.env\.PORT\s*\)\s*(?:\|\||\?\?)\s*(\d{2,5})", re.IGNORECASE),
         re.compile(r"process\.env\.\w+\s*\|\|\s*(\d{2,5})", re.IGNORECASE),
         re.compile(r"(?:const|let|var)\s+PORT\s*=\s*(\d{2,5})", re.IGNORECASE),
     ]
@@ -193,8 +230,7 @@ def _detect_port_from_package_json(project_path: str, prefer_frontend: bool = Fa
     if prefer_frontend and "vite" in dep_names:
         return 5173
     
-    # Default for Node apps when nothing explicit is found
-    return 3000
+    return None
 
 
 def _scan_code_for_ports(project_path: str, max_files: int = 150) -> Optional[int]:
@@ -274,17 +310,10 @@ def _parse_docker_compose_ports(project_path: str) -> Dict[str, List[Tuple[int, 
             ...
         }
     """
-    compose_files = ("docker-compose.yml", "docker-compose.yaml")
-    compose_path = None
+    compose_paths = _iter_compose_files(project_path)
 
-    for fname in compose_files:
-        candidate = os.path.join(project_path, fname)
-        if os.path.exists(candidate):
-            compose_path = candidate
-            break
-
-    # No compose file found
-    if not compose_path:
+    # No compose files found
+    if not compose_paths:
         return {}
 
     # If PyYAML isn't installed, fall back to "no ports" rather than breaking
@@ -292,80 +321,190 @@ def _parse_docker_compose_ports(project_path: str) -> Dict[str, List[Tuple[int, 
         print("Warning: PyYAML not installed; docker-compose ports will not be parsed.")
         return {}
 
-    try:
-        with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
-            data = yaml.safe_load(f) or {}
-    except Exception as e:
-        print(f"Error parsing docker-compose with YAML: {e}")
-        return {}
-
-    services = data.get("services", {})
     service_ports: Dict[str, List[Tuple[int, int]]] = {}
 
-    for svc_name, svc_def in services.items():
-        if not isinstance(svc_def, dict):
+    for compose_path in compose_paths:
+        try:
+            with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as e:
+            print(f"Error parsing docker-compose with YAML ({compose_path}): {e}")
             continue
 
-        ports_field = svc_def.get("ports")
-        if not ports_field:
-            continue
+        services = data.get("services", {})
 
-        # Normalize ports_field to a list
-        if isinstance(ports_field, (str, int)):
-            ports_list = [ports_field]
-        elif isinstance(ports_field, list):
-            ports_list = ports_field
-        else:
-            # Unknown type, skip
-            continue
+        for svc_name, svc_def in services.items():
+            if not isinstance(svc_def, dict):
+                continue
 
-        mappings: List[Tuple[int, int]] = []
+            ports_field = svc_def.get("ports")
+            if not ports_field:
+                continue
 
-        for entry in ports_list:
-            # Possible formats:
-            # - "3000:3000"
-            # - "0.0.0.0:3000:3000"
-            # - "3000"
-            # - 3000
-            host_port: Optional[int] = None
-            container_port: Optional[int] = None
-
-            if isinstance(entry, int):
-                # `ports: - 3000` means container port 3000, host randomized.
-                # We can treat this as (3000, 3000) for our detection purposes,
-                # or skip host mapping. Here we treat host == container.
-                host_port = entry
-                container_port = entry
+            # Normalize ports_field to a list
+            if isinstance(ports_field, (str, int)):
+                ports_list = [ports_field]
+            elif isinstance(ports_field, list):
+                ports_list = ports_field
             else:
-                # It's a string
-                text = str(entry).strip().strip('"').strip("'")
-                # Drop protocol suffix if present, e.g. "3000:3000/tcp"
-                if "/" in text:
-                    text = text.split("/", 1)[0]
+                # Unknown type, skip
+                continue
 
-                parts = text.split(":")
-                # "3000" => only container port (host random)
-                if len(parts) == 1 and parts[0].isdigit():
-                    container_port = int(parts[0])
-                    # we *could* leave host_port as None; but for your
-                    # detector it's more useful to treat host == container
-                    host_port = container_port
-                elif len(parts) >= 2:
-                    # Could be "host:container" or "ip:host:container"
-                    # We take last two segments as host/container
-                    maybe_host = parts[-2]
-                    maybe_container = parts[-1]
-                    if maybe_host.isdigit() and maybe_container.isdigit():
-                        host_port = int(maybe_host)
-                        container_port = int(maybe_container)
+            mappings: List[Tuple[int, int]] = []
 
-            if host_port is not None and container_port is not None:
-                mappings.append((host_port, container_port))
+            for entry in ports_list:
+                # Possible formats:
+                # - "3000:3000"
+                # - "0.0.0.0:3000:3000"
+                # - "3000"
+                # - 3000
+                host_port: Optional[int] = None
+                container_port: Optional[int] = None
 
-        if mappings:
-            service_ports[svc_name] = mappings
+                if isinstance(entry, int):
+                    # `ports: - 3000` means container port 3000, host randomized.
+                    # We can treat this as (3000, 3000) for our detection purposes,
+                    # or skip host mapping. Here we treat host == container.
+                    host_port = entry
+                    container_port = entry
+                else:
+                    # It's a string
+                    text = str(entry).strip().strip('"').strip("'")
+                    # Drop protocol suffix if present, e.g. "3000:3000/tcp"
+                    if "/" in text:
+                        text = text.split("/", 1)[0]
+
+                    parts = text.split(":")
+                    # "3000" => only container port (host random)
+                    if len(parts) == 1 and parts[0].isdigit():
+                        container_port = int(parts[0])
+                        # we *could* leave host_port as None; but for your
+                        # detector it's more useful to treat host == container
+                        host_port = container_port
+                    elif len(parts) >= 2:
+                        # Could be "host:container" or "ip:host:container"
+                        # We take last two segments as host/container
+                        maybe_host = parts[-2]
+                        maybe_container = parts[-1]
+                        if maybe_host.isdigit() and maybe_container.isdigit():
+                            host_port = int(maybe_host)
+                            container_port = int(maybe_container)
+
+                if host_port is not None and container_port is not None:
+                    mappings.append((host_port, container_port))
+
+            if mappings:
+                service_ports.setdefault(svc_name, []).extend(mappings)
+
+    for svc_name, mappings in list(service_ports.items()):
+        service_ports[svc_name] = sorted(set(mappings))
 
     return service_ports
+
+
+def _extract_port_from_value(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    text = str(value).strip().strip('"').strip("'")
+    if not text:
+        return None
+    if text.isdigit():
+        p = int(text)
+        if 1 <= p <= 65535:
+            return p
+    m = re.search(r"(\d{2,5})", text)
+    if not m:
+        return None
+    try:
+        p = int(m.group(1))
+    except ValueError:
+        return None
+    if 1 <= p <= 65535:
+        return p
+    return None
+
+
+def _extract_compose_env_hints(svc_def: Dict[str, object]) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    """
+    Parse compose service environment for port hints and return:
+      (backend_hint, frontend_hint, generic_port_hint)
+    """
+    backend_hint: Optional[int] = None
+    frontend_hint: Optional[int] = None
+    generic_hint: Optional[int] = None
+
+    env_field = svc_def.get("environment")
+    env_items: List[tuple[str, object]] = []
+
+    if isinstance(env_field, dict):
+        env_items = [(str(k), v) for k, v in env_field.items()]
+    elif isinstance(env_field, list):
+        for item in env_field:
+            if isinstance(item, str) and "=" in item:
+                key, value = item.split("=", 1)
+                env_items.append((key, value))
+            elif isinstance(item, dict):
+                for k, v in item.items():
+                    env_items.append((str(k), v))
+
+    for raw_key, raw_value in env_items:
+        key = str(raw_key).strip().upper()
+        port = _extract_port_from_value(raw_value)
+        if port is None:
+            continue
+
+        if key in ("BACKEND_PORT", "SERVER_PORT", "API_PORT"):
+            if backend_hint is None:
+                backend_hint = port
+            continue
+
+        if key in ("FRONTEND_PORT", "CLIENT_PORT", "VITE_PORT", "REACT_APP_PORT", "NEXT_PUBLIC_PORT", "VITE_DEV_PORT"):
+            if frontend_hint is None:
+                frontend_hint = port
+            continue
+
+        if key == "PORT" and generic_hint is None:
+            generic_hint = port
+
+    return backend_hint, frontend_hint, generic_hint
+
+
+def _parse_docker_compose_env_ports(project_path: str) -> Dict[str, Dict[str, Optional[int]]]:
+    """
+    Parse docker-compose service `environment` sections for backend/frontend/generic
+    port hints.
+    """
+    compose_paths = _iter_compose_files(project_path)
+    if not compose_paths:
+        return {}
+    if yaml is None:
+        return {}
+
+    hints: Dict[str, Dict[str, Optional[int]]] = {}
+    for compose_path in compose_paths:
+        try:
+            with open(compose_path, "r", encoding="utf-8", errors="ignore") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:
+            continue
+
+        services = data.get("services", {})
+        if not isinstance(services, dict):
+            continue
+
+        for svc_name, svc_def in services.items():
+            if not isinstance(svc_def, dict):
+                continue
+            backend_hint, frontend_hint, generic_hint = _extract_compose_env_hints(svc_def)
+            if backend_hint is None and frontend_hint is None and generic_hint is None:
+                continue
+            hints[str(svc_name)] = {
+                "backend_port": backend_hint,
+                "frontend_port": frontend_hint,
+                "generic_port": generic_hint,
+            }
+
+    return hints
 
 
 def _parse_dockerfile_expose_ports(project_path: str) -> List[int]:
@@ -414,7 +553,7 @@ def _classify_docker_service(name: str) -> str:
 
     FRONTEND_EXACT = {"frontend", "client", "web", "ui", "webapp", "react"}
     FRONTEND_SUBSTR = ["front", "client", "ui"]
-    BACKEND_EXACT = {"backend", "api", "server", "express", "node"}
+    BACKEND_EXACT = {"backend", "api", "server", "express", "node", "app"}
     BACKEND_SUBSTR = ["back", "api", "server"]
     DB_KEYS = ["mongo", "mysql", "postgres", "pgsql", "redis", "db"]
 
@@ -466,22 +605,7 @@ def detect_ports_for_project(
     root_env_kv = _read_env_key_values(project_path)
 
     def _extract_port(val: str) -> Optional[int]:
-        val = val.strip()
-        if not val:
-            return None
-        if val.isdigit():
-            p = int(val)
-            if 1 <= p <= 65535:
-                return p
-        m = re.search(r"(\d{2,5})", val)
-        if m:
-            try:
-                p = int(m.group(1))
-                if 1 <= p <= 65535:
-                    return p
-            except ValueError:
-                return None
-        return None
+        return _extract_port_from_value(val)
 
     def _extract_env_ports(env_kv: Dict[str, str]):
         """
@@ -538,7 +662,7 @@ def detect_ports_for_project(
             # Backend-specific env: backend/.env overrides root .env
             if backend_path:
                 backend_env_kv = _read_env_key_values(backend_path)
-                b_backend_env_port, _, b_generic_env_port = _extract_env_ports(backend_env_kv)
+                b_backend_env_port, b_frontend_env_port, b_generic_env_port = _extract_env_ports(backend_env_kv)
 
 
                 if b_backend_env_port is not None:
@@ -548,6 +672,11 @@ def detect_ports_for_project(
                     # (not just generic fallback). This ensures PORT=4000 from backend/.env
                     # takes priority over package.json default of 3000.
                     backend_env_port = b_generic_env_port
+
+                # Preserve frontend explicit hints found in backend env files
+                # (common in MERN templates that colocate both ports).
+                if frontend_env_port is None and b_frontend_env_port is not None:
+                    frontend_env_port = b_frontend_env_port
 
             # Frontend-specific env: frontend/.env overrides root .env
             if frontend_path:
@@ -711,6 +840,7 @@ def detect_ports_for_project(
 
     # ---- Docker-compose ports ----
     docker_service_ports = _parse_docker_compose_ports(project_path)
+    docker_compose_env_hints = _parse_docker_compose_env_ports(project_path)
 
     # ---- Dockerfile EXPOSE ports ----
     dockerfile_exposed_ports = _parse_dockerfile_expose_ports(project_path)
@@ -719,6 +849,8 @@ def detect_ports_for_project(
     docker_frontend_ports: List[int] = []
     docker_database_ports: List[int] = []
     docker_other_ports: Dict[str, List[int]] = {}
+    compose_backend_env_ports: List[int] = []
+    compose_frontend_env_ports: List[int] = []
 
     # Container (internal) ports for the same services
     docker_backend_container_ports: List[int] = []
@@ -751,6 +883,30 @@ def detect_ports_for_project(
             if container_ports:
                 docker_other_container_ports[svc] = container_ports
 
+    for svc_name, svc_hints in docker_compose_env_hints.items():
+        role = _classify_docker_service(svc_name)
+        backend_hint = svc_hints.get("backend_port")
+        frontend_hint = svc_hints.get("frontend_port")
+        generic_hint = svc_hints.get("generic_port")
+
+        if role == "backend":
+            candidate = backend_hint if backend_hint is not None else generic_hint
+            if candidate is not None:
+                compose_backend_env_ports.append(candidate)
+        elif role == "frontend":
+            candidate = frontend_hint if frontend_hint is not None else generic_hint
+            if candidate is not None:
+                compose_frontend_env_ports.append(candidate)
+        else:
+            # Fallback for ambiguous service names.
+            if backend_hint is not None:
+                compose_backend_env_ports.append(backend_hint)
+            elif generic_hint is not None and frontend_hint is None:
+                compose_backend_env_ports.append(generic_hint)
+
+            if frontend_hint is not None:
+                compose_frontend_env_ports.append(frontend_hint)
+
     # de-duplicate docker port lists
     docker_backend_ports = sorted(set(docker_backend_ports))
     docker_frontend_ports = sorted(set(docker_frontend_ports))
@@ -759,22 +915,45 @@ def detect_ports_for_project(
     docker_backend_container_ports = sorted(set(docker_backend_container_ports))
     docker_frontend_container_ports = sorted(set(docker_frontend_container_ports))
     docker_database_container_ports = sorted(set(docker_database_container_ports))
+    compose_backend_env_ports = sorted(set(compose_backend_env_ports))
+    compose_frontend_env_ports = sorted(set(compose_frontend_env_ports))
 
     # --- Compose-driven hints (conservative) ---
-    # Only use compose HOST ports if we did not find a better hint earlier.
-    if backend_port is None and docker_backend_ports:
-        backend_port = docker_backend_ports[0]
-        backend_port_source = "compose"
+    # Only use compose hints if we did not find a better hint earlier.
+    if backend_port is None:
+        if compose_backend_env_ports:
+            backend_port = compose_backend_env_ports[0]
+            backend_port_source = "compose_env"
+        elif docker_backend_container_ports:
+            backend_port = docker_backend_container_ports[0]
+            backend_port_source = "compose"
+        elif docker_backend_ports:
+            backend_port = docker_backend_ports[0]
+            backend_port_source = "compose"
 
-    if frontend_port is None and docker_frontend_ports:
-        frontend_port = docker_frontend_ports[0]
-        frontend_port_source = "compose"
+    if frontend_port is None:
+        if compose_frontend_env_ports:
+            frontend_port = compose_frontend_env_ports[0]
+            frontend_port_source = "compose_env"
+        elif docker_frontend_container_ports:
+            if any(p in (80, 443) for p in docker_frontend_container_ports) and docker_frontend_ports:
+                # For static frontend containers, runtime/dev port maps to compose host port.
+                frontend_port = docker_frontend_ports[0]
+            else:
+                # Otherwise runtime port is the app/container-side port.
+                frontend_port = docker_frontend_container_ports[0]
+            frontend_port_source = "compose"
+        elif docker_frontend_ports:
+            frontend_port = docker_frontend_ports[0]
+            frontend_port_source = "compose"
 
     return {
         "backend_port": backend_port,
         "frontend_port": frontend_port,
         "backend_port_source": backend_port_source,
         "frontend_port_source": frontend_port_source,
+        "backend_compose_env_port": compose_backend_env_ports[0] if compose_backend_env_ports else None,
+        "frontend_compose_env_port": compose_frontend_env_ports[0] if compose_frontend_env_ports else None,
 
         # HOST ports from docker-compose (what you bind on the machine)
         "docker_backend_ports": docker_backend_ports or None,

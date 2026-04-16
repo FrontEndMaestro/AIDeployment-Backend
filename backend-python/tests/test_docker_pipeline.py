@@ -16,6 +16,7 @@ import re
 import tempfile
 import shutil
 import unittest
+from unittest.mock import patch
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,6 +26,7 @@ from app.LLM.docker_deploy_agent import (
     build_deploy_message,
     DOCKER_DEPLOY_SYSTEM_PROMPT,
 )
+from app.controllers.docker_ai_controller import _augment_services_runtime_hints
 
 
 # =============================================================================
@@ -1119,9 +1121,9 @@ class TestControllerDeployBlockedRecheck(unittest.TestCase):
 
     def _simulate_controller_recheck(self, services, metadata):
         """Mirror the logic from docker_ai_controller.py lines 177-195."""
-        backend_services = [s for s in services if s.get("type") == "backend"]
+        backend_services = [s for s in services if s.get("type") in ("backend", "monolith")]
         backend_missing_env = any(
-            svc.get("type") == "backend" and not svc.get("env_file")
+            svc.get("type") in ("backend", "monolith") and not svc.get("env_file")
             for svc in services
         )
 
@@ -1167,6 +1169,59 @@ class TestControllerDeployBlockedRecheck(unittest.TestCase):
         self.assertFalse(out["deploy_blocked"])
         self.assertIsNotNone(out["deploy_warning"])
         self.assertIn("No .env detected", out["deploy_warning"])
+
+    def test_controller_monolith_blocks_with_db(self):
+        """TC210: Monolith missing .env with DB should also block (same as backend)."""
+        services = [{"name": "app", "type": "monolith", "env_file": None}]
+        metadata = {"database": "MongoDB"}
+
+        out = self._simulate_controller_recheck(services, metadata)
+        self.assertTrue(out["deploy_blocked"])
+        self.assertIsNone(out.get("deploy_warning"))
+
+
+class TestControllerRuntimeHintAugmentation(unittest.TestCase):
+    """Controller hint augmentation should treat monolith as backend-like."""
+
+    @patch(
+        "app.utils.command_extractor.extract_nodejs_commands",
+        return_value={"entry_point": "dist/server.js"},
+    )
+    def test_monolith_missing_entry_point_is_backfilled(self, _mock_extract):
+        services = [{"name": "app", "path": "app", "type": "monolith", "entry_point": None}]
+
+        out = _augment_services_runtime_hints(services, project_root="C:/fake-project", refresh_env=False)
+
+        self.assertEqual(out[0].get("entry_point"), "dist/server.js")
+
+    @patch(
+        "app.controllers.docker_ai_controller.infer_service_runtime_image_from_code",
+        return_value="node:18-alpine",
+    )
+    def test_runtime_backfilled_from_service_code_when_missing(self, mock_runtime):
+        services = [
+            {
+                "name": "app",
+                "path": "app",
+                "type": "backend",
+                "runtime": None,
+                "language": "JavaScript",
+                "framework": "Express.js",
+            }
+        ]
+        out = _augment_services_runtime_hints(services, project_root="C:/fake-project", refresh_env=False)
+        self.assertEqual(out[0].get("runtime"), "node:18-alpine")
+        mock_runtime.assert_called_once()
+
+    @patch(
+        "app.controllers.docker_ai_controller.infer_service_runtime_image_from_code",
+        return_value="node:22-alpine",
+    )
+    def test_existing_runtime_is_not_overwritten(self, mock_runtime):
+        services = [{"name": "app", "path": "app", "type": "backend", "runtime": "node:20-alpine"}]
+        out = _augment_services_runtime_hints(services, project_root="C:/fake-project", refresh_env=False)
+        self.assertEqual(out[0].get("runtime"), "node:20-alpine")
+        mock_runtime.assert_not_called()
 
 
 if __name__ == "__main__":

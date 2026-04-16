@@ -183,6 +183,36 @@ class TestBuildDeployMessage(unittest.TestCase):
         
         self.assertIn("ModuleNotFoundError", result)
 
+    def test_build_message_ssr_frontend_uses_runtime_container_port(self):
+        """TC061A: SSR frontend should keep container_port aligned with runtime_port."""
+        metadata = {"language": "JavaScript", "framework": "Nuxt", "runtime": "node:20-alpine"}
+        services = [
+            {
+                "name": "frontend",
+                "path": "frontend",
+                "type": "frontend",
+                "runtime_port": 3000,
+                "build_output": ".nuxt",
+                "start_command": "npm start",
+                "package_manager": {"manager": "npm", "has_lockfile": True},
+            }
+        ]
+
+        result = build_deploy_message(
+            project_name="nuxt-app",
+            metadata=metadata,
+            dockerfiles=[],
+            compose_files=[],
+            file_tree="",
+            user_message="Generate Docker files",
+            services=services,
+            mode="GENERATE_MISSING",
+        )
+
+        self.assertIn("runtime_port: 3000, container_port: 3000", result)
+        self.assertIn("container_source: ssr_default", result)
+        self.assertIn("frontend_mode: ssr", result)
+
 
 class TestDockerAgentIntegration(unittest.TestCase):
     """Integration tests for Docker agent with mocked LLM."""

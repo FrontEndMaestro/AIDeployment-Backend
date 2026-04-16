@@ -28,11 +28,24 @@ class LogEntry(BaseModel):
 # Add this to Metadata class:
 
 class Metadata(BaseModel):
+    schema_version: str = "ports_v2"
     framework: str = "Unknown"
     language: str = "Unknown"
     runtime: Optional[str] = None
     dependencies: List[str] = []
     port: Optional[int] = None
+    backend_runtime_port: Optional[int] = None
+    frontend_runtime_port: Optional[int] = None
+    backend_runtime_port_source: Optional[str] = None
+    frontend_runtime_port_source: Optional[str] = None
+    backend_container_port: Optional[int] = None
+    frontend_container_port: Optional[int] = None
+    backend_container_port_source: Optional[str] = None
+    frontend_container_port_source: Optional[str] = None
+    backend_port: Optional[int] = None
+    frontend_port: Optional[int] = None
+    backend_port_source: Optional[str] = None
+    frontend_port_source: Optional[str] = None
     build_command: Optional[str] = None
     start_command: Optional[str] = None
     env_variables: List[str] = []

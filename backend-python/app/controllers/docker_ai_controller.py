@@ -11,12 +11,17 @@ from ..config.settings import settings
 from ..utils.auth import decode_access_token
 from ..utils.file_system import read_file
 from ..utils.detector import find_project_root
+from ..utils.detection_constants import PORT_SCHEMA_VERSION, SSR_FRONTEND_BUILD_OUTPUTS
+from ..utils.detection_services import infer_service_runtime_image_from_code
 
 from ..services.docker_service import (
     build_project_stream,
     run_project_stream,
     push_image_stream,
 )
+
+_ENV_FILE_CANDIDATES = (".env", ".env.local", ".env.production")
+_NODE_ENTRY_CANDIDATES = ("server.js", "index.js", "app.js", "main.js")
 
 
 async def _validate_project(project_id: str, current_user: dict) -> Dict:
@@ -41,6 +46,116 @@ def _safe_project_path(project: Dict) -> str:
     if not os.path.exists(real_path):
         raise HTTPException(status_code=400, detail="Extracted project files not found")
     return real_path
+
+
+def _resolve_project_root(project: Dict) -> str:
+    return find_project_root(_safe_project_path(project))
+
+
+def _resolve_service_dir(project_root: str, service_path: str) -> str:
+    svc_path = str(service_path or ".").rstrip("/\\")
+    if svc_path in ("", "."):
+        return project_root
+    return os.path.join(project_root, svc_path)
+
+
+def _augment_services_runtime_hints(
+    services: List[Dict],
+    project_root: str,
+    refresh_env: bool = False,
+) -> List[Dict]:
+    from ..utils.command_extractor import extract_nodejs_commands
+
+    def _to_int(value: object) -> Optional[int]:
+        try:
+            if value is None:
+                return None
+            return int(str(value))
+        except (TypeError, ValueError):
+            return None
+
+    for svc in services:
+        if not isinstance(svc, dict):
+            continue
+
+        svc_path = str(svc.get("path", ".")).rstrip("/\\")
+        svc_dir = _resolve_service_dir(project_root, svc_path)
+
+        if refresh_env or not svc.get("env_file"):
+            for env_name in _ENV_FILE_CANDIDATES:
+                env_path = os.path.join(svc_dir, env_name)
+                if os.path.exists(env_path):
+                    if svc_path and svc_path != ".":
+                        normalized_path = svc_path.replace("\\", "/")
+                        svc["env_file"] = f"./{normalized_path}/{env_name}"
+                    else:
+                        svc["env_file"] = f"./{env_name}"
+                    break
+
+        if svc.get("type") in ("backend", "monolith") and not svc.get("entry_point"):
+            backend_cmds = extract_nodejs_commands(svc_dir)
+            entry_point = backend_cmds.get("entry_point")
+            if not entry_point:
+                for candidate in _NODE_ENTRY_CANDIDATES:
+                    if os.path.exists(os.path.join(svc_dir, candidate)):
+                        entry_point = candidate
+                        break
+            if entry_point:
+                svc["entry_point"] = entry_point
+
+        if not svc.get("runtime"):
+            svc_type = str(svc.get("type") or "other").strip().lower()
+            svc_language = svc.get("language")
+            if not svc_language:
+                if os.path.exists(os.path.join(svc_dir, "package.json")):
+                    svc_language = "JavaScript"
+                elif any(
+                    os.path.exists(os.path.join(svc_dir, marker))
+                    for marker in ("requirements.txt", "pyproject.toml", "manage.py")
+                ):
+                    svc_language = "Python"
+            svc_framework = svc.get("framework")
+
+            frontend_mode = None
+            if svc_type == "frontend":
+                frontend_mode = str(svc.get("frontend_mode") or "").strip().lower() or None
+                if not frontend_mode:
+                    container_source = str(svc.get("container_port_source") or "").strip().lower()
+                    build_output = str(svc.get("build_output") or "").strip().lower()
+                    runtime_port = _to_int(
+                        svc.get("runtime_port")
+                        if svc.get("runtime_port") is not None
+                        else svc.get("port")
+                    )
+                    container_port = _to_int(svc.get("container_port"))
+
+                    if container_source == "dev_server":
+                        frontend_mode = "dev_server"
+                    elif (
+                        container_source in {"next_default", "ssr_default"}
+                        or build_output in SSR_FRONTEND_BUILD_OUTPUTS
+                    ):
+                        frontend_mode = "ssr"
+                    elif (
+                        runtime_port is not None
+                        and container_port is not None
+                        and runtime_port == container_port
+                    ):
+                        frontend_mode = "dev_server"
+                    else:
+                        frontend_mode = "static_nginx"
+
+            inferred_runtime = infer_service_runtime_image_from_code(
+                svc_abs_path=svc_dir,
+                svc_type=svc_type,
+                svc_language=str(svc_language or "Unknown"),
+                svc_framework=str(svc_framework or "Unknown"),
+                frontend_mode=frontend_mode,
+            )
+            if inferred_runtime:
+                svc["runtime"] = inferred_runtime
+
+    return services
 
 
 async def _get_user_from_token(token: Optional[str]) -> Optional[Dict]:
@@ -135,49 +250,23 @@ def _ensure_analyzed(project: Dict):
 async def get_docker_context_handler(project_id: str, current_user: dict) -> Dict:
     project = await _validate_project(project_id, current_user)
     _ensure_analyzed(project)
-    extracted_path = _safe_project_path(project)
-    
-    # Find the actual project root (handles subfolder structure like project-xxx/mern-blog-main)
-    project_root = find_project_root(extracted_path)
+    project_root = _resolve_project_root(project)
 
-    dockerfiles, compose_files = _collect_docker_files(extracted_path)
-    file_tree_text, file_tree_struct = _build_file_tree(extracted_path)
-    
+    dockerfiles, compose_files = _collect_docker_files(project_root)
+    file_tree_text, file_tree_struct = _build_file_tree(project_root)
+
     # Get stored metadata
     metadata = dict(project.get("metadata", {}))
+    metadata.setdefault("schema_version", PORT_SCHEMA_VERSION)
     services = metadata.get("services", [])
-    
-    # =======================================================================
-    # DYNAMIC ENV FILE DETECTION
-    # Re-check for .env files on every page load to handle newly added files
-    # =======================================================================
-    print(f"🔍 Dynamic env_file check - project_root: {project_root}")
-    print(f"🔍 Services to check: {services}")
-    
-    for svc in services:
-        svc_path = svc.get("path", ".").rstrip("/\\")
-        if svc_path == "." or not svc_path:
-            svc_dir = project_root
-        else:
-            svc_dir = os.path.join(project_root, svc_path)
-        
-        print(f"🔍 Checking service '{svc.get('name')}' (type: {svc.get('type')}) at path: {svc_dir}")
-        print(f"🔍   Current env_file value: {svc.get('env_file')}")
-        
-        # Check for .env file - always re-check even if previously None
-        for env_name in [".env", ".env.local", ".env.production"]:
-            env_path = os.path.join(svc_dir, env_name)
-            exists = os.path.exists(env_path)
-            print(f"🔍   Checking {env_path}: exists={exists}")
-            if exists:
-                svc["env_file"] = f"./{svc_path}/{env_name}" if svc_path and svc_path != "." else f"./{env_name}"
-                print(f"✅ Dynamic env_file detected for {svc.get('name')}: {svc['env_file']}")
-                break
-    
+
+    # Re-check for env files on page load to handle newly added files.
+    services = _augment_services_runtime_hints(services, project_root, refresh_env=True)
+
     # Recalculate deploy_blocked based on current env_file status
-    backend_services = [s for s in services if s.get("type") == "backend"]
+    backend_services = [s for s in services if s.get("type") in ("backend", "monolith")]
     backend_missing_env = any(
-        svc.get("type") == "backend" and not svc.get("env_file")
+        svc.get("type") in ("backend", "monolith") and not svc.get("env_file")
         for svc in services
     )
     
@@ -235,47 +324,15 @@ async def docker_chat_handler(
 ) -> Dict:
     project = await _validate_project(project_id, current_user)
     _ensure_analyzed(project)
-    project_root = _safe_project_path(project)
+    project_root = _resolve_project_root(project)
 
     dockerfiles, compose_files = _collect_docker_files(project_root)
     file_tree_text, _ = _build_file_tree(project_root)
     metadata = project.get("metadata", {}) or {}
+    metadata.setdefault("schema_version", PORT_SCHEMA_VERSION)
     services = metadata.get("services") or []
 
-    # Dynamic env_file detection to ensure it's always up-to-date
-    # (handles projects analyzed before env_file detection was implemented)
-    for svc in services:
-        svc_path = svc.get("path", ".").rstrip("/\\")  # Remove trailing slashes
-        if svc_path == "." or not svc_path:
-            svc_dir = project_root
-        else:
-            svc_dir = os.path.join(project_root, svc_path)
-        
-        # Dynamic env_file detection
-        if not svc.get("env_file"):
-            for env_name in [".env", ".env.local", ".env.production"]:
-                env_path = os.path.join(svc_dir, env_name)
-                if os.path.exists(env_path):
-                    svc["env_file"] = f"./{svc_path}/{env_name}" if svc_path and svc_path != "." else f"./{env_name}"
-                    print(f"🔧 Dynamic env_file detected for {svc.get('name')}: {svc['env_file']}")
-                    break
-        
-        # Dynamic entry_point detection for backend services
-        if svc.get("type") == "backend" and not svc.get("entry_point"):
-            from ..utils.command_extractor import extract_nodejs_commands
-            backend_cmds = extract_nodejs_commands(svc_dir)
-            entry_point = backend_cmds.get("entry_point")
-            if not entry_point:
-                for candidate in ("server.js", "index.js", "app.js", "main.js"):
-                    if os.path.exists(os.path.join(svc_dir, candidate)):
-                        entry_point = candidate
-                        break
-            if entry_point:
-                svc["entry_point"] = entry_point
-                print(f"🔧 Dynamic entry_point detected for {svc.get('name')}: {entry_point}")
-    
-    # Debug: Print services to verify env_file and entry_point are present
-    print(f"📦 Services being sent to LLM: {services}")
+    services = _augment_services_runtime_hints(services, project_root, refresh_env=False)
 
     reply = run_docker_deploy_chat(
         project_name=project.get("project_name", "project"),
@@ -320,40 +377,15 @@ def docker_chat_stream_handler(
         loop.close()
     
     _ensure_analyzed(project)
-    project_root = _safe_project_path(project)
+    project_root = _resolve_project_root(project)
 
     dockerfiles, compose_files = _collect_docker_files(project_root)
     file_tree_text, _ = _build_file_tree(project_root)
     metadata = project.get("metadata", {}) or {}
+    metadata.setdefault("schema_version", PORT_SCHEMA_VERSION)
     services = metadata.get("services") or []
 
-    # Dynamic env_file detection (same as non-streaming version)
-    for svc in services:
-        svc_path = svc.get("path", ".").rstrip("/\\")
-        if svc_path == "." or not svc_path:
-            svc_dir = project_root
-        else:
-            svc_dir = os.path.join(project_root, svc_path)
-        
-        if not svc.get("env_file"):
-            for env_name in [".env", ".env.local", ".env.production"]:
-                env_path = os.path.join(svc_dir, env_name)
-                if os.path.exists(env_path):
-                    svc["env_file"] = f"./{svc_path}/{env_name}" if svc_path and svc_path != "." else f"./{env_name}"
-                    break
-        
-        # Dynamic entry_point detection for backend services
-        if svc.get("type") == "backend" and not svc.get("entry_point"):
-            from ..utils.command_extractor import extract_nodejs_commands
-            backend_cmds = extract_nodejs_commands(svc_dir)
-            entry_point = backend_cmds.get("entry_point")
-            if not entry_point:
-                for candidate in ("server.js", "index.js", "app.js", "main.js"):
-                    if os.path.exists(os.path.join(svc_dir, candidate)):
-                        entry_point = candidate
-                        break
-            if entry_point:
-                svc["entry_point"] = entry_point
+    services = _augment_services_runtime_hints(services, project_root, refresh_env=False)
 
     # Yield tokens from streaming LLM
     for chunk in run_docker_deploy_chat_stream(
@@ -383,40 +415,15 @@ async def docker_chat_stream_setup(
     """
     project = await _validate_project(project_id, current_user)
     _ensure_analyzed(project)
-    project_root = _safe_project_path(project)
+    project_root = _resolve_project_root(project)
 
     dockerfiles, compose_files = _collect_docker_files(project_root)
     file_tree_text, _ = _build_file_tree(project_root)
     metadata = project.get("metadata", {}) or {}
+    metadata.setdefault("schema_version", PORT_SCHEMA_VERSION)
     services = metadata.get("services") or []
 
-    # Dynamic env_file detection
-    for svc in services:
-        svc_path = svc.get("path", ".").rstrip("/\\")
-        if svc_path == "." or not svc_path:
-            svc_dir = project_root
-        else:
-            svc_dir = os.path.join(project_root, svc_path)
-        
-        if not svc.get("env_file"):
-            for env_name in [".env", ".env.local", ".env.production"]:
-                env_path = os.path.join(svc_dir, env_name)
-                if os.path.exists(env_path):
-                    svc["env_file"] = f"./{svc_path}/{env_name}" if svc_path and svc_path != "." else f"./{env_name}"
-                    break
-        
-        # Dynamic entry_point detection for backend services
-        if svc.get("type") == "backend" and not svc.get("entry_point"):
-            from ..utils.command_extractor import extract_nodejs_commands
-            backend_cmds = extract_nodejs_commands(svc_dir)
-            entry_point = backend_cmds.get("entry_point")
-            if not entry_point:
-                for candidate in ("server.js", "index.js", "app.js", "main.js"):
-                    if os.path.exists(os.path.join(svc_dir, candidate)):
-                        entry_point = candidate
-                        break
-            if entry_point:
-                svc["entry_point"] = entry_point
+    services = _augment_services_runtime_hints(services, project_root, refresh_env=False)
 
     return {
         "project_name": project.get("project_name", "project"),
@@ -454,7 +461,7 @@ async def read_project_file_handler(
     project_id: str, current_user: dict, relative_path: str
 ) -> Dict:
     project = await _validate_project(project_id, current_user)
-    project_root = _safe_project_path(project)
+    project_root = _resolve_project_root(project)
 
     normalized = os.path.abspath(os.path.join(project_root, relative_path))
     if not normalized.startswith(os.path.abspath(project_root)):
@@ -482,7 +489,7 @@ async def write_project_file_handler(
     project_id: str, current_user: dict, relative_path: str, content: str
 ) -> Dict:
     project = await _validate_project(project_id, current_user)
-    project_root = _safe_project_path(project)
+    project_root = _resolve_project_root(project)
 
     normalized = os.path.abspath(os.path.join(project_root, relative_path))
     if not normalized.startswith(os.path.abspath(project_root)):
@@ -508,7 +515,7 @@ async def create_project_folder_handler(
     Create a folder (and parents) under the project root.
     """
     project = await _validate_project(project_id, current_user)
-    project_root = _safe_project_path(project)
+    project_root = _resolve_project_root(project)
 
     if not relative_path or not relative_path.strip():
         raise HTTPException(status_code=400, detail="Folder path is required")
@@ -532,7 +539,7 @@ async def delete_project_path_handler(
     Delete a file or directory (recursively for directories) under the project root.
     """
     project = await _validate_project(project_id, current_user)
-    project_root = _safe_project_path(project)
+    project_root = _resolve_project_root(project)
 
     if not relative_path or not relative_path.strip():
         raise HTTPException(status_code=400, detail="Path is required")
@@ -576,7 +583,7 @@ async def stream_docker_logs_handler(
 
     project = await _validate_project(project_id, user)
     _ensure_analyzed(project)
-    project_root = _safe_project_path(project)
+    project_root = _resolve_project_root(project)
 
     metadata = project.get("metadata", {}) or {}
     backend_host_port = metadata.get("backend_port") or metadata.get("port") or 8000

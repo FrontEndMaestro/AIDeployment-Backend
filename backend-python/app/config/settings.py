@@ -59,12 +59,12 @@ settings = Settings()
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 os.makedirs(settings.EXTRACTED_DIR, exist_ok=True)
 
-print(f"✅ Settings loaded: {settings.ENVIRONMENT} mode")
-print(f"📁 Upload directory: {settings.UPLOAD_DIR}")
-print(f"📁 Extracted directory: {settings.EXTRACTED_DIR}")
+print(f"Settings loaded: {settings.ENVIRONMENT} mode")
+print(f"Upload directory: {settings.UPLOAD_DIR}")
+print(f"Extracted directory: {settings.EXTRACTED_DIR}")
 
 # Inform about Docker Hub credential presence without printing sensitive values
 if settings.DOCKER_HUB_USERNAME and settings.DOCKER_HUB_PASSWORD:
-    print("🔐 Docker Hub credentials loaded from environment")
+    print("Docker Hub credentials loaded from environment")
 else:
-    print("⚠️ Docker Hub credentials not set in environment (.env or OS vars)")
+    print("Warning: Docker Hub credentials not set in environment (.env or OS vars)")

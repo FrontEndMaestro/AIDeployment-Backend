@@ -264,11 +264,12 @@ def extract_nodejs_commands(project_path: str) -> Dict[str, Optional[str]]:
                 if ext.lower() in allowed_exts:
                     if os.path.isfile(fs_candidate):
                         return token_norm
-
-                    # Allow common build-output paths even before artifacts exist.
                     normalized_rel = token_norm.lstrip("./").lower()
+                    # Reject missing build-artifact targets (often stale/wrong before build).
                     if normalized_rel.startswith(("dist/", "build/", ".next/", "out/", "lib/")):
-                        return token_norm
+                        return None
+                    # Keep explicit non-build script targets even when file is not present yet.
+                    return token_norm
                 return None
 
             for suffix in (".js", ".ts", ".mjs", ".cjs"):
@@ -515,15 +516,31 @@ def extract_nodejs_commands(project_path: str) -> Dict[str, Optional[str]]:
             dev_deps = data.get("devDependencies", {})
             all_deps = {**deps, **dev_deps}
             
-            # Create React App (CRA) -> outputs to "build/"
-            if "react-scripts" in all_deps:
-                result["build_output"] = "build"
-                print("📦 Detected Create React App (CRA) -> build output: build/")
-            
+            build_script_lower = str(scripts.get("build", "")).lower()
+            has_vite = "vite" in all_deps
+            has_cra = "react-scripts" in all_deps
+
+            # CRA/Vite disambiguation: when both deps exist, prefer explicit build script.
+            if has_vite and has_cra:
+                if "vite" in build_script_lower:
+                    result["build_output"] = "dist"
+                    print("📦 Mixed CRA+Vite deps; build script indicates Vite -> build output: dist/")
+                elif "react-scripts" in build_script_lower:
+                    result["build_output"] = "build"
+                    print("📦 Mixed CRA+Vite deps; build script indicates CRA -> build output: build/")
+                else:
+                    result["build_output"] = "dist"
+                    print("📦 Mixed CRA+Vite deps; defaulting to Vite-style output: dist/")
+
             # Vite -> outputs to "dist/"
-            elif "vite" in all_deps:
+            elif has_vite:
                 result["build_output"] = "dist"
                 print("📦 Detected Vite -> build output: dist/")
+
+            # Create React App (CRA) -> outputs to "build/"
+            elif has_cra:
+                result["build_output"] = "build"
+                print("📦 Detected Create React App (CRA) -> build output: build/")
             
             # Next.js -> outputs to ".next/" or "out/" for static export
             elif "next" in all_deps:
@@ -785,7 +802,17 @@ def _parse_env_for_port(project_path: str, allow_backend_keys: bool = True) -> O
     Parse .env variants for known port keys.
     For frontend reads, frontend-specific keys are prioritized over generic PORT.
     """
-    env_files = [".env.local", ".env.development", ".env.production", ".env", ".env.example", ".env.sample"]
+    # Prefer real env files. Template files are fallback-only.
+    env_file_groups = [
+        [".env.local", ".env.development", ".env.production", ".env"],
+        [".env.example", ".env.sample"],
+    ]
+
+    backend_only_keys = {"BACKEND_PORT", "SERVER_PORT", "API_PORT"}
+    frontend_only_keys = {
+        "FRONTEND_PORT", "CLIENT_PORT", "VITE_PORT",
+        "REACT_APP_PORT", "NEXT_PUBLIC_PORT", "VITE_DEV_PORT",
+    }
 
     if allow_backend_keys:
         key_priority = [
@@ -794,49 +821,65 @@ def _parse_env_for_port(project_path: str, allow_backend_keys: bool = True) -> O
             "FRONTEND_PORT", "CLIENT_PORT", "VITE_PORT",
             "REACT_APP_PORT", "NEXT_PUBLIC_PORT", "VITE_DEV_PORT",
         ]
+        valid_keys = set(key_priority)
     else:
+        # Frontend extraction should prefer frontend-specific keys.
+        # Generic PORT is treated as a fallback only when backend-specific
+        # keys are absent in the same env context.
         key_priority = [
             "FRONTEND_PORT", "CLIENT_PORT", "VITE_PORT",
             "REACT_APP_PORT", "NEXT_PUBLIC_PORT", "VITE_DEV_PORT",
-            "PORT",
         ]
-    valid_keys = set(key_priority)
+        valid_keys = set(key_priority) | {"PORT"} | backend_only_keys
 
-    for env_file in env_files:
-        env_path = os.path.join(project_path, env_file)
-        if not os.path.exists(env_path):
-            continue
-        try:
-            found_ports: Dict[str, int] = {}
-            with open(env_path, 'r', encoding='utf-8', errors='ignore') as f:
-                for raw_line in f:
-                    line = raw_line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
+    for env_files in env_file_groups:
+        for env_file in env_files:
+            env_path = os.path.join(project_path, env_file)
+            if not os.path.exists(env_path):
+                continue
+            try:
+                found_ports: Dict[str, int] = {}
+                saw_backend_specific = False
+                with open(env_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    for raw_line in f:
+                        line = raw_line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
 
-                    key, value = line.split("=", 1)
-                    key = key.strip().upper()
-                    if key not in valid_keys:
-                        continue
+                        key, value = line.split("=", 1)
+                        key = key.strip().upper()
+                        if key not in valid_keys:
+                            continue
+                        if key in backend_only_keys:
+                            saw_backend_specific = True
 
-                    value = value.strip().strip('"').strip("'")
-                    m = re.search(r"\b(\d{2,5})\b", value)
-                    if not m:
-                        continue
-                    try:
-                        port = int(m.group(1))
-                    except ValueError:
-                        continue
-                    if 1 <= port <= 65535:
-                        found_ports[key] = port
+                        value = value.strip().strip('"').strip("'")
+                        m = re.search(r"\b(\d{2,5})\b", value)
+                        if not m:
+                            continue
+                        try:
+                            port = int(m.group(1))
+                        except ValueError:
+                            continue
+                        if 1 <= port <= 65535:
+                            found_ports[key] = port
 
-            for key in key_priority:
-                if key in found_ports:
-                    port = found_ports[key]
-                    print(f"PORT key detected: {key}={port} in {env_file}")
+                for key in key_priority:
+                    if key in found_ports:
+                        port = found_ports[key]
+                        print(f"PORT key detected: {key}={port} in {env_file}")
+                        return port
+
+                if (
+                    not allow_backend_keys
+                    and "PORT" in found_ports
+                    and not saw_backend_specific
+                ):
+                    port = found_ports["PORT"]
+                    print(f"PORT key detected: PORT={port} in {env_file}")
                     return port
-        except Exception as e:
-            print(f"Error parsing {env_file}: {e}")
+            except Exception as e:
+                print(f"Error parsing {env_file}: {e}")
 
     return None
 
@@ -865,6 +908,9 @@ def _scan_source_for_port(project_path: str, language: str = "javascript") -> Op
         priority_patterns = [
             r"\.listen\s*\(\s*(\d{4,5})\s*[,)]",
             r"process\.env\.PORT\s*\|\|\s*(\d{4,5})",
+            r"process\.env\.PORT\s*\?\?\s*(\d{4,5})",
+            r"parseInt\s*\(\s*process\.env\.PORT\s*(?:\|\||\?\?)\s*['\"]?(\d{4,5})",
+            r"Number\s*\(\s*process\.env\.PORT\s*\)\s*(?:\|\||\?\?)\s*(\d{4,5})",
             r"(?:const|let|var)\s+PORT\s*=\s*(\d{4,5})",
             r"process\.env\.\w+\s*\|\|\s*(\d{4,5})",
         ]
@@ -1225,9 +1271,16 @@ COMPOSE_HOSTNAMES = {
 
 
 def _is_local_host(h: str) -> bool:
+    h = (h or "").strip().lower()
+    if not h:
+        return False
     if h in ("localhost", "127.0.0.1", "host.docker.internal"):
         return True
     if h in COMPOSE_HOSTNAMES:
+        return True
+    if h.endswith((".local", ".internal", ".localhost", ".test")):
+        return True
+    if "." not in h:
         return True
     try:
         return ipaddress.ip_address(h).is_private
@@ -1251,58 +1304,64 @@ def _parse_env_for_database(project_path: str) -> Dict[str, any]:
         "connection_url": None,
     }
     
-    env_files = [".env", ".env.local", ".env.development", ".env.production", ".env.example", ".env.sample"]
+    # Prefer real env files. Template files are fallback-only.
+    env_file_groups = [
+        [".env", ".env.local", ".env.development", ".env.production"],
+        [".env.example", ".env.sample"],
+    ]
     
-    for env_file in env_files:
-        env_path = os.path.join(project_path, env_file)
-        if os.path.exists(env_path):
-            try:
-                with open(env_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read()
-                
-                for var_name in DB_ENV_VARS:
-                    # Pattern: VAR_NAME=value or VAR_NAME = value
-                    pattern = rf'^{var_name}\s*=\s*(.+)$'
-                    match = re.search(pattern, content, re.MULTILINE | re.IGNORECASE)
-                    if match:
-                        url = match.group(1).strip().strip('"\'')
-                        result["env_var_name"] = var_name
-                        result["connection_url"] = url
-                        
-                        # Detect database type from URL
-                        url_lower = url.lower()
-                        if "mongodb" in url_lower or "mongo" in var_name.lower():
-                            result["db_type"] = "mongodb"
-                        elif "postgres" in url_lower or "pg" in var_name.lower():
-                            result["db_type"] = "postgresql"
-                        elif "mysql" in url_lower:
-                            result["db_type"] = "mysql"
-                        elif "redis" in url_lower:
-                            result["db_type"] = "redis"
-                        
-                        try:
-                            parsed = urllib.parse.urlparse(url_lower)
-                            hostname = parsed.hostname or ""
-                        except Exception:
-                            hostname = ""
+    for env_files in env_file_groups:
+        for env_file in env_files:
+            env_path = os.path.join(project_path, env_file)
+            if os.path.exists(env_path):
+                try:
+                    with open(env_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    
+                    for var_name in DB_ENV_VARS:
+                        # Pattern: VAR_NAME=value or VAR_NAME = value
+                        pattern = rf'^{var_name}\s*=\s*(.+)$'
+                        match = re.search(pattern, content, re.MULTILINE | re.IGNORECASE)
+                        if match:
+                            url = match.group(1).strip().strip('"\'')
+                            result["env_var_name"] = var_name
+                            result["connection_url"] = url
+                            
+                            # Detect database type from URL
+                            url_lower = url.lower()
+                            if "mongodb" in url_lower or "mongo" in var_name.lower():
+                                result["db_type"] = "mongodb"
+                            elif "postgres" in url_lower or "pg" in var_name.lower():
+                                result["db_type"] = "postgresql"
+                            elif "mysql" in url_lower:
+                                result["db_type"] = "mysql"
+                            elif "redis" in url_lower:
+                                result["db_type"] = "redis"
+                            
+                            try:
+                                parsed = urllib.parse.urlparse(url_lower)
+                                hostname = parsed.hostname or ""
+                            except Exception:
+                                hostname = ""
 
-                        is_local = _is_local_host(hostname)
-                        is_cloud_url = any(p in url_lower for p in CLOUD_DB_PATTERNS)
+                            is_local = _is_local_host(hostname)
+                            is_cloud_url = any(p in url_lower for p in CLOUD_DB_PATTERNS)
 
-                        if is_cloud_url:
-                            result["is_cloud"] = True
-                            print(f"☁️ Detected CLOUD database: {result['db_type']} (from {env_file})")
-                        elif is_local:
-                            result["is_cloud"] = False
-                            print(f"🏠 Detected LOCAL database: {result['db_type']} (from {env_file})")
-                        else:
-                            result["is_cloud"] = True  # unknown host, conservative assumption
-                            print(f"☁️ Detected database (assuming cloud): {result['db_type']} (from {env_file})")
-                        
-                        return result
-                        
-            except Exception as e:
-                print(f"Error parsing {env_file} for database: {e}")
+                            # Prefer explicit locality over cloud-pattern shortcut.
+                            if is_local:
+                                result["is_cloud"] = False
+                                print(f"🏠 Detected LOCAL database: {result['db_type']} (from {env_file})")
+                            elif is_cloud_url:
+                                result["is_cloud"] = True
+                                print(f"☁️ Detected CLOUD database: {result['db_type']} (from {env_file})")
+                            else:
+                                result["is_cloud"] = True  # unknown host, conservative assumption
+                                print(f"☁️ Detected database (assuming cloud): {result['db_type']} (from {env_file})")
+                            
+                            return result
+                            
+                except Exception as e:
+                    print(f"Error parsing {env_file} for database: {e}")
     
     return result
 
@@ -1327,6 +1386,7 @@ def extract_database_info(project_path: str, detected_db: str = None) -> Dict[st
         "connection_url": None,
         "default_port": None,
         "docker_image": None,
+        "source": None,
     }
     
     # Database defaults
@@ -1348,6 +1408,7 @@ def extract_database_info(project_path: str, detected_db: str = None) -> Dict[st
     env_db = _parse_env_for_database(project_path)
     
     if env_db.get("db_type"):
+        result["source"] = "env"
         result["db_type"] = env_db["db_type"]
         result["is_cloud"] = env_db["is_cloud"]
         result["env_var_name"] = env_db["env_var_name"]
@@ -1362,6 +1423,7 @@ def extract_database_info(project_path: str, detected_db: str = None) -> Dict[st
     
     # Fallback to detected_db from dependency analysis
     elif detected_db:
+        result["source"] = "detected"
         db_lower = detected_db.lower()
         for db_name in db_defaults:
             if db_name in db_lower:

@@ -496,6 +496,14 @@ class TestFrontendPortDetection:
         assert r["port"] == 5173
         assert r["source"] == "env"
 
+    def test_frontend_ignores_generic_port_when_backend_key_present(self, tmp_path):
+        """Backend-specific keys in the same env file should block generic PORT fallback for frontend."""
+        _pkg(tmp_path, "web", dev_deps={"vite": "5"})
+        _write(tmp_path / ".env", "BACKEND_PORT=8000\nPORT=8000\n")
+        r = extract_frontend_port(str(tmp_path))
+        assert r["port"] == 5173
+        assert r["source"] == "vite_default"
+
     def test_no_package_json_defaults(self, tmp_path):
         """No package.json -> unknown frontend port (caller applies fallback)."""
         r = extract_frontend_port(str(tmp_path))

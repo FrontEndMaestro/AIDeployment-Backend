@@ -51,6 +51,7 @@ async def upload_file_handler(file: UploadFile, project_name: str = None, curren
             "folders_count": 0,
             "extraction_logs": [],
             "metadata": {
+                "schema_version": "ports_v2",
                 "framework": "Unknown",
                 "language": "Unknown",
                 "runtime": None,
