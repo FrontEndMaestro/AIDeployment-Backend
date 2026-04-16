@@ -22,6 +22,8 @@ from app.LLM.docker_deploy_agent import (
     _format_dockerfiles,
     _format_compose_files,
     build_deploy_message,
+    build_gemini_deploy_message,
+    parse_and_validate_generated_docker_response,
 )
 
 
@@ -214,6 +216,164 @@ class TestBuildDeployMessage(unittest.TestCase):
         self.assertIn("frontend_mode: ssr", result)
 
 
+class TestGeneratedDockerValidation(unittest.TestCase):
+    """Regression tests for path-aware generated file validation."""
+
+    def test_parse_and_validate_multiproject_generated_files(self):
+        metadata = {
+            "schema_version": "ports_v2",
+            "runtime": "node:20-alpine",
+            "database": "MongoDB",
+            "database_is_cloud": True,
+            "database_port": 27017,
+            "database_env_var": "MONGO_URI",
+        }
+        services = [
+            {
+                "name": "backend",
+                "path": "backend",
+                "type": "backend",
+                "runtime": "node:20-alpine",
+                "runtime_port": 5000,
+                "container_port": 5000,
+                "entry_point": "server.js",
+                "env_file": "./backend/.env",
+                "package_manager": {"manager": "npm", "has_lockfile": True},
+            },
+            {
+                "name": "frontend",
+                "path": "frontend",
+                "type": "frontend",
+                "runtime": "nginx:alpine",
+                "frontend_mode": "static_nginx",
+                "runtime_port": 5173,
+                "container_port": 80,
+                "build_output": "dist",
+                "package_manager": {"manager": "npm", "has_lockfile": True},
+            },
+        ]
+        response = """STATUS: Generated
+GENERATED FILES:
+**backend/Dockerfile**
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+ENV PORT=5000
+EXPOSE 5000
+CMD ["node", "server.js"]
+```
+**frontend/Dockerfile**
+```dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+```
+**docker-compose.yml**
+```yaml
+services:
+  backend:
+    image: app-backend:latest
+    build: ./backend
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./backend/.env
+  frontend:
+    image: app-frontend:latest
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+```
+"""
+
+        files, errors = parse_and_validate_generated_docker_response(
+            response,
+            metadata,
+            services,
+        )
+
+        self.assertEqual([], errors)
+        self.assertEqual(
+            ["backend/Dockerfile", "docker-compose.yml", "frontend/Dockerfile"],
+            sorted(files),
+        )
+
+    def test_gemini_prompt_adds_builder_runtime_for_static_frontend(self):
+        metadata = {"runtime": "node:20-alpine"}
+        services = [
+            {
+                "name": "frontend",
+                "path": "frontend",
+                "type": "frontend",
+                "runtime": "nginx:alpine",
+                "frontend_mode": "static_nginx",
+                "runtime_port": 5173,
+                "container_port": 80,
+                "build_output": "dist",
+            }
+        ]
+
+        result = build_gemini_deploy_message(
+            project_name="app",
+            metadata=metadata,
+            dockerfiles=[],
+            compose_files=[],
+            file_tree=None,
+            user_message="generate",
+            services=services,
+            mode="GENERATE_MISSING",
+        )
+
+        self.assertIn('"dockerfile_path": "frontend/Dockerfile"', result)
+        self.assertIn('"builder_runtime": "node:20-alpine"', result)
+        self.assertIn('"final_runtime": "nginx:alpine"', result)
+        self.assertNotIn('"runtime": "nginx:alpine"', result)
+
+
+    @patch("app.LLM.docker_deploy_agent.get_docker_llm_provider")
+    def test_gemini_validation_mode_uses_validation_prompt_with_logs(self, mock_provider):
+        from app.LLM.docker_deploy_agent import _response_message
+
+        mock_provider.return_value = "gemini"
+        system_prompt, message = _response_message(
+            project_name="app",
+            metadata={"schema_version": "ports_v2", "database": "Unknown"},
+            dockerfiles=[{"path": "backend/Dockerfile", "content": "FROM node:20-alpine"}],
+            compose_files=[{"path": "docker-compose.yml", "content": "services: {}"}],
+            file_tree=None,
+            user_message="build failed. Analyze these logs and fix Dockerfile.",
+            logs=["failed to solve: failed to read dockerfile"],
+            extra_instructions=None,
+            services=[
+                {
+                    "name": "backend",
+                    "path": "backend",
+                    "type": "backend",
+                    "runtime_port": 5000,
+                    "container_port": 5000,
+                }
+            ],
+            mode="VALIDATE_EXISTING",
+        )
+
+        self.assertIn("Validate existing Docker files", system_prompt)
+        self.assertNotIn("STATUS: Generated", system_prompt)
+        self.assertIn('"mode": "VALIDATE_EXISTING"', message)
+        self.assertIn("failed to read dockerfile", message)
+
+
 class TestDockerAgentIntegration(unittest.TestCase):
     """Integration tests for Docker agent with mocked LLM."""
 
@@ -234,6 +394,79 @@ class TestDockerAgentIntegration(unittest.TestCase):
         )
         
         self.assertIn("VALID", result)
+
+    @patch("app.LLM.docker_deploy_agent.get_docker_llm_provider")
+    @patch("app.LLM.docker_deploy_agent.call_gemini")
+    def test_gemini_stream_repairs_invalid_generated_files(self, mock_gemini, mock_provider):
+        """Gemini stream path validates generated files before yielding to the UI."""
+        from app.LLM.docker_deploy_agent import run_docker_deploy_chat_stream
+
+        mock_provider.return_value = "gemini"
+        invalid_response = """STATUS: Generated
+GENERATED FILES:
+**backend/Dockerfile**
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+ENV PORT=5000
+EXPOSE 5000
+CMD ["node", "server.js"]
+```
+"""
+        valid_response = """STATUS: Generated
+GENERATED FILES:
+**backend/Dockerfile**
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+ENV PORT=5000
+EXPOSE 5000
+CMD ["node", "server.js"]
+```
+**docker-compose.yml**
+```yaml
+services:
+  backend:
+    image: app-backend:latest
+    build: ./backend
+    ports:
+      - "5000:5000"
+```
+"""
+        mock_gemini.side_effect = [invalid_response, valid_response]
+        services = [
+            {
+                "name": "backend",
+                "path": "backend",
+                "type": "backend",
+                "runtime": "node:20-alpine",
+                "runtime_port": 5000,
+                "container_port": 5000,
+                "entry_point": "server.js",
+            }
+        ]
+
+        chunks = list(
+            run_docker_deploy_chat_stream(
+                project_name="app",
+                metadata={"schema_version": "ports_v2", "database": "Unknown"},
+                dockerfiles=[],
+                compose_files=[],
+                file_tree="",
+                user_message="generate",
+                services=services,
+            )
+        )
+
+        self.assertEqual(2, mock_gemini.call_count)
+        self.assertIn("docker-compose.yml", chunks[0]["token"])
+        self.assertTrue(chunks[-1]["done"])
 
 
 if __name__ == "__main__":

@@ -4,8 +4,10 @@ from typing import Dict, Generator, List, Optional
 import yaml
 import json 
 
-from ..LLM.llm_client import call_llama 
-from ..LLM.docker_deploy_agent import run_docker_deploy_chat
+from ..LLM.docker_deploy_agent import (
+    parse_and_validate_generated_docker_response,
+    run_docker_deploy_chat,
+)
 
 from ..config.settings import settings
 
@@ -101,6 +103,24 @@ def _find_all_dockerfiles(project_root: str) -> List[str]:
                 rel = os.path.relpath(full, project_root)
                 dockerfiles.append(rel.replace("\\", "/"))
     return dockerfiles
+
+
+def _write_generated_files(project_root: str, files: Dict[str, str]) -> List[str]:
+    """Write validated generated files under project_root only."""
+    root_abs = os.path.abspath(project_root)
+    written: List[str] = []
+    for rel_path, content in files.items():
+        clean_rel = rel_path.replace("\\", "/").lstrip("/")
+        if clean_rel.startswith("../") or clean_rel == "..":
+            raise ValueError(f"Unsafe generated path: {rel_path}")
+        dest = os.path.abspath(os.path.join(root_abs, clean_rel))
+        if os.path.commonpath([root_abs, dest]) != root_abs:
+            raise ValueError(f"Generated path escapes project root: {rel_path}")
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(content.rstrip() + "\n")
+        written.append(clean_rel)
+    return written
 
 
 # --------- core command streamer (SSE-compatible) ---------
@@ -325,97 +345,71 @@ def build_project_stream(
                     services=services,
                 )
                 
-                # Parse and write generated files
-                import re
-                
-                # Extract Dockerfiles from response
-                dockerfile_pattern = r'\*\*(?:backend/|frontend/)?Dockerfile\*\*\s*```(?:dockerfile)?\s*([\s\S]*?)```'
-                dockerfile_matches = re.findall(dockerfile_pattern, llm_response, re.IGNORECASE)
-                
-                # Also try extracting docker-compose.yml
-                compose_yaml = _extract_compose_yaml_from_agent_response(llm_response)
-                
-                files_written = 0
-                
-                # Write Dockerfiles to service directories
-                for i, svc in enumerate(services):
-                    svc_path = svc.get("path", ".")
-                    if svc_path == ".":
-                        dockerfile_dir = project_root
-                    else:
-                        dockerfile_dir = os.path.join(project_root, svc_path)
-                    
-                    os.makedirs(dockerfile_dir, exist_ok=True)
-                    dockerfile_path = os.path.join(dockerfile_dir, "Dockerfile")
-                    
-                    # Use matched content or generate a basic one
-                    if i < len(dockerfile_matches):
-                        content = dockerfile_matches[i].strip()
-                    else:
-                        # Generate basic Dockerfile based on service type
-                        svc_type = svc.get("type", "backend")
-                        if svc_type == "frontend":
-                            build_output = svc.get("build_output", "dist")
-                            content = f"""FROM node:20-alpine AS build
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
+                generated_files, validation_errors = parse_and_validate_generated_docker_response(
+                    llm_response,
+                    metadata or {},
+                    services,
+                    require_dockerfiles=True,
+                    require_compose=True,
+                )
 
-FROM nginx:alpine
-COPY --from=build /app/{build_output} /usr/share/nginx/html
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
-"""
-                        else:
-                            port = svc.get("port", 8000)
-                            content = f"""FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-EXPOSE {port}
-CMD ["npm", "start"]
-"""
-                    
-                    with open(dockerfile_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    files_written += 1
+                if validation_errors:
                     yield {
-                        "line": f"Generated Dockerfile at {dockerfile_path}",
+                        "line": "Generated Docker files failed validation. Asking agent for one corrected response...",
                         "stage": "build",
                     }
-                
-                # Write docker-compose.yml if we got one
-                if compose_yaml and "services:" in compose_yaml:
-                    compose_path = os.path.join(project_root, "docker-compose.yml")
-                    with open(compose_path, "w", encoding="utf-8") as f:
-                        f.write(compose_yaml + "\n")
-                    files_written += 1
+                    repair_response = run_docker_deploy_chat(
+                        project_name=project_name,
+                        metadata=metadata or {},
+                        dockerfiles=[],
+                        compose_files=[],
+                        file_tree=file_tree,
+                        user_message=(
+                            "Regenerate complete Docker files. Fix these validation errors exactly:\n"
+                            + "\n".join(f"- {err}" for err in validation_errors)
+                        ),
+                        logs=validation_errors,
+                        extra_instructions=f"Previous invalid response:\n{llm_response[:4000]}",
+                        services=services,
+                    )
+                    generated_files, validation_errors = parse_and_validate_generated_docker_response(
+                        repair_response,
+                        metadata or {},
+                        services,
+                        require_dockerfiles=True,
+                        require_compose=True,
+                    )
+
+                if validation_errors:
+                    msg = "ERROR: Agent did not produce valid Docker files:\n" + "\n".join(
+                        f"- {err}" for err in validation_errors
+                    )
                     yield {
-                        "line": f"Generated docker-compose.yml at {compose_path}",
+                        "line": msg,
+                        "stage": "build",
+                        "exit_code": 1,
+                        "complete": True,
+                        "tail": validation_errors,
+                    }
+                    return
+
+                written_files = _write_generated_files(project_root, generated_files)
+                for rel_path in written_files:
+                    yield {
+                        "line": f"Generated {rel_path}",
                         "stage": "build",
                     }
-                    
-                    # Now use compose build
+
+                if "docker-compose.yml" in generated_files:
                     yield {
                         "line": "Using generated docker-compose.yml for build...",
                         "stage": "build",
                     }
-                    compose_dir = project_root
                     cmd = ["docker", "compose", "-f", "docker-compose.yml", "build"]
-                    for event in _stream_command(cmd, cwd=compose_dir, stage="build"):
+                    for event in _stream_command(cmd, cwd=project_root, stage="build"):
                         yield event
                     return
-                
-                if files_written == 0:
-                    yield {
-                        "line": "WARNING: Agent did not generate usable Docker files. Check LLM response.",
-                        "stage": "build",
-                    }
-                
-                # Refresh dockerfiles list after generation
+
                 dockerfiles = _find_all_dockerfiles(project_root)
                 
             except Exception as e:
@@ -1079,8 +1073,70 @@ def run_project_stream(
                 }
                 return
 
-            # Extract just the docker-compose.yml YAML from the agent's structured response
-            compose_yaml = _extract_compose_yaml_from_agent_response(llm_response)
+            generated_files, validation_errors = parse_and_validate_generated_docker_response(
+                llm_response,
+                metadata or {},
+                services,
+                require_dockerfiles=False,
+                require_compose=True,
+            )
+            if validation_errors:
+                yield {
+                    "line": "Generated compose failed validation. Asking agent for one corrected response...",
+                    "stage": "run",
+                }
+                try:
+                    repair_response = run_docker_deploy_chat(
+                        project_name=project_name,
+                        metadata=metadata or {},
+                        dockerfiles=dockerfile_data,
+                        compose_files=[],
+                        file_tree=file_tree,
+                        user_message=(
+                            "Regenerate docker-compose.yml only. Fix these validation errors exactly:\n"
+                            + "\n".join(f"- {err}" for err in validation_errors)
+                        ),
+                        logs=validation_errors,
+                        extra_instructions=f"Previous invalid response:\n{llm_response[:4000]}",
+                        services=services,
+                    )
+                except Exception as e:
+                    msg = f"ERROR: LLM repair call for compose generation failed: {e}"
+                    yield {
+                        "line": msg,
+                        "stage": "run",
+                        "exit_code": 1,
+                        "complete": True,
+                        "tail": [msg],
+                    }
+                    return
+                generated_files, validation_errors = parse_and_validate_generated_docker_response(
+                    repair_response,
+                    metadata or {},
+                    services,
+                    require_dockerfiles=False,
+                    require_compose=True,
+                )
+
+            if validation_errors:
+                msg = "ERROR: Agent did not produce a valid docker-compose.yml:\n" + "\n".join(
+                    f"- {err}" for err in validation_errors
+                )
+                yield {
+                    "line": msg,
+                    "stage": "run",
+                    "exit_code": 1,
+                    "complete": True,
+                    "tail": validation_errors,
+                }
+                return
+
+            compose_yaml = generated_files.get("docker-compose.yml")
+            if not compose_yaml:
+                compose_yaml = next(
+                    content for path, content in generated_files.items()
+                    if os.path.basename(path).lower() in {"docker-compose.yml", "docker-compose.yaml"}
+                )
             compose_path = os.path.join(project_root, "docker-compose.yml")
 
             try:

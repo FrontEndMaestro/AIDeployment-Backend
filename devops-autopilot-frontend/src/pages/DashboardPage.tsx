@@ -32,8 +32,6 @@ export const DashboardPage: React.FC = () => {
 
   useEffect(() => {
     loadProjects();
-    const interval = setInterval(loadProjects, 5000); // Refresh every 5 seconds
-    return () => clearInterval(interval);
   }, []);
 
   const loadProjects = async () => {
