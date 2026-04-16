@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from app.controllers.auth_controller import get_current_user
+from app.utils.auth import get_current_user, verify_token
 from app.controllers.monitor_controller import monitor_controller
 
 router = APIRouter(
@@ -39,7 +39,6 @@ async def stream_docker_logs(project_id: str, request: Request):
         raise HTTPException(status_code=401, detail="Missing auth token")
     
     # Simple manual token verify for SSE stream
-    from app.controllers.auth_controller import verify_token
     user = await verify_token(token)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")

@@ -99,3 +99,24 @@ async def get_current_active_user(current_user: dict = Depends(get_current_user)
     if not current_user.get("is_active", True):
         raise HTTPException(status_code=403, detail="Inactive user")
     return current_user
+
+
+async def verify_token(token: str) -> Optional[dict]:
+    """
+    Verify a raw JWT token string and return user data, or None if invalid.
+    Used by SSE endpoints where the token is passed as a query param
+    instead of an Authorization header.
+    """
+    try:
+        payload = decode_access_token(token)
+        user_id = payload.get("sub")
+        if user_id is None:
+            return None
+        return {
+            "_id": ObjectId(user_id) if ObjectId.is_valid(user_id) else user_id,
+            "username": payload.get("username"),
+            "email": payload.get("email"),
+            "is_active": True,
+        }
+    except Exception:
+        return None
