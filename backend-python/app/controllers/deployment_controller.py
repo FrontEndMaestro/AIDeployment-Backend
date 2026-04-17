@@ -104,8 +104,15 @@ async def deploy_project_handler(project_id: str, current_user: dict):
             node_port=node_port,
             env_variables=env_variables,
             mongodb_url=f"mongodb://host.docker.internal:27017/{project_name}",  # Use project-specific DB
-            labels={"project_id": project_id, "created_by": current_user["username"]}
+            labels={"project_id": project_id, "created_by": current_user.get("username", "user")}
         )
+        
+        # IMPORTANT: patch imagePullPolicy to IfNotPresent for local k8s
+        # (Always would require image on DockerHub which may not be pushed yet)
+        if "deployment" in manifests:
+            manifests["deployment"] = manifests["deployment"].replace(
+                "imagePullPolicy: Always", "imagePullPolicy: IfNotPresent"
+            )
         
         print(f"✅ K8s manifests generated")
         

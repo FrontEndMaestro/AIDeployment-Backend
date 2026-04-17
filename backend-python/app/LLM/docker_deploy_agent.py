@@ -721,6 +721,7 @@ def build_deploy_message(
     extra_instructions: Optional[str] = None,
     services: Optional[List[Dict[str, str]]] = None,
     mode: str = "VALIDATE_EXISTING",
+    source_files: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     metadata, normalized_services = _normalize_ports_v2_contract(metadata, services)
     services = normalized_services
@@ -995,11 +996,11 @@ GEMINI_DOCKER_SYSTEM_PROMPT = """Generate minimal working Docker files from the 
 Return only this structure:
 STATUS: Generated
 GENERATED FILES:
-**path/Dockerfile**
+**path/to/file**
 ```dockerfile
 ...
 ```
-**docker-compose.yml**
+**path/to/file**
 ```yaml
 ...
 ```
@@ -1014,22 +1015,34 @@ Rules:
 - static_nginx frontend Dockerfiles use builder_runtime as builder, nginx:alpine final stage, and EXPOSE 80.
 - ssr/dev_server frontend Dockerfiles do not use nginx and EXPOSE container_port.
 - COPY paths are relative to each service build context; never prefix COPY with the service path.
+- Auto-Healing: If you see existing_dockerfiles or existing_compose_files, analyze them for errors and provide corrected versions.
 - No placeholders, no comments, no extra prose.
 """
 
 
 GEMINI_DOCKER_VALIDATION_PROMPT = """Validate existing Docker files from the JSON input and logs.
-Do not generate full files unless the user explicitly asks for regenerated file contents.
-Return only this structure:
-STATUS: Valid | Invalid
+Do a comprehensive validation of the project configuration, source code, dependencies, and Docker files.
+If you find ANY errors or if the user asked you to rewrite it, you MUST actively HEAL the project.
+Return only this exact string structure:
+STATUS: Invalid
 REASON: one concise root cause
 FIXES:
-- minimal actionable fix
+- minimal actionable fix summary
+GENERATED FILES:
+**path/to/script.js**
+```javascript
+...
+```
+**path/Dockerfile**
+```dockerfile
+...
+```
+
 Rules:
-- Use existing_dockerfiles, existing_compose_files, services, and logs.
-- For build context errors, compare compose build.context with service path and dockerfile_path.
-- For build/run/push errors, cite the exact failing service/file when possible.
-- No placeholders, no comments, no extra prose.
+- Always output the completely rewritten file blocks to heal the application.
+- If the project has NO issues at all, output 'STATUS: Valid' and omit GENERATED FILES.
+- For build/run/push errors, rewrite the exact failing service/file to fix it.
+- No placeholders, no comments, no extra prose. Include ALL code in the rewritten files.
 """
 
 
@@ -1099,9 +1112,11 @@ def build_gemini_deploy_message(
     extra_instructions: Optional[str] = None,
     services: Optional[List[Dict[str, str]]] = None,
     mode: str = "VALIDATE_EXISTING",
+    source_files: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     metadata, normalized_services = _normalize_ports_v2_contract(metadata, services)
     app_services = [svc for svc in normalized_services if _is_app_service(svc)]
+    source_files = source_files or []
 
     payload = {
         "schema_version": metadata.get("schema_version", PROMPT_SCHEMA_VERSION),
@@ -1113,7 +1128,10 @@ def build_gemini_deploy_message(
         "database_env_var": metadata.get("database_env_var"),
         "services": [_minimal_service_for_prompt(metadata, svc) for svc in app_services],
         "user_message": user_message,
+        "source_files": source_files,
     }
+    if file_tree:
+        payload["file_tree"] = file_tree
     if dockerfiles:
         payload["existing_dockerfiles"] = dockerfiles
     if compose_files:
@@ -1136,7 +1154,9 @@ def _response_message(
     extra_instructions: Optional[str],
     services: Optional[List[Dict[str, str]]],
     mode: str,
+    source_files: Optional[List[Dict[str, str]]] = None,
 ) -> tuple[str, str]:
+    source_files = source_files or []
     if get_docker_llm_provider() == "gemini":
         system_prompt = (
             GEMINI_DOCKER_SYSTEM_PROMPT
@@ -1150,6 +1170,7 @@ def _response_message(
                 metadata=metadata,
                 dockerfiles=dockerfiles,
                 compose_files=compose_files,
+                source_files=source_files,
                 file_tree=file_tree,
                 user_message=user_message,
                 logs=logs,
@@ -1165,6 +1186,7 @@ def _response_message(
             metadata=metadata,
             dockerfiles=dockerfiles,
             compose_files=compose_files,
+            source_files=source_files,
             file_tree=file_tree,
             user_message=user_message,
             logs=logs,
@@ -1176,7 +1198,7 @@ def _response_message(
 
 
 def _normalize_generated_path(path: str) -> str:
-    path = str(path or "").strip().strip("`").replace("\\", "/")
+    path = str(path or "").strip().strip("`#* ").replace("\\", "/")
     path = re.sub(r"^\./+", "", path)
     path = path.strip("/ ")
     if not path:
@@ -1188,9 +1210,9 @@ def _normalize_generated_path(path: str) -> str:
 def parse_generated_docker_files(response_text: str) -> Dict[str, str]:
     files: Dict[str, str] = {}
     patterns = [
-        r"\*\*(?P<path>[^*\n]*(?:Dockerfile|docker-compose\.ya?ml))\*\*\s*```(?P<lang>[a-zA-Z0-9_-]*)\s*(?P<content>[\s\S]*?)```",
-        r"(?:^|\n)#+\s*(?P<path>[^\n]*(?:Dockerfile|docker-compose\.ya?ml))\s*```(?P<lang>[a-zA-Z0-9_-]*)\s*(?P<content>[\s\S]*?)```",
-        r"(?:^|\n)(?P<path>[A-Za-z0-9_.\-/\\]+(?:Dockerfile|docker-compose\.ya?ml))\s*```(?P<lang>[a-zA-Z0-9_-]*)\s*(?P<content>[\s\S]*?)```",
+        r"\*\*(?P<path>[^*\n]+)\*\*\s*```(?P<lang>[a-zA-Z0-9_-]*)\s*(?P<content>[\s\S]*?)```",
+        r"(?:^|\n)#+\s*(?P<path>[^\n]+)\s*```(?P<lang>[a-zA-Z0-9_-]*)\s*(?P<content>[\s\S]*?)```",
+        r"(?:^|\n)(?P<path>[^\n]+)\s*```(?P<lang>[a-zA-Z0-9_-]*)\s*(?P<content>[\s\S]*?)```",
     ]
     for pattern in patterns:
         for match in re.finditer(pattern, response_text or "", re.IGNORECASE):
@@ -1439,7 +1461,9 @@ def _call_gemini_docker_with_repair(
     extra_instructions: Optional[str],
     services: Optional[List[Dict[str, str]]],
     mode: str,
+    source_files: Optional[List[Dict[str, str]]] = None,
 ) -> str:
+    source_files = source_files or []
     response = call_gemini(messages, custom_options={"temperature": 0.0})
     if response.startswith("ERROR:") or mode != "GENERATE_MISSING" or not services:
         return response
@@ -1459,6 +1483,7 @@ def _call_gemini_docker_with_repair(
         metadata=metadata,
         dockerfiles=dockerfiles,
         compose_files=compose_files,
+        source_files=source_files,
         file_tree=file_tree,
         user_message=(
             "Regenerate complete Docker files. Fix these validation errors exactly:\n"
@@ -1488,10 +1513,13 @@ def run_docker_deploy_chat(
     logs: Optional[List[str]] = None,
     extra_instructions: Optional[str] = None,
     services: Optional[List[Dict[str, str]]] = None,
+    source_files: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """
     Invoke LLM to analyze or generate Dockerfiles with the mandated response shape.
     """
+
+    source_files = source_files or []
 
     # Decide mode based on presence of Dockerfiles / compose
     if dockerfiles or compose_files:
@@ -1504,6 +1532,7 @@ def run_docker_deploy_chat(
         metadata=metadata,
         dockerfiles=dockerfiles,
         compose_files=compose_files,
+        source_files=source_files,
         file_tree=file_tree,
         user_message=user_message,
         logs=logs,
@@ -1523,6 +1552,7 @@ def run_docker_deploy_chat(
             metadata=metadata,
             dockerfiles=dockerfiles,
             compose_files=compose_files,
+            source_files=source_files,
             file_tree=file_tree,
             user_message=user_message,
             logs=logs,
@@ -1543,11 +1573,14 @@ def run_docker_deploy_chat_stream(
     logs: Optional[List[str]] = None,
     extra_instructions: Optional[str] = None,
     services: Optional[List[Dict[str, str]]] = None,
+    source_files: Optional[List[Dict[str, str]]] = None,
 ):
     """
     Streaming version of run_docker_deploy_chat.
     Yields tokens as they're generated by the LLM.
     """
+    source_files = source_files or []
+
     # Decide mode based on presence of Dockerfiles / compose
     if dockerfiles or compose_files:
         mode = "VALIDATE_EXISTING"
@@ -1559,6 +1592,7 @@ def run_docker_deploy_chat_stream(
         metadata=metadata,
         dockerfiles=dockerfiles,
         compose_files=compose_files,
+        source_files=source_files,
         file_tree=file_tree,
         user_message=user_message,
         logs=logs,
@@ -1578,6 +1612,7 @@ def run_docker_deploy_chat_stream(
             metadata=metadata,
             dockerfiles=dockerfiles,
             compose_files=compose_files,
+            source_files=source_files,
             file_tree=file_tree,
             user_message=user_message,
             logs=logs,
@@ -1595,4 +1630,145 @@ def run_docker_deploy_chat_stream(
     stream = call_llama_stream(messages)
     for chunk in stream:
         yield chunk
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Kubernetes Manifest Generation via Gemini
+# ─────────────────────────────────────────────────────────────────────────────
+
+K8S_MANIFEST_SYSTEM_PROMPT = """You are a Kubernetes YAML expert.
+Generate production-ready Kubernetes manifests for a local Kubernetes deployment (Docker Desktop).
+Return ONLY this exact structure with no extra commentary:
+
+STATUS: Generated
+
+GENERATED FILES:
+
+**k8s/deployment.yaml**
+```yaml
+{complete content}
+```
+
+**k8s/service.yaml**
+```yaml
+{complete content}
+```
+
+Rules:
+- Deployment: apiVersion apps/v1, kind Deployment, 1 replica, correct image, correct containerPort
+- Service: apiVersion v1, kind Service, type NodePort, correct targetPort, nodePort in 30000-32767 range
+- Use imagePullPolicy: Always so latest pushes are picked up
+- Add resource limits: memory 256Mi, cpu 250m
+- No placeholders, no template variables like ${X}
+- If multiple services exist, generate one Deployment+Service pair per service
+"""
+
+
+def _build_k8s_manifest_message(
+    project_name: str,
+    deployment_name: str,
+    image_repo: str,
+    node_port: int,
+    services: List[Dict],
+    metadata: Dict,
+) -> str:
+    """Build the JSON message sent to Gemini for k8s manifest generation."""
+    app_services = [s for s in (services or []) if str(s.get("type", "")).lower() != "database"]
+
+    service_specs = []
+    for svc in app_services:
+        container_port = (
+            svc.get("container_port")
+            or svc.get("runtime_port")
+            or svc.get("port")
+            or metadata.get("port")
+            or 8000
+        )
+        svc_name = str(svc.get("name") or "app").lower().replace(" ", "-")
+        service_specs.append({
+            "name": svc_name,
+            "image": f"{image_repo}-{svc_name}:latest" if len(app_services) > 1 else f"{image_repo}:latest",
+            "container_port": container_port,
+            "type": svc.get("type", "backend"),
+        })
+
+    # Fallback: single service from metadata
+    if not service_specs:
+        container_port = metadata.get("port") or metadata.get("backend_port") or 8000
+        service_specs.append({
+            "name": project_name,
+            "image": f"{image_repo}:latest",
+            "container_port": container_port,
+            "type": "backend",
+        })
+
+    payload = {
+        "project_name": project_name,
+        "deployment_name": deployment_name,
+        "image_repo": image_repo,
+        "node_port": node_port,
+        "namespace": "default",
+        "services": service_specs,
+    }
+    return json.dumps(payload, indent=2)
+
+
+def parse_generated_k8s_files(response_text: str) -> Dict[str, str]:
+    """
+    Parse Gemini's response for Kubernetes manifest files.
+    Returns dict: {relative_path -> yaml_content}
+    """
+    files: Dict[str, str] = {}
+    patterns = [
+        r"\*\*(?P<path>[^*\n]+)\*\*\s*```(?:yaml|yml)?\s*(?P<content>[\s\S]*?)```",
+        r"(?:^|\n)#+\s*(?P<path>[^\n]+)\s*```(?:yaml|yml)?\s*(?P<content>[\s\S]*?)```",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, response_text or "", re.IGNORECASE):
+            path = _normalize_generated_path(match.group("path"))
+            content = (match.group("content") or "").strip()
+            if path and content and path not in files:
+                # Only accept paths that look like k8s manifests
+                basename = os.path.basename(path).lower()
+                if basename.endswith(".yaml") or basename.endswith(".yml"):
+                    files[path] = content
+    return files
+
+
+def run_k8s_manifest_generation(
+    project_name: str,
+    deployment_name: str,
+    image_repo: str,
+    node_port: int,
+    services: Optional[List[Dict]] = None,
+    metadata: Optional[Dict] = None,
+) -> Dict[str, str]:
+    """
+    Use Gemini to generate Kubernetes deployment + service manifests.
+    Returns dict of {relative_path -> yaml_content} or empty dict on failure.
+    """
+    meta = metadata or {}
+    svcs = services or []
+
+    message = _build_k8s_manifest_message(
+        project_name=project_name,
+        deployment_name=deployment_name,
+        image_repo=image_repo,
+        node_port=node_port,
+        services=svcs,
+        metadata=meta,
+    )
+
+    messages = [
+        {"role": "system", "content": K8S_MANIFEST_SYSTEM_PROMPT},
+        {"role": "user", "content": message},
+    ]
+
+    response = call_gemini(messages, custom_options={"temperature": 0.0})
+    if response.startswith("ERROR:"):
+        print(f"[k8s manifest gen] Gemini error: {response}")
+        return {}
+
+    files = parse_generated_k8s_files(response)
+    return files
 

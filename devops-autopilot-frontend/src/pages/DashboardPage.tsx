@@ -122,7 +122,7 @@ export const DashboardPage: React.FC = () => {
     if (selectedFilter === "analyzed") return p.status === "analyzed" || p.status === "completed";
     if (selectedFilter === "uploaded") {
       // Include projects in transition
-      return p.status === "uploaded" || p.status === "extracting" || p.status === "analyzing" || p.status === "failed";
+      return p.status === "uploaded" || p.status === "extracting" || p.status === "extracted" || p.status === "analyzing" || p.status === "failed";
     }
     return true;
   });
@@ -299,6 +299,12 @@ export const DashboardPage: React.FC = () => {
                     {project.status === 'uploaded' && (
                       <Button variant="secondary" className="w-full text-xs h-10 border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10" onClick={() => { setSelectedProject(project); setShowExtractModal(true); }}>
                         <Play size={14} /> Initialize Analysis
+                      </Button>
+                    )}
+
+                    {project.status === 'extracted' && (
+                      <Button variant="secondary" className="w-full text-xs h-10 border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10" onClick={() => { setSelectedProject(project); setShowAnalyzeModal(true); }}>
+                        <Play size={14} /> Analyze Project
                       </Button>
                     )}
 

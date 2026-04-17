@@ -439,9 +439,67 @@ class ApiClient {
     });
     return this.handleResponse(response);
   }
+
+  async getMonitorStatus(projectId: string): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/monitor/${projectId}/status`, {
+      method: "GET",
+      headers: this.getHeaders(),
+    });
+    return this.handleResponse(response);
+  }
+
+  async healProject(projectId: string): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/monitor/${projectId}/heal`, {
+      method: "POST",
+      headers: this.getHeaders(),
+    });
+    return this.handleResponse(response);
+  }
 }
 
 export const apiClient = new ApiClient();
+
+export function streamMonitorLogs(
+  projectId: string,
+  onLog: (line: string) => void,
+  onError: (error: Error) => void
+): EventSource {
+  const rawApiBase =
+    (import.meta as any).env?.VITE_API_BASE_URL || "http://localhost:8000/api";
+  const apiBase = rawApiBase.endsWith("/api")
+    ? rawApiBase.replace(/\/+$/, "")
+    : `${rawApiBase.replace(/\/+$/, "")}/api`;
+
+  const token = apiClient.getToken();
+  const url = new URL(`${apiBase}/monitor/${projectId}/logs/stream`);
+  if (token) {
+    url.searchParams.set("token", token);
+  }
+
+  const source = new EventSource(url.toString());
+
+  source.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === "error") {
+        onError(new Error(data.message));
+        source.close();
+      } else {
+        onLog(data.message);
+      }
+    } catch (err) {
+      onLog(event.data); // fallback to raw string
+    }
+  };
+
+  source.onerror = () => {
+    onError(new Error("Connection to log stream closed or failed."));
+    source.close();
+  };
+
+  return source;
+}
+
 
 /**
  * Stream Docker chat response using Server-Sent Events (SSE).

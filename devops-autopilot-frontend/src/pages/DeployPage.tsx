@@ -27,8 +27,9 @@ import {
   FileNode,
 } from "../types/api";
 import ThreeBackground from "../components/ThreeBackground";
+import { MonitoringDashboard } from "../components/MonitoringDashboard";
 
-type DeployMode = "docker" | "aws";
+type DeployMode = "docker" | "aws" | "monitor";
 
 interface ChatMessage {
   role: "user" | "ai";
@@ -485,6 +486,32 @@ export const DeployPage: React.FC = () => {
             </button>
           </div>
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {node.is_dir && (
+              <>
+                <button
+                  className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-cyan-300 hover:border-cyan-500"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCreateFile(node.path);
+                  }}
+                  disabled={refreshingTree}
+                  aria-label={`Add file in ${node.path}`}
+                >
+                  File
+                </button>
+                <button
+                  className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-cyan-300 hover:border-cyan-500"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCreateFolder(node.path);
+                  }}
+                  disabled={refreshingTree}
+                  aria-label={`Add folder in ${node.path}`}
+                >
+                  Dir
+                </button>
+              </>
+            )}
             <button
               className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-red-300 hover:border-red-500"
               onClick={(e) => {
@@ -554,8 +581,10 @@ export const DeployPage: React.FC = () => {
                 <h1 className="text-4xl md:text-5xl font-black text-white tracking-tighter uppercase flex items-center gap-4">
                   {deployMode === "docker" ? (
                     <><Container size={36} className="text-cyan-400" /> Docker Orchestration</>
-                  ) : (
+                  ) : deployMode === "aws" ? (
                     <><Cloud size={36} className="text-orange-400" /> Cloud Deployment</>
+                  ) : (
+                    <><Settings size={36} className="text-violet-400" /> Live Monitoring</>
                   )}
                 </h1>
                 <p className="text-gray-500 mt-2 font-medium flex items-center gap-2">
@@ -579,6 +608,13 @@ export const DeployPage: React.FC = () => {
                       }`}
                   >
                     Cloud (AWS)
+                  </button>
+                  <button
+                    onClick={() => setDeployMode("monitor")}
+                    className={`px-5 py-2.5 rounded-xl text-xs font-black tracking-widest uppercase transition-all ${deployMode === "monitor" ? "bg-violet-500 text-white shadow-lg shadow-violet-500/20" : "text-gray-500 hover:text-white"
+                      }`}
+                  >
+                    Monitor
                   </button>
                 </div>
                 <Button variant="secondary" onClick={() => navigate("/dashboard")}>
@@ -652,68 +688,85 @@ export const DeployPage: React.FC = () => {
 
             {/* Center panel */}
             <div className="lg:col-span-6 flex flex-col gap-6">
-              <Card className="flex-1 flex flex-col p-0 overflow-hidden bg-white/[0.02] border-white/5 relative shadow-2xl min-h-[500px]">
-                <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/[0.03]">
-                  <div className="flex gap-2.5 overflow-x-auto no-scrollbar py-1">
-                    {openFiles.length === 0 ? (
-                      <div className="flex items-center gap-2 text-xs text-gray-500 font-bold uppercase tracking-widest opacity-50">
-                        <Code2 size={14} /> Source Explorer
-                      </div>
-                    ) : (
-                      openFiles.map((path) => (
-                        <button
-                          key={path}
-                          className={`px-4 py-2 rounded-xl text-xs font-black tracking-widest uppercase transition-all flex items-center gap-2 ${activeFile === path
-                            ? "bg-white text-black shadow-lg shadow-white/5"
-                            : "bg-white/5 text-gray-500 hover:text-gray-300 border border-white/5"
-                            }`}
-                          onClick={() => setActiveFile(path)}
-                        >
-                          {dirtyFlags[path] && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>}
-                          {path.split('/').pop()}
-                        </button>
-                      ))
-                    )}
+              {deployMode === "monitor" && projectId ? (
+                <MonitoringDashboard projectId={projectId} />
+              ) : (
+                <Card className="flex-1 flex flex-col p-0 overflow-hidden bg-white/[0.02] border-white/5 relative shadow-2xl min-h-[500px]">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/[0.03]">
+                    <div className="flex gap-2.5 overflow-x-auto no-scrollbar py-1">
+                      {openFiles.length === 0 ? (
+                        <div className="flex items-center gap-2 text-xs text-gray-500 font-bold uppercase tracking-widest opacity-50">
+                          <Code2 size={14} /> Source Explorer
+                        </div>
+                      ) : (
+                        openFiles.map((path) => (
+                          <button
+                            key={path}
+                            className={`px-4 py-2 rounded-xl text-xs font-black tracking-widest uppercase transition-all flex items-center gap-2 ${activeFile === path
+                              ? "bg-white text-black shadow-lg shadow-white/5"
+                              : "bg-white/5 text-gray-500 hover:text-gray-300 border border-white/5"
+                              }`}
+                            onClick={() => setActiveFile(path)}
+                          >
+                            {dirtyFlags[path] && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>}
+                            {path.split('/').pop()}
+                          </button>
+                        ))
+                      )}
+                    </div>
                   </div>
-                </div>
 
-                <div className="flex-1 flex flex-col min-h-0 relative">
-                  <textarea
-                    value={(activeFile && fileContents[activeFile]) || ''}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (!activeFile) return;
-                      setFileContents((prev) => ({ ...prev, [activeFile]: val }));
-                      setDirtyFlags((prev) => ({ ...prev, [activeFile]: true }));
-                    }}
-                    className="w-full flex-1 p-8 text-[13px] focus:outline-none resize-none custom-scroll font-mono leading-relaxed"
-                    style={{ background: 'transparent', color: '#f0f6fc', border: 'none' }}
-                    placeholder="Initialize workspace by selecting a manifest from the explorer..."
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="px-6 py-4 border-t border-white/5 bg-black/40 flex justify-between items-center">
-                  <div className="flex items-center gap-2 text-gray-600 font-mono text-[10px] uppercase">
-                    <span className="w-2 h-2 rounded-full bg-gray-700"></span>
-                    {activeFile || 'IDLE_MODE'}
+                  <div className="flex-1 flex flex-col min-h-0 relative">
+                    <textarea
+                      value={(activeFile && fileContents[activeFile]) || ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (!activeFile) return;
+                        setFileContents((prev) => ({ ...prev, [activeFile]: val }));
+                        setDirtyFlags((prev) => ({ ...prev, [activeFile]: true }));
+                      }}
+                      className="w-full flex-1 p-8 text-[13px] focus:outline-none resize-none custom-scroll font-mono leading-relaxed"
+                      style={{ background: 'transparent', color: '#f0f6fc', border: 'none' }}
+                      placeholder="Initialize workspace by selecting a manifest from the explorer..."
+                      spellCheck={false}
+                    />
                   </div>
-                  <Button
-                    variant="primary"
-                    disabled={!activeFile || !dirtyFlags[activeFile] || saving}
-                    loading={saving}
-                    onClick={handleSaveFile}
-                  >
-                    COMMIT_CHANGES
-                  </Button>
-                </div>
-              </Card>
+
+                  <div className="px-6 py-4 border-t border-white/5 bg-black/40 flex justify-between items-center">
+                    <div className="flex items-center gap-2 text-gray-600 font-mono text-[10px] uppercase">
+                      <span className="w-2 h-2 rounded-full bg-gray-700"></span>
+                      {activeFile || 'IDLE_MODE'}
+                    </div>
+                    <Button
+                      variant="primary"
+                      disabled={!activeFile || !dirtyFlags[activeFile] || saving}
+                      loading={saving}
+                      onClick={handleSaveFile}
+                    >
+                      COMMIT_CHANGES
+                    </Button>
+                  </div>
+                </Card>
+              )}
             </div>
 
             {/* Right sidebar */}
             <div className="lg:col-span-3 flex flex-col gap-6">
               <Card className="p-8 bg-white/[0.02] border-white/5 flex flex-col gap-6">
-                {deployMode === "docker" ? (
+                {deployMode === "monitor" ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <Settings size={18} className="text-violet-400" />
+                        <h3 className="text-xs font-black uppercase tracking-widest text-white">MONITORING</h3>
+                      </div>
+                      <Badge variant="info">LIVE</Badge>
+                    </div>
+                    <p className="text-xs text-gray-500 leading-relaxed">
+                      Kubernetes and cloud health checks run in the monitoring panel.
+                    </p>
+                  </>
+                ) : deployMode === "docker" ? (
                   <>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">

@@ -7,12 +7,38 @@ import json
 from ..LLM.docker_deploy_agent import (
     parse_and_validate_generated_docker_response,
     run_docker_deploy_chat,
+    run_k8s_manifest_generation,
 )
 
 from ..config.settings import settings
 
 
 # --------- helpers to discover compose + Dockerfiles ---------
+
+_DB_TOKENS = {"mongo", "postgres", "postgresql", "mysql", "mariadb", "redis", "sqlite", "database", "db"}
+
+
+def _is_database_service(service_name: str, image_name: str) -> bool:
+    """Return True if this compose service is a database (should not be pushed to DockerHub)."""
+    combined = f"{service_name} {image_name}".lower()
+    return any(token in combined for token in _DB_TOKENS)
+
+
+def _infer_compose_image_name(compose_dir: str, service_name: str) -> str:
+    """
+    Derive the docker compose auto-generated image name for a service with build: but no image:.
+    Docker names these as: {project_name}-{service_name}
+    where project_name = lowercase directory name, spaces/hyphens → underscores not applied
+    (Docker actually uses the folder name lowercased with non-alphanums replaced by hyphens).
+    """
+    folder = os.path.basename(compose_dir) or "project"
+    # Docker compose project naming: lowercase, non-alphanumeric → hyphen, then collapse
+    import re as _re
+    project = _re.sub(r"[^a-z0-9]", "-", folder.lower()).strip("-")
+    project = _re.sub(r"-+", "-", project)
+    # Compose image name = {project}-{service}
+    return f"{project}-{service_name}"
+
 def _docker_login(stage: str) -> Generator[Dict, None, None]:
     """
     If DOCKER_HUB_USERNAME / DOCKER_HUB_PASSWORD are set, perform
@@ -319,112 +345,120 @@ def build_project_stream(
     # ---- No compose: build all Dockerfiles ----
     dockerfiles = _find_all_dockerfiles(project_root)
     if not dockerfiles:
-        # Check if we can auto-generate Dockerfiles using the Agent
+        # Always attempt auto-generation — even if services list is empty
         services = (metadata or {}).get("services", [])
-        if services:
-            yield {
-                "line": f"No Dockerfiles found. Auto-generating for {len(services)} detected service(s) via Agent...",
-                "stage": "build",
-            }
-            
-            try:
-                # Collect file tree for context
-                file_tree = _build_file_tree_text(project_root)
-                project_name = os.path.basename(project_root) or "project"
-                
-                # Call Agent in GENERATE_MISSING mode
-                llm_response = run_docker_deploy_chat(
+        yield {
+            "line": "No Dockerfiles found. Auto-generating deployment files via Gemini AI...",
+            "stage": "build",
+        }
+
+        try:
+            file_tree = _build_file_tree_text(project_root)
+            source_files = _collect_source_files_for_llm(project_root)
+            project_name = os.path.basename(project_root) or "project"
+
+            yield {"line": f"Analyzing {len(source_files)} source file(s) for context...", "stage": "build"}
+
+            # Call Agent in GENERATE_MISSING mode
+            llm_response = run_docker_deploy_chat(
+                project_name=project_name,
+                metadata=metadata or {},
+                dockerfiles=[],
+                compose_files=[],
+                source_files=source_files,
+                file_tree=file_tree,
+                user_message=(
+                    "Analyze the source files and generate ALL Docker files needed:\n"
+                    "1. A Dockerfile for every service directory\n"
+                    "2. A docker-compose.yml at the project root\n"
+                    "Use the actual files to detect ports, entry points, and dependencies. "
+                    "Do NOT use placeholders — use real values from the code."
+                ),
+                logs=None,
+                extra_instructions=None,
+                services=services,
+            )
+
+            generated_files, validation_errors = parse_and_validate_generated_docker_response(
+                llm_response,
+                metadata or {},
+                services,
+                require_dockerfiles=True,
+                require_compose=True,
+            )
+
+            if validation_errors:
+                yield {
+                    "line": f"Generated Docker files have {len(validation_errors)} issue(s). Requesting auto-repair...",
+                    "stage": "build",
+                }
+                repair_response = run_docker_deploy_chat(
                     project_name=project_name,
                     metadata=metadata or {},
-                    dockerfiles=[],  # None exist
-                    compose_files=[],  # None exist
+                    dockerfiles=[],
+                    compose_files=[],
+                    source_files=source_files,
                     file_tree=file_tree,
-                    user_message="Generate ALL Docker files: Dockerfile for each service AND docker-compose.yml. Use metadata for ports and commands.",
-                    logs=None,
-                    extra_instructions=None,
+                    user_message=(
+                        "Regenerate complete Docker files. Fix these validation errors:\\n"
+                        + "\\n".join(f"- {err}" for err in validation_errors)
+                    ),
+                    logs=validation_errors,
+                    extra_instructions=f"Previous invalid response:\n{llm_response[:4000]}",
                     services=services,
                 )
-                
                 generated_files, validation_errors = parse_and_validate_generated_docker_response(
-                    llm_response,
+                    repair_response,
                     metadata or {},
                     services,
                     require_dockerfiles=True,
                     require_compose=True,
                 )
 
-                if validation_errors:
-                    yield {
-                        "line": "Generated Docker files failed validation. Asking agent for one corrected response...",
-                        "stage": "build",
-                    }
-                    repair_response = run_docker_deploy_chat(
-                        project_name=project_name,
-                        metadata=metadata or {},
-                        dockerfiles=[],
-                        compose_files=[],
-                        file_tree=file_tree,
-                        user_message=(
-                            "Regenerate complete Docker files. Fix these validation errors exactly:\n"
-                            + "\n".join(f"- {err}" for err in validation_errors)
-                        ),
-                        logs=validation_errors,
-                        extra_instructions=f"Previous invalid response:\n{llm_response[:4000]}",
-                        services=services,
-                    )
-                    generated_files, validation_errors = parse_and_validate_generated_docker_response(
-                        repair_response,
-                        metadata or {},
-                        services,
-                        require_dockerfiles=True,
-                        require_compose=True,
-                    )
-
-                if validation_errors:
-                    msg = "ERROR: Agent did not produce valid Docker files:\n" + "\n".join(
-                        f"- {err}" for err in validation_errors
-                    )
-                    yield {
-                        "line": msg,
-                        "stage": "build",
-                        "exit_code": 1,
-                        "complete": True,
-                        "tail": validation_errors,
-                    }
-                    return
-
-                written_files = _write_generated_files(project_root, generated_files)
-                for rel_path in written_files:
-                    yield {
-                        "line": f"Generated {rel_path}",
-                        "stage": "build",
-                    }
-
-                if "docker-compose.yml" in generated_files:
-                    yield {
-                        "line": "Using generated docker-compose.yml for build...",
-                        "stage": "build",
-                    }
-                    cmd = ["docker", "compose", "-f", "docker-compose.yml", "build"]
-                    for event in _stream_command(cmd, cwd=project_root, stage="build"):
-                        yield event
-                    return
-
-                dockerfiles = _find_all_dockerfiles(project_root)
-                
-            except Exception as e:
+            if validation_errors:
+                msg = (
+                    "ERROR: Agent did not produce valid Docker files:\n"
+                    + "\n".join(f"- {err}" for err in validation_errors)
+                )
                 yield {
-                    "line": f"ERROR: Auto-generation failed: {e}",
+                    "line": msg,
                     "stage": "build",
                     "exit_code": 1,
                     "complete": True,
-                    "tail": [str(e)],
+                    "tail": validation_errors,
                 }
                 return
-        
-        # If still no dockerfiles after trying to generate
+
+            written_files = _write_generated_files(project_root, generated_files)
+            for rel_path in written_files:
+                yield {"line": f"\u2705 Generated {rel_path}", "stage": "build"}
+
+            # If a compose file was generated, use it to build
+            compose_generated = any(
+                "docker-compose" in k for k in generated_files
+            )
+            if compose_generated:
+                yield {"line": "Using generated docker-compose.yml for build...", "stage": "build"}
+                cmd = ["docker", "compose", "-f", "docker-compose.yml", "build"]
+                for event in _stream_command(cmd, cwd=project_root, stage="build"):
+                    yield event
+                return
+
+            dockerfiles = _find_all_dockerfiles(project_root)
+
+        except Exception as e:
+            yield {
+                "line": f"ERROR: Auto-generation failed: {e}",
+                "stage": "build",
+                "exit_code": 1,
+                "complete": True,
+                "tail": [str(e)],
+            }
+            return
+
+        # If still no dockerfiles after generation
         if not dockerfiles:
-            msg = "ERROR: No docker-compose.yml and no Dockerfiles found. Auto-generation could not produce valid files."
+            msg = "ERROR: Auto-generation did not produce any buildable files. Please check the project structure."
             yield {
                 "line": msg,
                 "stage": "build",
@@ -1001,6 +1035,51 @@ def _build_file_tree_text(project_root: str, max_depth: int = 4, max_entries: in
     return "\n".join(lines)
 
 
+def _collect_source_files_for_llm(project_root: str, max_files: int = 6, max_bytes: int = 40_000) -> List[Dict]:
+    """
+    Collect key source files to give the LLM concrete context when generating
+    Docker files. Prefers entry points, manifests, and small config files.
+    Returns: [{path: str, content: str}]
+    """
+    priority_names = {
+        "package.json", "requirements.txt", "setup.py", "pyproject.toml",
+        "go.mod", "pom.xml", "build.gradle", "Gemfile", "composer.json",
+        "main.py", "app.py", "server.py", "index.js", "server.js", "app.js",
+        "main.go", "App.tsx", "index.ts",
+    }
+    priority_exts = {".py", ".js", ".ts", ".go", ".java", ".rb"}
+    skip_dirs = {"node_modules", "__pycache__", ".git", "venv", ".venv", "dist", "build", ".next"}
+
+    found_priority: List[Dict] = []
+    found_other: List[Dict] = []
+    total_bytes = 0
+
+    for root, dirs, files in os.walk(project_root):
+        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
+        for name in files:
+            if total_bytes >= max_bytes or (len(found_priority) + len(found_other)) >= max_files * 3:
+                break
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, project_root).replace("\\", "/")
+            try:
+                size = os.path.getsize(full)
+                if size == 0 or size > 60_000:
+                    continue
+                content = open(full, "r", encoding="utf-8", errors="ignore").read()
+                entry = {"path": rel, "content": content[:8000]}
+                if name in priority_names:
+                    found_priority.append(entry)
+                    total_bytes += min(len(content), 8000)
+                elif any(name.endswith(ext) for ext in priority_exts):
+                    found_other.append(entry)
+                    total_bytes += min(len(content), 8000)
+            except Exception:
+                pass
+
+    combined = found_priority + found_other
+    return combined[:max_files]
+
+
 # --------- RUN: compose-aware runner ---------
 
 
@@ -1428,14 +1507,25 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
                 # 1. Check Warnings
                 yield from _check_volumes(svc_name, svc.get("volumes", []))
 
-                # 2. Get Resolved Image
-                source_image = svc.get("image")
-                if not source_image:
+                # 2. Skip pure database images (mongo, postgres, redis, mysql)
+                svc_image_raw = svc.get("image") or ""
+                if _is_database_service(svc_name, svc_image_raw):
                     yield {
-                        "line": f"Resolved config for '{svc_name}' has no image name. Skipping.",
+                        "line": f"Skipping database service '{svc_name}' (not pushed to DockerHub).",
                         "stage": "push",
                     }
                     continue
+
+                # 3. Resolve source image — explicit or compose auto-name
+                source_image = svc_image_raw or None
+                if not source_image:
+                    # Docker Compose auto-names build images as {project_dir}-{service_name}
+                    inferred = _infer_compose_image_name(compose_dir, svc_name)
+                    yield {
+                        "line": f"Service '{svc_name}' has no explicit image. Inferring built image: {inferred}",
+                        "stage": "push",
+                    }
+                    source_image = inferred
 
                 dest_image = f"{image_repo}-{svc_name}:latest"
                 yield from _tag_and_push(source_image, dest_image, cwd=compose_dir)
@@ -1456,16 +1546,31 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
             # 1. Check Warnings
             yield from _check_volumes(svc_name, svc.get("volumes", []))
 
-            # 2. Get Explicit Image (NO GUESSING)
-            source_image = svc.get("image")
-            if not source_image:
+            # 2. Skip pure database images
+            svc_image_raw = svc.get("image") or ""
+            if _is_database_service(svc_name, svc_image_raw):
                 yield {
-                    "line": (
-                        f"WARNING: Service '{svc_name}' has no explicit 'image' field. Skipping push to avoid errors."
-                    ),
+                    "line": f"Skipping database service '{svc_name}' (not pushed to DockerHub).",
                     "stage": "push",
                 }
                 continue
+
+            # 3. Resolve source image — explicit or compose auto-name
+            source_image = svc_image_raw or None
+            if not source_image:
+                if "build" in svc:
+                    inferred = _infer_compose_image_name(compose_dir, svc_name)
+                    yield {
+                        "line": f"Service '{svc_name}' has no explicit image. Inferring built image: {inferred}",
+                        "stage": "push",
+                    }
+                    source_image = inferred
+                else:
+                    yield {
+                        "line": f"WARNING: Service '{svc_name}' has no image and no build config. Skipping.",
+                        "stage": "push",
+                    }
+                    continue
 
             dest_image = f"{image_repo}-{svc_name}:latest"
             yield from _tag_and_push(source_image, dest_image, cwd=compose_dir)
@@ -1597,3 +1702,368 @@ def _ensure_compose_env_files(project_root: str) -> None:
                 except Exception:
                     # Best-effort -- if this fails, docker compose will still show the real error
                     pass
+
+
+# --------- Kubernetes Deployment Streaming ---------
+
+
+def _read_compose_services_for_k8s(compose_path: str) -> List[Dict]:
+    """
+    Read docker-compose.yml and return a list of app services with their
+    locally-built image names (skip database services).
+    Returns: [{name, image, port}]
+    """
+    try:
+        with open(compose_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return []
+
+    compose_dir = os.path.dirname(compose_path)
+    services = data.get("services") or {}
+    result: List[Dict] = []
+
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        image_raw = svc.get("image") or ""
+        # Skip database services
+        if _is_database_service(svc_name, image_raw):
+            continue
+        # Resolve image name
+        if image_raw:
+            image = image_raw
+        elif "build" in svc:
+            image = _infer_compose_image_name(compose_dir, svc_name)
+        else:
+            continue
+        # Get first exposed port
+        port = 80
+        ports = svc.get("ports") or []
+        for p in ports:
+            if isinstance(p, str):
+                parts = p.split(":")
+                try:
+                    port = int(parts[-1].split("/")[0])
+                    break
+                except ValueError:
+                    pass
+            elif isinstance(p, dict):
+                try:
+                    port = int(p.get("target") or p.get("container_port") or 80)
+                    break
+                except (TypeError, ValueError):
+                    pass
+        result.append({"name": svc_name, "image": image, "port": port})
+    return result
+
+
+def _build_k8s_manifests_from_compose(
+    services: List[Dict],
+    project_label: str,
+    base_node_port: int,
+) -> str:
+    """
+    Generate a combined Kubernetes YAML (multi-document) for all app services.
+    Uses imagePullPolicy: IfNotPresent so local Docker images are used directly
+    without needing them on DockerHub — perfect for Docker Desktop Kubernetes.
+    """
+    import re as _re
+    docs: List[str] = []
+    current_port = base_node_port
+
+    for svc in services:
+        svc_name = _re.sub(r"[^a-z0-9-]", "-", svc["name"].lower()).strip("-")
+        image = svc["image"]
+        container_port = svc["port"]
+
+        deployment = (
+            f"apiVersion: apps/v1\n"
+            f"kind: Deployment\n"
+            f"metadata:\n"
+            f"  name: {svc_name}\n"
+            f"  labels:\n"
+            f"    app: {svc_name}\n"
+            f"    project: {project_label}\n"
+            f"spec:\n"
+            f"  replicas: 1\n"
+            f"  selector:\n"
+            f"    matchLabels:\n"
+            f"      app: {svc_name}\n"
+            f"  template:\n"
+            f"    metadata:\n"
+            f"      labels:\n"
+            f"        app: {svc_name}\n"
+            f"        project: {project_label}\n"
+            f"    spec:\n"
+            f"      containers:\n"
+            f"      - name: {svc_name}\n"
+            f"        image: {image}\n"
+            f"        imagePullPolicy: IfNotPresent\n"
+            f"        ports:\n"
+            f"        - containerPort: {container_port}\n"
+            f"        resources:\n"
+            f"          requests:\n"
+            f"            memory: \"128Mi\"\n"
+            f"            cpu: \"100m\"\n"
+            f"          limits:\n"
+            f"            memory: \"512Mi\"\n"
+            f"            cpu: \"500m\"\n"
+        )
+
+        # Clamp node port to valid range
+        node_port = max(30000, min(32767, current_port))
+        current_port += 1
+
+        service = (
+            f"apiVersion: v1\n"
+            f"kind: Service\n"
+            f"metadata:\n"
+            f"  name: {svc_name}-svc\n"
+            f"  labels:\n"
+            f"    app: {svc_name}\n"
+            f"    project: {project_label}\n"
+            f"spec:\n"
+            f"  type: NodePort\n"
+            f"  selector:\n"
+            f"    app: {svc_name}\n"
+            f"  ports:\n"
+            f"  - port: {container_port}\n"
+            f"    targetPort: {container_port}\n"
+            f"    nodePort: {node_port}\n"
+        )
+
+        docs.append(deployment)
+        docs.append(service)
+
+    return "\n---\n".join(docs) + "\n"
+
+
+def _find_k8s_manifests(project_root: str) -> List[str]:
+    """
+    Find Kubernetes manifest YAML files under project_root/k8s/.
+    Returns list of absolute file paths.
+    """
+    k8s_dir = os.path.join(project_root, "k8s")
+    found: List[str] = []
+    if not os.path.isdir(k8s_dir):
+        return found
+    for name in os.listdir(k8s_dir):
+        if name.endswith(".yaml") or name.endswith(".yml"):
+            found.append(os.path.join(k8s_dir, name))
+    return sorted(found)
+
+
+def _write_k8s_files(project_root: str, files: Dict[str, str]) -> List[str]:
+    """Write k8s manifest files to disk under project_root. Returns list of written paths."""
+    root_abs = os.path.abspath(project_root)
+    written: List[str] = []
+    for rel_path, content in files.items():
+        clean = rel_path.replace("\\", "/").lstrip("/")
+        dest = os.path.abspath(os.path.join(root_abs, clean))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(content.rstrip() + "\n")
+        written.append(clean)
+    return written
+
+
+def k8s_deploy_stream(
+    project_root: str,
+    image_repo: str,
+    metadata: Optional[Dict] = None,
+) -> Generator[Dict, None, None]:
+    """
+    High-level Kubernetes deployment streamer.
+
+    Flow:
+    1. Check kubectl is available
+    2. Check k8s cluster is reachable
+    3. Find k8s manifests in project_root/k8s/
+    4. If none found → generate via Gemini and save them
+    5. Run `kubectl apply -f k8s/` and stream output
+    6. Wait a few seconds then stream pod status
+    """
+    import re as _re
+    import time as _time
+
+    meta = metadata or {}
+    project_name = os.path.basename(project_root) or "project"
+    import re as _re2
+    sanitized = _re2.sub(r"[^a-z0-9_-]", "-", project_name.lower()).strip("-")[:50]
+    hub_user = settings.DOCKER_HUB_USERNAME
+    repo_prefix = settings.APP_REGISTRY_PREFIX or "devops-autopilot"
+    if hub_user:
+        _image_repo = image_repo  # Already fully qualified from caller
+    else:
+        _image_repo = image_repo
+
+    deployment_name = _re.sub(r"[^a-z0-9-]", "-", sanitized).strip("-")
+    node_port = 30000 + (hash(project_root) % 2767)
+    node_port = max(30000, min(32767, node_port))
+
+    # 1. Check kubectl available
+    yield {"line": "Checking kubectl availability...", "stage": "k8s_deploy"}
+    try:
+        check = subprocess.run(
+            ["kubectl", "version", "--client", "--output=yaml"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10
+        )
+        if check.returncode != 0:
+            msg = "ERROR: kubectl not found or not working. Install kubectl and ensure it is in PATH."
+            yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+            return
+        yield {"line": "✅ kubectl found", "stage": "k8s_deploy"}
+    except FileNotFoundError:
+        msg = "ERROR: kubectl binary not found. Please install kubectl."
+        yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+        return
+    except Exception as e:
+        msg = f"ERROR: kubectl check failed: {e}"
+        yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+        return
+
+    # 2. Check cluster reachable
+    yield {"line": "Checking Kubernetes cluster connectivity...", "stage": "k8s_deploy"}
+    try:
+        cluster_check = subprocess.run(
+            ["kubectl", "cluster-info"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15
+        )
+        if cluster_check.returncode != 0:
+            stderr_msg = cluster_check.stderr.decode("utf-8", errors="replace").strip()
+            msg = (
+                f"ERROR: Kubernetes cluster not reachable. {stderr_msg}\n"
+                "Ensure Docker Desktop Kubernetes is enabled and running."
+            )
+            yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+            return
+        yield {"line": "✅ Kubernetes cluster is reachable", "stage": "k8s_deploy"}
+    except Exception as e:
+        msg = f"ERROR: Cluster check failed: {e}"
+        yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+        return
+
+    # 3. Find or generate k8s manifests
+    k8s_manifests = _find_k8s_manifests(project_root)
+
+    if not k8s_manifests:
+        services = meta.get("services", [])
+
+        # ── Compose-aware: build per-service manifests using local image names ──
+        compose_path_found = _find_compose_file(project_root)
+        if compose_path_found:
+            yield {"line": "Reading compose services to generate per-service k8s manifests...", "stage": "k8s_deploy"}
+            try:
+                compose_services = _read_compose_services_for_k8s(compose_path_found)
+                if compose_services:
+                    manifest_content = _build_k8s_manifests_from_compose(compose_services, deployment_name, node_port)
+                    manifest_path = os.path.join(project_root, "k8s")
+                    os.makedirs(manifest_path, exist_ok=True)
+                    with open(os.path.join(manifest_path, "deployment.yaml"), "w", encoding="utf-8") as f:
+                        f.write(manifest_content)
+                    yield {"line": "✅ Generated k8s/deployment.yaml from compose services", "stage": "k8s_deploy"}
+                    k8s_manifests = _find_k8s_manifests(project_root)
+            except Exception as e:
+                yield {"line": f"Warning: compose-aware k8s generation failed: {e}. Falling back to Gemini.", "stage": "k8s_deploy"}
+
+    if not k8s_manifests:
+        services = meta.get("services", [])
+        yield {
+            "line": "No k8s/ manifests found. Generating via Gemini AI...",
+            "stage": "k8s_deploy",
+        }
+        try:
+            generated = run_k8s_manifest_generation(
+                project_name=project_name,
+                deployment_name=deployment_name,
+                image_repo=_image_repo,
+                node_port=node_port,
+                services=services,
+                metadata=meta,
+            )
+            if not generated:
+                msg = "ERROR: Gemini could not generate k8s manifests. Check GEMINI_API_KEY."
+                yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+                return
+
+            written = _write_k8s_files(project_root, generated)
+            for rel in written:
+                yield {"line": f"✅ Generated and saved: {rel}", "stage": "k8s_deploy"}
+
+            k8s_manifests = _find_k8s_manifests(project_root)
+        except Exception as e:
+            msg = f"ERROR: k8s manifest generation failed: {e}"
+            yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+            return
+
+    if not k8s_manifests:
+        msg = "ERROR: No k8s manifests available after generation attempt."
+        yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+        return
+
+    # 4. Apply manifests
+    k8s_dir = os.path.join(project_root, "k8s")
+    yield {"line": f"Applying {len(k8s_manifests)} manifest(s) from k8s/ ...", "stage": "k8s_deploy"}
+
+    apply_cmd = ["kubectl", "apply", "-f", k8s_dir, "--validate=false"]
+    yield {"line": f"Running: {' '.join(apply_cmd)}", "stage": "k8s_deploy"}
+
+    last_apply_event: Optional[Dict] = None
+    for event in _stream_command(apply_cmd, cwd=project_root, stage="k8s_deploy"):
+        last_apply_event = event
+        yield event
+
+    if last_apply_event and last_apply_event.get("exit_code", 0) != 0:
+        tail = last_apply_event.get("tail") or []
+        msg = "ERROR: kubectl apply failed. See logs above."
+        yield {"line": msg, "stage": "k8s_deploy", "exit_code": last_apply_event.get("exit_code", 1), "complete": True, "tail": tail + [msg]}
+        return
+
+    yield {"line": "✅ kubectl apply succeeded", "stage": "k8s_deploy"}
+
+    # 5. Wait briefly then check pod status
+    yield {"line": "⏳ Waiting for pods to start (10 seconds)...", "stage": "k8s_deploy"}
+    _time.sleep(10)
+
+    pod_cmd = ["kubectl", "get", "pods", "-l", f"app={deployment_name}", "-o", "wide"]
+    yield {"line": f"Checking pod status: {' '.join(pod_cmd)}", "stage": "k8s_deploy"}
+
+    try:
+        pod_proc = subprocess.run(
+            pod_cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15
+        )
+        stdout = pod_proc.stdout.decode("utf-8", errors="replace").strip()
+        stderr = pod_proc.stderr.decode("utf-8", errors="replace").strip()
+        if stdout:
+            for line in stdout.splitlines():
+                yield {"line": line, "stage": "k8s_deploy"}
+        if stderr:
+            yield {"line": f"[stderr] {stderr}", "stage": "k8s_deploy"}
+    except Exception as e:
+        yield {"line": f"Warning: Could not get pod status: {e}", "stage": "k8s_deploy"}
+
+    # 6. Stream recent events for the deployment
+    events_cmd = ["kubectl", "get", "events", "--sort-by=lastTimestamp", "--field-selector=reason!=SuccessfulCreate"]
+    try:
+        ev_proc = subprocess.run(
+            events_cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15
+        )
+        ev_out = ev_proc.stdout.decode("utf-8", errors="replace").strip()
+        if ev_out:
+            yield {"line": "--- Recent Kubernetes Events ---", "stage": "k8s_deploy"}
+            for line in ev_out.splitlines()[-20:]:
+                yield {"line": line, "stage": "k8s_deploy"}
+    except Exception:
+        pass  # Events are nice-to-have
+
+    yield {
+        "line": f"🚀 Deployment complete! Service exposed on NodePort {node_port}. Access at http://localhost:{node_port}",
+        "stage": "k8s_deploy",
+        "complete": True,
+        "exit_code": 0,
+        "service_url": f"http://localhost:{node_port}",
+        "deployment_name": deployment_name,
+    }

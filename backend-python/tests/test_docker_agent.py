@@ -341,6 +341,29 @@ services:
         self.assertIn('"final_runtime": "nginx:alpine"', result)
         self.assertNotIn('"runtime": "nginx:alpine"', result)
 
+    def test_gemini_prompt_includes_file_tree_for_path_context(self):
+        result = build_gemini_deploy_message(
+            project_name="app",
+            metadata={},
+            dockerfiles=[],
+            compose_files=[],
+            file_tree="backend/package.json\nfrontend/package.json",
+            user_message="generate",
+            services=[
+                {
+                    "name": "backend",
+                    "path": "backend",
+                    "type": "backend",
+                    "runtime_port": 5000,
+                    "container_port": 5000,
+                }
+            ],
+            mode="GENERATE_MISSING",
+        )
+
+        self.assertIn('"file_tree": "backend/package.json\\nfrontend/package.json"', result)
+        self.assertIn('"dockerfile_path": "backend/Dockerfile"', result)
+
 
     @patch("app.LLM.docker_deploy_agent.get_docker_llm_provider")
     def test_gemini_validation_mode_uses_validation_prompt_with_logs(self, mock_provider):
