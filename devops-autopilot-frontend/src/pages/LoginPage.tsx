@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import ThreeBackground from '../components/ThreeBackground';
+import LogoMark from '../components/LogoMark';
+import { Card } from '../components/Card';
+import { Button } from '../components/Button';
+import { Alert } from '../components/Alert';
+import {
+  User, Lock, Eye, EyeOff, ArrowRight
+} from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
@@ -20,16 +28,8 @@ export const LoginPage: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLocalError(null);
-
-    if (!formData.username.trim()) {
-      setLocalError('Username is required');
-      return;
-    }
-    if (!formData.password) {
-      setLocalError('Password is required');
-      return;
-    }
-
+    if (!formData.username.trim()) { setLocalError('Username is required'); return; }
+    if (!formData.password) { setLocalError('Password is required'); return; }
     try {
       await login(formData.username, formData.password);
       navigate('/dashboard');
@@ -41,122 +41,102 @@ export const LoginPage: React.FC = () => {
   const displayError = localError || error;
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-teal-900 via-purple-900/20 to-gray-900 px-4">
-      <div className="w-full max-w-md bg-gray-800/90 backdrop-blur-md rounded-2xl shadow-xl p-8 border border-gray-700/50">
-        
-        {/* Logo */}
-        <div className="text-center mb-8">
-          <div className="mx-auto w-16 h-16 flex items-center justify-center bg-gradient-to-br from-teal-500 to-purple-600 rounded-xl shadow-md">
-            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
+    <div className="min-h-screen relative overflow-hidden flex items-center justify-center px-4 bg-[#050810]">
+      <ThreeBackground />
+      <div className="absolute inset-0 grid-bg opacity-30 pointer-events-none" style={{ zIndex: 1 }} />
+
+      <div className="w-full max-w-md relative z-10 animate-fade-in">
+        <div className="text-center mb-10">
+          <div className="inline-flex flex-col items-center gap-4">
+            <div className="w-20 h-20 rounded-3xl bg-white/5 border border-white/10 flex items-center justify-center shadow-[0_0_50px_rgba(34,211,238,0.15)] backdrop-blur-xl">
+              <LogoMark size={40} />
+            </div>
+            <div>
+              <h1 className="text-3xl font-black text-white tracking-tighter uppercase italic">AutoPilot</h1>
+              <p className="text-gray-500 text-xs font-black uppercase tracking-widest mt-1">Enterprise Deployment Suite</p>
+            </div>
           </div>
-          <h1 className="mt-4 text-2xl font-bold text-white">DevOps AutoPilot</h1>
-          <p className="text-sm text-gray-400">Welcome back! Sign in to continue</p>
         </div>
 
-        {/* Error */}
-        {displayError && (
-          <div className="mb-6 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
-            {displayError}
-          </div>
-        )}
-
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Username */}
-          <div>
-            <label htmlFor="username" className="block text-sm text-gray-300 mb-1">
-              Username
-            </label>
-            <div className="relative">
-              <span className="absolute inset-y-0 left-3 flex items-center text-gray-400">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                </svg>
-              </span>
-              <input
-                id="username"
-                name="username"
-                type="text"
-                value={formData.username}
-                onChange={handleChange}
-                placeholder="Enter your username"
-                className="w-full pl-10 pr-3 py-3 rounded-lg bg-gray-700 text-white border border-gray-600 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 placeholder-gray-400"
-                disabled={isLoading}
-              />
+        <Card className="p-10 bg-white/[0.02] border-white/5 shadow-2xl backdrop-blur-2xl rounded-[2.5rem]">
+          {displayError && (
+            <div className="mb-6">
+              <Alert type="error" message={displayError} onClose={() => { setLocalError(null); clearError(); }} />
             </div>
-          </div>
+          )}
 
-          {/* Password */}
-          <div>
-            <label htmlFor="password" className="block text-sm text-gray-300 mb-1">
-              Password
-            </label>
-            <div className="relative">
-              <span className="absolute inset-y-0 left-3 flex items-center text-gray-400">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 11c-.9 0-2 .9-2 2s1 2 2 2 2-1 2-2-.9-2-2-2z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                </svg>
-              </span>
-              <input
-                id="password"
-                name="password"
-                type={showPassword ? 'text' : 'password'}
-                value={formData.password}
-                onChange={handleChange}
-                placeholder="Enter your password"
-                className="w-full pl-10 pr-10 py-3 rounded-lg bg-gray-700 text-white border border-gray-600 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 placeholder-gray-400"
-                disabled={isLoading}
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute inset-y-0 right-3 flex items-center text-gray-400 hover:text-teal-400"
-              >
-                {showPassword ? (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029M9.878 9.878l4.242 4.242M3 3l18 18" />
-                  </svg>
-                ) : (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
-                )}
-              </button>
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <label htmlFor="username" className="block text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] mb-3 ml-1">
+                Operator ID
+              </label>
+              <div className="relative group">
+                <span className="absolute inset-y-0 left-4 flex items-center text-gray-600 group-focus-within:text-cyan-400 transition-colors">
+                  <User size={16} />
+                </span>
+                <input
+                  id="username"
+                  name="username"
+                  type="text"
+                  value={formData.username}
+                  onChange={handleChange}
+                  placeholder="Username"
+                  className="w-full bg-white/5 border border-white/5 rounded-2xl pl-12 pr-4 py-4 text-sm text-white focus:outline-none focus:border-cyan-500/50 focus:bg-white/[0.08] transition-all"
+                  disabled={isLoading}
+                />
+              </div>
             </div>
+
+            <div>
+              <label htmlFor="password" className="block text-[10px] font-black text-gray-600 uppercase tracking-[0.2em] mb-3 ml-1">
+                Access Pass
+              </label>
+              <div className="relative group">
+                <span className="absolute inset-y-0 left-4 flex items-center text-gray-600 group-focus-within:text-cyan-400 transition-colors">
+                  <Lock size={16} />
+                </span>
+                <input
+                  id="password"
+                  name="password"
+                  type={showPassword ? 'text' : 'password'}
+                  value={formData.password}
+                  onChange={handleChange}
+                  placeholder="••••••••"
+                  className="w-full bg-white/5 border border-white/5 rounded-2xl pl-12 pr-12 py-4 text-sm text-white focus:outline-none focus:border-cyan-500/50 focus:bg-white/[0.08] transition-all"
+                  disabled={isLoading}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(v => !v)}
+                  className="absolute inset-y-0 right-4 flex items-center text-gray-600 hover:text-white transition-colors"
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+
+            <Button
+              type="submit"
+              loading={isLoading}
+              className="w-full py-7 rounded-2xl text-xs font-black uppercase tracking-[0.2em] bg-white text-black hover:bg-gray-200 transition-all shadow-[0_0_30px_rgba(255,255,255,0.1)]"
+            >
+              Initialize Session <ArrowRight size={16} className="ml-2" />
+            </Button>
+          </form>
+
+          <div className="mt-8 pt-8 border-t border-white/5 flex flex-col items-center gap-4">
+            <p className="text-gray-600 text-[10px] font-black uppercase tracking-widest">Global Authentication</p>
+            <Link
+              to="/register"
+              className="text-xs font-bold text-gray-400 hover:text-white transition-colors"
+            >
+              Request new workspace access
+            </Link>
           </div>
+        </Card>
 
-          {/* Submit */}
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full py-3 bg-gradient-to-r from-teal-500 to-purple-600 text-white font-semibold rounded-lg shadow-md hover:from-teal-600 hover:to-purple-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-          >
-            {isLoading ? (
-              <>
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                Signing in...
-              </>
-            ) : (
-              <>
-                Sign In
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                </svg>
-              </>
-            )}
-          </button>
-        </form>
-
-        {/* Register */}
-        <p className="mt-6 text-center text-sm text-gray-400">
-          Don’t have an account?{" "}
-          <Link to="/register" className="text-teal-400 hover:underline">
-            Create one
-          </Link>
+        <p className="text-center text-[10px] font-black text-gray-800 uppercase tracking-[0.4em] mt-10">
+          GENESIS_DEVOPS_CORE_V2
         </p>
       </div>
     </div>

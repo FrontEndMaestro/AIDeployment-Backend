@@ -1,14 +1,32 @@
-import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import {
+  Container,
+  Cloud,
+  ArrowLeft,
+  AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
+  FilePlus2,
+  FolderPlus,
+  Rocket,
+  Code2,
+  Terminal as TerminalIcon,
+  Settings,
+} from "lucide-react";
 import { Navbar } from "../components/Navbar";
 import { Card } from "../components/Card";
 import { Button } from "../components/Button";
+import { Badge } from "../components/Badge";
+import { AIChatSidebar } from "../components/AIChatSidebar";
 import { apiClient, streamAWSTerraform } from "../api/client";
+import { LoadingSpinner } from "../components/LoadingSpinner";
 import {
   DockerContextResponse,
-  DockerfileInfo,
   FileNode,
 } from "../types/api";
+import ThreeBackground from "../components/ThreeBackground";
 import { MonitoringDashboard } from "../components/MonitoringDashboard";
 
 type DeployMode = "docker" | "aws" | "monitor";
@@ -45,7 +63,7 @@ export const DeployPage: React.FC = () => {
   const [eventSource, setEventSource] = useState<EventSource | null>(null);
   const [refreshingTree, setRefreshingTree] = useState<boolean>(false);
   const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
-  
+
   // Deploy mode toggle: docker or aws
   const [deployMode, setDeployMode] = useState<DeployMode>("docker");
   const [awsConfig, setAwsConfig] = useState({
@@ -57,7 +75,7 @@ export const DeployPage: React.FC = () => {
   });
   const [awsStatus, setAwsStatus] = useState<string>("not_deployed");
   const [terraformExists, setTerraformExists] = useState<boolean>(false);
-  const [terraformLogs, setTerraformLogs] = useState<{type: string; message: string; stage?: string}[]>([]);
+  const [terraformLogs, setTerraformLogs] = useState<{ type: string; message: string; stage?: string }[]>([]);
   const [isDeploying, setIsDeploying] = useState(false);
   const [isK8sDeploying, setIsK8sDeploying] = useState(false);
   
@@ -79,7 +97,7 @@ export const DeployPage: React.FC = () => {
           },
         ]);
         setError(null);
-        
+
         // Also fetch AWS prerequisites to get Docker Hub username
         try {
           const awsPrereqs = await apiClient.checkAWSPrerequisites(projectId);
@@ -134,21 +152,17 @@ export const DeployPage: React.FC = () => {
 
   const handleSend = async () => {
     if (!projectId || !input.trim()) return;
-    
-    // Save input value before clearing (must do this BEFORE setInput(""))
+
     const messageText = input.trim();
     const logsText = logInput.trim();
     const instructionsText = instructions.trim();
-    
+
     const userMsg: ChatMessage = { role: "user", content: messageText };
     setMessages((prev) => [...prev, userMsg]);
     setSending(true);
     setInput("");
 
-    // Import streaming function
     const { streamDockerChat } = await import("../api/client");
-
-    // Build params using saved values
     const params: { message: string; logs?: string[]; instructions?: string } = {
       message: messageText,
     };
@@ -159,30 +173,15 @@ export const DeployPage: React.FC = () => {
       params.instructions = instructionsText;
     }
 
-    // Use a local variable to accumulate content (avoids React state batching issues)
     let accumulatedContent = "";
-    
-    // Add placeholder AI message for streaming content
     setMessages((prev) => [...prev, { role: "ai", content: "" }]);
-    
-    // Get the index of the AI message we just added
-    // This will be used to update that specific message
-    const aiMessageIndex = { current: -1 };
-    setMessages((prev) => {
-      aiMessageIndex.current = prev.length - 1;
-      return prev;
-    });
 
-    // Start streaming
     streamDockerChat(
       projectId,
       params,
-      // onToken: accumulate content and update the specific AI message
       (token) => {
         accumulatedContent += token;
-        // Update state with accumulated content (always update the last AI message)
         setMessages((prev) => {
-          // Find the last AI message in the array
           const newMessages = [...prev];
           for (let i = newMessages.length - 1; i >= 0; i--) {
             if (newMessages[i].role === "ai") {
@@ -193,11 +192,9 @@ export const DeployPage: React.FC = () => {
           return newMessages;
         });
       },
-      // onDone: stream completed
       () => {
         setSending(false);
       },
-      // onError: handle errors
       (error) => {
         setMessages((prev) => {
           const newMessages = [...prev];
@@ -253,12 +250,12 @@ export const DeployPage: React.FC = () => {
               ...prev,
               {
                 role: "ai",
-                content: `${action} failed, sending logs to Docker AI for validation...`,
+                content: `${action} failed, sending logs to Llama 3.1 for analysis...`,
               },
             ]);
             apiClient
               .sendDockerChat(projectId, {
-                message: `${action} failed. Validate existing Docker files against these logs and identify the minimal fix. Do not generate full files unless required.`,
+                message: `${action} failed. Analyze these logs and fix Dockerfile.`,
                 logs: summary ? summary.split("\n") : undefined,
               })
               .then((resp) =>
@@ -271,8 +268,8 @@ export const DeployPage: React.FC = () => {
                     role: "ai",
                     content:
                       err instanceof Error
-                        ? `Error sending logs to Docker AI: ${err.message}`
-                        : "Error sending logs to Docker AI",
+                        ? `Error sending logs to Llama 3.1: ${err.message}`
+                        : "Error sending logs to Llama 3.1",
                   },
                 ])
               );
@@ -461,9 +458,8 @@ export const DeployPage: React.FC = () => {
         style={{ paddingLeft: `${depth * 12}px` }}
       >
         <div
-          className={`flex items-center justify-between group rounded px-2 py-1 hover:bg-gray-700/50 ${
-            !node.is_dir && activeFile === node.path ? "bg-gray-700/60 border border-cyan-600/40" : ""
-          }`}
+          className={`flex items-center justify-between group rounded px-2 py-1 hover:bg-gray-700/50 ${!node.is_dir && activeFile === node.path ? "bg-gray-700/60 border border-cyan-600/40" : ""
+            }`}
         >
           <div className="flex items-center gap-2">
             {node.is_dir ? (
@@ -477,15 +473,14 @@ export const DeployPage: React.FC = () => {
                 }
                 aria-label={expandedDirs[node.path] ?? true ? "Collapse folder" : "Expand folder"}
               >
-                {(expandedDirs[node.path] ?? true) ? "▾" : "▸"}
+                {(expandedDirs[node.path] ?? true) ? (<ChevronDown size={12} />) : (<ChevronRight size={12} />)}
               </button>
             ) : (
-              <span className="text-gray-600 text-xs">•</span>
+              <span className="text-gray-600 text-xs">-</span>
             )}
             <button
-              className={`text-left text-sm ${
-                node.is_dir ? "text-cyan-200" : activeFile === node.path ? "text-white" : "text-gray-200"
-              } hover:text-white`}
+              className={`text-left text-sm ${node.is_dir ? "text-cyan-200" : activeFile === node.path ? "text-white" : "text-gray-200"
+                } hover:text-white`}
               onClick={() => (node.is_dir ? setExpandedDirs((prev) => ({ ...prev, [node.path]: !(prev[node.path] ?? true) })) : handleFileSelect(node))}
             >
               {node.name}
@@ -495,24 +490,26 @@ export const DeployPage: React.FC = () => {
             {node.is_dir && (
               <>
                 <button
-                  className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-gray-200 hover:border-cyan-500"
+                  className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-cyan-300 hover:border-cyan-500"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleCreateFile(node.path);
                   }}
                   disabled={refreshingTree}
+                  aria-label={`Add file in ${node.path}`}
                 >
-                  + File
+                  File
                 </button>
                 <button
-                  className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-gray-200 hover:border-cyan-500"
+                  className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-cyan-300 hover:border-cyan-500"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleCreateFolder(node.path);
                   }}
                   disabled={refreshingTree}
+                  aria-label={`Add folder in ${node.path}`}
                 >
-                  + Folder
+                  Dir
                 </button>
               </>
             )}
@@ -550,254 +547,82 @@ export const DeployPage: React.FC = () => {
     ].filter((item) => item.value !== undefined && item.value !== null);
   }, [context]);
 
-  const renderDockerfiles = (items: DockerfileInfo[], title: string) => (
-    <Card className="p-4 bg-gray-800 border-gray-700">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-lg font-semibold text-white">{title}</h3>
-        <span className="text-xs text-gray-400">{items.length} file(s)</span>
-      </div>
-      {items.length === 0 ? (
-        <p className="text-gray-400 text-sm">None detected yet.</p>
-      ) : (
-        items.map((df) => (
-          <div
-            key={df.path}
-            className="mb-3 rounded border border-gray-700 bg-gray-900 p-3"
-          >
-            <p className="text-xs text-cyan-400 mb-2">{df.path}</p>
-            <pre className="text-xs text-gray-200 overflow-auto max-h-64 whitespace-pre-wrap">
-              {df.content}
-            </pre>
-          </div>
-        ))
-      )}
-    </Card>
-  );
-
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
-        <p className="text-gray-300">Loading deploy workspace...</p>
-      </div>
-    );
+    return <LoadingSpinner message="Loading deploy workspace..." />;
   }
 
   if (error || !context) {
     return (
-      <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center gap-4">
-        <p className="text-red-400">{error || "Unable to load deploy context"}</p>
-        <Button onClick={() => navigate("/dashboard")}>Back to Dashboard</Button>
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 animate-fade-in" style={{ background: 'var(--bg-base)' }}>
+        <div className="flex items-center gap-3 text-rose-400">
+          <AlertCircle size={20} />
+          <p className="text-sm font-medium">{error || 'Unable to load deploy context'}</p>
+        </div>
+        <Button variant="secondary" onClick={() => navigate('/dashboard')}>
+          <ArrowLeft size={15} /> Back to Dashboard
+        </Button>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-900">
-      <Navbar />
-      <main className="max-w-7xl mx-auto px-6 py-8 h-[calc(100vh-64px)]">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-3xl font-bold text-white">
-              {deployMode === "docker" 
-                ? "🐳 Docker Deploy" 
-                : deployMode === "aws" 
-                  ? "☁️ AWS Deploy" 
-                  : "📊 Live Monitoring"}
-            </h1>
-            <p className="text-gray-400">
-              Project: {context.project.project_name} (powered by Llama 3.1)
-            </p>
-          </div>
-          <div className="flex items-center gap-4">
-            {/* Mode Toggle */}
-            <div className="flex items-center gap-2 bg-gray-800 rounded-lg p-1">
-              <button
-                onClick={() => setDeployMode("docker")}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
-                  deployMode === "docker"
-                    ? "bg-cyan-600 text-white"
-                    : "text-gray-400 hover:text-white"
-                }`}
-              >
-                🐳 Docker
-              </button>
-              <button
-                onClick={() => setDeployMode("aws")}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
-                  deployMode === "aws"
-                    ? "bg-orange-500 text-white"
-                    : "text-gray-400 hover:text-white"
-                }`}
-              >
-                ☁️ AWS
-              </button>
-              <button
-                onClick={() => setDeployMode("monitor")}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
-                  deployMode === "monitor"
-                    ? "bg-purple-500 text-white"
-                    : "text-gray-400 hover:text-white"
-                }`}
-              >
-                📊 Monitor
-              </button>
-            </div>
-            <Button variant="secondary" onClick={() => navigate("/dashboard")}>
-              Back to Dashboard
-            </Button>
-          </div>
-        </div>
+    <div className="min-h-screen relative overflow-hidden flex flex-col bg-[#050810]">
+      <ThreeBackground />
+      <div className="absolute inset-0 grid-bg opacity-30 pointer-events-none" style={{ zIndex: 1 }} />
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-[calc(100vh-150px)]">
-          {/* Left sidebar: file explorer + metadata (scroll here only) */}
-          <div className="lg:col-span-3 flex flex-col bg-gray-850/0 gap-3 overflow-y-auto pr-1 custom-scroll">
-            <Card className="p-4 bg-gray-800 border-gray-700">
-              <div className="flex items-center justify-between mb-2">
-                <div>
-                  <p className="text-[11px] uppercase tracking-wide text-gray-400">
-                    Explorer
-                  </p>
-                  <p className="text-sm text-white font-semibold">{rootLabel}</p>
-                </div>
-                <button
-                  className="text-[11px] px-2 py-1 rounded bg-gray-900 border border-gray-700 text-gray-200 hover:border-cyan-500"
-                  onClick={() => refreshExplorer()}
-                  disabled={refreshingTree}
-                  title="Refresh"
-                >
-                  ↻
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2 mb-3">
-                <button
-                  className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-md bg-gray-900/80 border border-gray-700 text-gray-100 hover:border-cyan-500 hover:text-white shadow-sm transition"
-                  onClick={() => handleCreateFile(null)}
-                  disabled={refreshingTree}
-                >
-                  <span className="text-cyan-400 text-xs">＋</span>
-                  New File
-                </button>
-                <button
-                  className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-md bg-gray-900/80 border border-gray-700 text-gray-100 hover:border-cyan-500 hover:text-white shadow-sm transition"
-                  onClick={() => handleCreateFolder(null)}
-                  disabled={refreshingTree}
-                >
-                  <span className="text-cyan-400 text-xs">＋</span>
-                  New Folder
-                </button>
-                {refreshingTree && (
-                  <span className="text-xs text-gray-400">Refreshing…</span>
-                )}
-              </div>
-              <div className="max-h-[420px] overflow-y-auto custom-scroll rounded-md border border-gray-750/60 bg-gray-900/60">
-                {renderFileTree(context.file_tree.tree)}
-              </div>
-            </Card>
+      <div className="relative z-10 flex flex-col h-full bg-[#050810]/40">
+        <Navbar />
 
-            <Card className="p-4 bg-gray-800 border-gray-700">
-              <h3 className="text-sm font-semibold text-white mb-2">
-                Project Metadata
-              </h3>
-              <div className="grid grid-cols-2 gap-2">
-                {metadataList.map((item) => (
-                  <div
-                    key={item.label}
-                    className="bg-gray-900 rounded-lg p-2 border border-gray-700"
-                  >
-                    <p className="text-xs text-gray-500">{item.label}</p>
-                    <p className="text-sm text-white truncate">
-                      {item.value as string}
-                    </p>
-                  </div>
-                ))}
-              </div>
-              {context.metadata.env_variables?.length ? (
-                <div className="mt-2">
-                  <p className="text-xs text-gray-500 mb-1">Env variables</p>
-                  <div className="flex flex-wrap gap-1">
-                    {context.metadata.env_variables.slice(0, 10).map((v) => (
-                      <span
-                        key={v}
-                        className="text-[11px] bg-gray-900 border border-gray-700 rounded px-2 py-0.5 text-gray-200"
-                      >
-                        {v}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-              {context.compose_files.length > 0 && (
-                <div className="mt-2 text-xs text-gray-400">
-                  Docker Compose detected ({context.compose_files.length})
-                </div>
-              )}
-            </Card>
-          </div>
+        <main className="flex-1 max-w-[1600px] w-full mx-auto px-6 py-8 flex flex-col gap-8">
 
-          {/* Center panel: tabs + editor */}
-          <div className="lg:col-span-6 flex flex-col space-y-3">
-            {deployMode === "monitor" && projectId ? (
-              <MonitoringDashboard projectId={projectId} />
-            ) : (
-            <Card className="p-0 bg-gray-800 border-gray-700 flex flex-col h-full">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-                <div className="flex flex-wrap gap-2">
-                  {openFiles.length === 0 ? (
-                    <span className="text-xs text-gray-500">
-                      Open a file from the explorer
-                    </span>
+          {/* Hero Header */}
+          <div className="animate-fade-in">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+              <div>
+                <h1 className="text-4xl md:text-5xl font-black text-white tracking-tighter uppercase flex items-center gap-4">
+                  {deployMode === "docker" ? (
+                    <><Container size={36} className="text-cyan-400" /> Docker Orchestration</>
+                  ) : deployMode === "aws" ? (
+                    <><Cloud size={36} className="text-orange-400" /> Cloud Deployment</>
                   ) : (
-                    openFiles.map((path) => (
-                      <button
-                        key={path}
-                        className={`px-3 py-1 rounded text-xs border ${
-                          activeFile === path
-                            ? "bg-gray-700 text-white border-cyan-500/50"
-                            : "bg-gray-900 text-gray-300 border-gray-700"
-                        }`}
-                        onClick={() => setActiveFile(path)}
-                      >
-                        {dirtyFlags[path] ? "* " : ""}
-                        {path.split("/").pop()}
-                      </button>
-                    ))
+                    <><Settings size={36} className="text-violet-400" /> Live Monitoring</>
                   )}
-                </div>
-                <div className="text-xs text-gray-400">
-                  {activeFile || "No file selected"}
-                </div>
+                </h1>
+                <p className="text-gray-500 mt-2 font-medium flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+                  Active Workspace: <span className="text-white font-bold">{context.project.project_name}</span>
+                </p>
               </div>
 
-              <div className="flex-1 flex flex-col">
-                <textarea
-                  value={(activeFile && fileContents[activeFile]) || ""}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (!activeFile) return;
-                    setFileContents((prev) => ({ ...prev, [activeFile]: val }));
-                    setDirtyFlags((prev) => ({ ...prev, [activeFile]: true }));
-                  }}
-                  className="w-full flex-1 bg-gray-900 border-0 rounded-b-lg p-4 text-sm text-gray-100 focus:outline-none"
-                  placeholder="File preview and edit here"
-                  spellCheck={false}
-                />
-                <div className="flex items-center justify-between px-4 py-2 border-t border-gray-700">
-                  <div className="text-xs text-gray-400">
-                    Tabs styled like VS Code; syntax highlighting can be added with a code editor component later.
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={!activeFile || !dirtyFlags[activeFile] || saving}
-                    loading={saving}
-                    onClick={handleSaveFile}
+              <div className="flex items-center gap-4">
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-1.5 flex gap-1">
+                  <button
+                    onClick={() => setDeployMode("docker")}
+                    className={`px-5 py-2.5 rounded-xl text-xs font-black tracking-widest uppercase transition-all ${deployMode === "docker" ? "bg-white text-black shadow-lg shadow-white/10" : "text-gray-500 hover:text-white"
+                      }`}
                   >
-                    Save File
-                  </Button>
+                    Infrastructure
+                  </button>
+                  <button
+                    onClick={() => setDeployMode("aws")}
+                    className={`px-5 py-2.5 rounded-xl text-xs font-black tracking-widest uppercase transition-all ${deployMode === "aws" ? "bg-orange-500 text-white shadow-lg shadow-orange-500/20" : "text-gray-500 hover:text-white"
+                      }`}
+                  >
+                    Cloud (AWS)
+                  </button>
+                  <button
+                    onClick={() => setDeployMode("monitor")}
+                    className={`px-5 py-2.5 rounded-xl text-xs font-black tracking-widest uppercase transition-all ${deployMode === "monitor" ? "bg-violet-500 text-white shadow-lg shadow-violet-500/20" : "text-gray-500 hover:text-white"
+                      }`}
+                  >
+                    Monitor
+                  </button>
                 </div>
+                <Button variant="secondary" onClick={() => navigate("/dashboard")}>
+                  <ArrowLeft size={16} /> Back to Hub
+                </Button>
               </div>
-            </Card>
-            )}
+            </div>
           </div>
 
           {/* Right sidebar: actions + chat */}
@@ -910,210 +735,252 @@ export const DeployPage: React.FC = () => {
                   {/* AWS Config Form */}
                   <div className="space-y-3 mb-3">
                     <div>
-                      <label className="text-xs text-gray-400 block mb-1">AWS Region</label>
-                      <select
-                        value={awsConfig.aws_region}
-                        onChange={(e) => setAwsConfig(prev => ({ ...prev, aws_region: e.target.value }))}
-                        className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white"
-                      >
-                        <option value="us-east-1">US East (N. Virginia)</option>
-                        <option value="us-west-2">US West (Oregon)</option>
-                        <option value="eu-west-1">EU (Ireland)</option>
-                        <option value="ap-south-1">Asia Pacific (Mumbai)</option>
-                      </select>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Workspace</p>
+                      <p className="text-sm font-black text-white">{rootLabel}</p>
                     </div>
-                    {awsConfig.docker_repo_prefix && (
-                      <div className="text-xs text-gray-400">
-                        <span>Docker Hub: </span>
-                        <span className="text-cyan-400">{awsConfig.docker_repo_prefix}</span>
-                        <span className="text-gray-500 ml-1">(from backend .env)</span>
+                  </div>
+                  <button
+                    className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 border border-white/10 text-gray-400 hover:text-white transition-all shadow-sm"
+                    onClick={() => refreshExplorer()}
+                    disabled={refreshingTree}
+                  >
+                    <RefreshCw size={14} className={refreshingTree ? "animate-spin" : ""} />
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <button
+                    className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-xl bg-white/5 border border-white/5 text-gray-400 hover:text-white hover:border-cyan-500 transition-all"
+                    onClick={() => handleCreateFile(null)}
+                    disabled={refreshingTree}
+                  >
+                    <FilePlus2 size={12} className="text-cyan-400" />
+                    Add File
+                  </button>
+                  <button
+                    className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-xl bg-white/5 border border-white/5 text-gray-400 hover:text-white hover:border-cyan-500 transition-all"
+                    onClick={() => handleCreateFolder(null)}
+                    disabled={refreshingTree}
+                  >
+                    <FolderPlus size={12} className="text-cyan-400" />
+                    Add Dir
+                  </button>
+                </div>
+
+                <div className="max-h-[500px] overflow-y-auto custom-scroll rounded-2xl border border-white/5 bg-black/20 p-4">
+                  {renderFileTree(context.file_tree.tree)}
+                </div>
+              </Card>
+
+              <Card className="p-6 bg-white/[0.02] border-white/5">
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-6 flex items-center gap-2">
+                  <Settings size={14} /> System Profile
+                </h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {metadataList.map((item) => (
+                    <div key={item.label} className="bg-white/5 rounded-xl p-3 border border-white/5">
+                      <p className="text-[9px] font-black text-gray-600 uppercase mb-1">{item.label}</p>
+                      <p className="text-xs font-bold truncate text-white">{item.value as string}</p>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </div>
+
+            {/* Center panel */}
+            <div className="lg:col-span-6 flex flex-col gap-6">
+              {deployMode === "monitor" && projectId ? (
+                <MonitoringDashboard projectId={projectId} />
+              ) : (
+                <Card className="flex-1 flex flex-col p-0 overflow-hidden bg-white/[0.02] border-white/5 relative shadow-2xl min-h-[500px]">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/[0.03]">
+                    <div className="flex gap-2.5 overflow-x-auto no-scrollbar py-1">
+                      {openFiles.length === 0 ? (
+                        <div className="flex items-center gap-2 text-xs text-gray-500 font-bold uppercase tracking-widest opacity-50">
+                          <Code2 size={14} /> Source Explorer
+                        </div>
+                      ) : (
+                        openFiles.map((path) => (
+                          <button
+                            key={path}
+                            className={`px-4 py-2 rounded-xl text-xs font-black tracking-widest uppercase transition-all flex items-center gap-2 ${activeFile === path
+                              ? "bg-white text-black shadow-lg shadow-white/5"
+                              : "bg-white/5 text-gray-500 hover:text-gray-300 border border-white/5"
+                              }`}
+                            onClick={() => setActiveFile(path)}
+                          >
+                            {dirtyFlags[path] && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>}
+                            {path.split('/').pop()}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex-1 flex flex-col min-h-0 relative">
+                    <textarea
+                      value={(activeFile && fileContents[activeFile]) || ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (!activeFile) return;
+                        setFileContents((prev) => ({ ...prev, [activeFile]: val }));
+                        setDirtyFlags((prev) => ({ ...prev, [activeFile]: true }));
+                      }}
+                      className="w-full flex-1 p-8 text-[13px] focus:outline-none resize-none custom-scroll font-mono leading-relaxed"
+                      style={{ background: 'transparent', color: '#f0f6fc', border: 'none' }}
+                      placeholder="Initialize workspace by selecting a manifest from the explorer..."
+                      spellCheck={false}
+                    />
+                  </div>
+
+                  <div className="px-6 py-4 border-t border-white/5 bg-black/40 flex justify-between items-center">
+                    <div className="flex items-center gap-2 text-gray-600 font-mono text-[10px] uppercase">
+                      <span className="w-2 h-2 rounded-full bg-gray-700"></span>
+                      {activeFile || 'IDLE_MODE'}
+                    </div>
+                    <Button
+                      variant="primary"
+                      disabled={!activeFile || !dirtyFlags[activeFile] || saving}
+                      loading={saving}
+                      onClick={handleSaveFile}
+                    >
+                      COMMIT_CHANGES
+                    </Button>
+                  </div>
+                </Card>
+              )}
+            </div>
+
+            {/* Right sidebar */}
+            <div className="lg:col-span-3 flex flex-col gap-6">
+              <Card className="p-8 bg-white/[0.02] border-white/5 flex flex-col gap-6">
+                {deployMode === "monitor" ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <Settings size={18} className="text-violet-400" />
+                        <h3 className="text-xs font-black uppercase tracking-widest text-white">MONITORING</h3>
+                      </div>
+                      <Badge variant="info">LIVE</Badge>
+                    </div>
+                    <p className="text-xs text-gray-500 leading-relaxed">
+                      Kubernetes and cloud health checks run in the monitoring panel.
+                    </p>
+                  </>
+                ) : deployMode === "docker" ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <TerminalIcon size={18} className="text-cyan-400" />
+                        <h3 className="text-xs font-black uppercase tracking-widest text-white">ORCHESTRATION</h3>
+                      </div>
+                      <Badge variant="info">DOCKER_BUILD</Badge>
+                    </div>
+
+                    {context.metadata.deploy_blocked && (
+                      <div className="p-4 bg-yellow-500/5 border border-yellow-500/10 rounded-2xl">
+                        <p className="text-[10px] text-yellow-500 font-black uppercase tracking-widest mb-1">Blocker Detected</p>
+                        <p className="text-xs text-yellow-300 opacity-60 leading-relaxed">
+                          {context.metadata.deploy_blocked_reason || "Missing .env configurations."}
+                        </p>
                       </div>
                     )}
-                  </div>
-                  
-                  <div className="flex flex-wrap gap-2 mb-3">
-                    <Button 
-                      variant="secondary" 
-                      size="sm" 
-                      onClick={async () => {
-                        if (!projectId || !awsConfig.docker_repo_prefix) return;
+
+                    <div className="flex flex-col gap-2">
+                      {["build", "run", "push"].map(action => (
+                        <Button
+                          key={action}
+                          variant="secondary"
+                          className="w-full h-11 text-xs font-black uppercase tracking-widest"
+                          onClick={() => startStream(action as any)}
+                          disabled={context.metadata.deploy_blocked}
+                        >
+                          {action}_IMAGE
+                        </Button>
+                      ))}
+                    </div>
+
+                    <div className="bg-[#050810] rounded-2xl p-6 font-mono text-[10px] min-h-[150px] max-h-[250px] overflow-y-auto custom-scroll border border-white/5">
+                      {logs.length === 0 ? (
+                        <p className="text-gray-700 italic">Awaiting event stream...</p>
+                      ) : (
+                        logs.map((l, idx) => (
+                          <div key={idx} className="mb-2 text-gray-500 leading-relaxed">
+                            <span className="text-cyan-400 mr-3">[{l.stage.toUpperCase()}]</span>
+                            {l.line}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <Cloud size={18} className="text-orange-400" />
+                        <h3 className="text-xs font-black uppercase tracking-widest text-white">CLOUD_UNIT</h3>
+                      </div>
+                      <Badge variant={awsStatus === 'deployed' ? 'success' : 'default'}>{awsStatus.toUpperCase()}</Badge>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-600 block mb-2">Region Path</label>
+                        <select
+                          value={awsConfig.aws_region}
+                          onChange={(e) => setAwsConfig(prev => ({ ...prev, aws_region: e.target.value }))}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-xs text-white focus:outline-none"
+                        >
+                          <option value="us-east-1">US-EAST-1 (Standard)</option>
+                          <option value="eu-west-1">EU-WEST-1 (Eir)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <Button variant="secondary" onClick={async () => {
+                        if (!projectId) return;
                         setIsDeploying(true);
-                        
-                        // Show generating message
-                        setMessages(prev => [...prev, { 
-                          role: "ai", 
-                          content: "🏗️ Generating Terraform configuration for AWS ECS/Fargate...\n\nThis may take 30-60 seconds as the LLM creates infrastructure code for:\n• VPC and networking\n• Application Load Balancer\n• ECS Cluster and Fargate services\n• CloudWatch logging\n• IAM roles and security groups" 
-                        }]);
-                        
+                        setMessages(prev => [...prev, { role: "ai", content: "Generating Terraform Layer..." }]);
                         try {
                           const result = await apiClient.generateTerraform(projectId, awsConfig);
                           setAwsStatus("terraform_generated");
-                          setMessages(prev => [...prev, { 
-                            role: "ai", 
-                            content: `✅ Terraform configuration generated and saved!\n\n📁 File: \`infra/main.tf\`\n📍 Path: ${result.terraform_path}\n\nThe infrastructure code includes:\n• VPC with 2 public subnets\n• Application Load Balancer\n• ECS Cluster with Fargate launch type\n• Task definitions for your services\n• Environment variables from your .env files\n\n👉 Click 'Deploy' to apply this configuration to AWS.` 
-                          }]);
-                          
-                          // Auto-refresh file explorer to show new file
+                          setMessages(prev => [...prev, { role: "ai", content: `Layer Generated at ${result.terraform_path}` }]);
                           await refreshExplorer();
                         } catch (err: any) {
-                          setMessages(prev => [...prev, { role: "ai", content: `❌ Terraform generation failed: ${err.message}` }]);
+                          setMessages(prev => [...prev, { role: "ai", content: `Layer Fail: ${err.message}` }]);
                         }
                         setIsDeploying(false);
-                      }}
-                      disabled={isDeploying || !awsConfig.docker_repo_prefix}
-                    >
-                      🏗️ Generate Terraform
-                    </Button>
-                    <Button 
-                      variant="secondary" 
-                      size="sm" 
-                      onClick={() => {
+                      }} disabled={isDeploying || !awsConfig.docker_repo_prefix}>GEN_INFRA</Button>
+
+                      <Button variant="primary" className="bg-orange-500 hover:bg-orange-600" onClick={() => {
                         if (!projectId) return;
                         setIsDeploying(true);
-                        setTerraformLogs([]);
-                        setAwsStatus("deploying");
-                        
-                        let errorLogs: string[] = [];
-                        
-                        streamAWSTerraform(
-                          projectId,
-                          "apply",
-                          (event) => {
-                            setTerraformLogs(prev => [...prev, event]);
-                            if (event.type === "error" || event.message?.includes("Error")) {
-                              errorLogs.push(event.message);
-                            }
-                          },
-                          () => { setIsDeploying(false); setAwsStatus("deployed"); },
-                          async (err) => {
-                            // Collect error details
-                            const errorOutput = errorLogs.length > 0 
-                              ? errorLogs.join("\n") 
-                              : err.message;
-                            
-                            setMessages(prev => [...prev, { 
-                              role: "ai", 
-                              content: `❌ Deploy failed. Sending errors to LLM for auto-fix...` 
-                            }]);
-                            
-                            // Auto-fix via LLM
-                            try {
-                              const result = await apiClient.fixTerraform(projectId, errorOutput);
-                              setMessages(prev => [...prev, { 
-                                role: "ai", 
-                                content: `🔧 ${result.message}\n\nClick Deploy again to try the fixed configuration.` 
-                              }]);
-                              setAwsStatus("terraform_generated"); // Reset to allow retry
-                            } catch (fixErr: any) {
-                              setMessages(prev => [...prev, { 
-                                role: "ai", 
-                                content: `❌ Auto-fix failed: ${fixErr.message}. Check infra/main.tf manually.` 
-                              }]);
-                              setAwsStatus("failed");
-                            }
-                            setIsDeploying(false);
-                          }
-                        );
-                      }}
-                      disabled={isDeploying || (awsStatus === "not_deployed" && !terraformExists)}
-                    >
-                      🚀 Deploy
-                    </Button>
-                    <Button 
-                      variant="danger" 
-                      size="sm" 
-                      onClick={() => {
-                        if (!projectId || !window.confirm("⚠️ Destroy all AWS resources?")) return;
-                        setIsDeploying(true);
-                        setTerraformLogs([]);
-                        streamAWSTerraform(
-                          projectId,
-                          "destroy",
-                          (event) => setTerraformLogs(prev => [...prev, event]),
-                          () => { setIsDeploying(false); setAwsStatus("not_deployed"); },
-                          (err) => { setIsDeploying(false); setMessages(prev => [...prev, { role: "ai", content: `❌ ${err.message}` }]); }
-                        );
-                      }}
-                      disabled={isDeploying || (awsStatus === "not_deployed" && !terraformExists)}
-                    >
-                      🗑️ Destroy
-                    </Button>
-                    {awsStatus === "deployed" && (
-                      <Button 
-                        variant="secondary" 
-                        size="sm" 
-                        onClick={() => {
-                          if (!projectId) return;
-                          setIsDeploying(true);
-                          setTerraformLogs([]);
-                          setMessages(prev => [...prev, { role: "ai", content: "💤 Scaling to zero for cost savings..." }]);
-                          streamAWSTerraform(
-                            projectId,
-                            "scale-zero",
-                            (event) => setTerraformLogs(prev => [...prev, event]),
-                            () => { 
-                              setIsDeploying(false); 
-                              setAwsStatus("scaled_to_zero"); 
-                              setMessages(prev => [...prev, { role: "ai", content: "✅ Scaled to zero! No compute charges. Use Deploy to scale back up." }]);
-                            },
-                            (err) => { setIsDeploying(false); setMessages(prev => [...prev, { role: "ai", content: `❌ ${err.message}` }]); }
-                          );
-                        }}
-                        disabled={isDeploying}
-                      >
-                        💤 Scale to Zero
-                      </Button>
-                    )}
-                  </div>
-                  
-                  <div className="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-36 overflow-auto custom-scroll font-mono text-xs">
-                    {terraformLogs.length === 0 ? (
-                      <p className="text-gray-400">Terraform logs will stream here.</p>
-                    ) : (
-                      terraformLogs.map((log, idx) => (
-                        <div key={idx} className={`${
-                          log.type === "error" ? "text-red-400" :
-                          log.type === "success" ? "text-green-400" :
-                          "text-gray-200"
-                        }`}>
-                          <span className="text-orange-400 mr-2">[{log.stage || "tf"}]</span>
-                          {log.message}
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </>
-              )}
-            </Card>
-
-            <Card className="p-4 bg-gray-800 border-gray-700 flex-1 flex flex-col min-h-0">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-white">
-                  {deployMode === "docker" ? "🐳 Llama 3.1 Deploy Chat" : "☁️ Llama 3.1 AWS Chat"}
-                </h3>
-                <span className="text-xs text-gray-400">
-                  {deployMode === "docker" ? "Dockerfile validation" : "Terraform generation"}
-                </span>
-              </div>
-
-              <div className="flex-1 overflow-y-auto custom-scroll mb-4 space-y-3 min-h-[320px] max-h-[520px]">
-                {messages.map((msg, idx) => (
-                  <div
-                    key={idx}
-                    className={`p-3 rounded ${
-                      msg.role === "user"
-                        ? "bg-cyan-500/10 text-cyan-100"
-                        : "bg-gray-900 text-gray-200"
-                    }`}
-                  >
-                    <div className="text-xs uppercase text-gray-400 mb-1">
-                      {msg.role === "user" ? "You" : "Llama 3.1"}
+                        streamAWSTerraform(projectId, "apply", (ev) => setTerraformLogs(prev => [...prev, ev]), () => { setIsDeploying(false); setAwsStatus("deployed"); }, (err) => { setIsDeploying(false); setMessages(prev => [...prev, { role: "ai", content: err.message }]); });
+                      }} disabled={isDeploying || (awsStatus === "not_deployed" && !terraformExists)}>DEPLOY_CLOUD</Button>
                     </div>
-                    <pre className="whitespace-pre-wrap text-sm leading-relaxed">
-                      {msg.content}
-                    </pre>
-                  </div>
-                ))}
+
+                    <div className="bg-[#050810] rounded-2xl p-6 font-mono text-[10px] border border-white/5 h-[150px] overflow-y-auto custom-scroll">
+                      {terraformLogs.length === 0 ? <p className="text-gray-700 italic">No cloud logs.</p> : terraformLogs.map((l, i) => (
+                        <div key={i} className={l.type === 'error' ? 'text-rose-400' : 'text-gray-500'}>[{l.stage || 'tf'}] {l.message}</div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </Card>
+
+              <div className="flex-1">
+                <AIChatSidebar
+                  messages={messages}
+                  input={input}
+                  onInputChange={setInput}
+                  onSend={() => { if (!context.metadata.deploy_blocked) handleSend(); }}
+                  sending={sending || !!context.metadata.deploy_blocked}
+                  logInput={logInput}
+                  onLogInputChange={setLogInput}
+                  instructions={instructions}
+                  onInstructionsChange={setInstructions}
+                />
               </div>
 
               <div className="space-y-3">
@@ -1152,8 +1019,8 @@ export const DeployPage: React.FC = () => {
               </div>
             </Card>
           </div>
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 };

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Activity, Server, Database, RefreshCw, AlertCircle, PlayCircle, HeartPulse, ActivitySquare } from "lucide-react";
+import { Activity, Server, Database, AlertCircle, PlayCircle, HeartPulse, ActivitySquare } from "lucide-react";
 import { apiClient, streamMonitorLogs } from "../api/client";
 import { Card } from "./Card";
 import { Button } from "./Button";

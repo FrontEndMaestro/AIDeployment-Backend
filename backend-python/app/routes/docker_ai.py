@@ -4,7 +4,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
-from ..LLM.docker_deploy_agent import parse_generated_docker_files
+from ..LLM.docker_deploy_agent import parse_generated_docker_files, validate_generated_docker_files
 from ..controllers.deployment_controller import deploy_project_handler
 from ..controllers.deployment_readiness_controller import check_readiness_handler
 
@@ -155,7 +155,33 @@ async def docker_chat_stream(
             
         print(f"🔄 Auto-Healing: Parsing LLM output for files...")
         files = parse_generated_docker_files(full_text)
-        
+
+        if files:
+            has_dockerfile = any(
+                path.replace("\\", "/").split("/")[-1].lower() == "dockerfile"
+                for path in files
+            )
+            has_compose = any(
+                path.replace("\\", "/").split("/")[-1].lower()
+                in {"docker-compose.yml", "docker-compose.yaml"}
+                for path in files
+            )
+
+            if has_dockerfile or has_compose:
+                validation_errors = validate_generated_docker_files(
+                    files=files,
+                    metadata=prepared_data.get("metadata", {}),
+                    services=prepared_data.get("services", []),
+                    require_dockerfiles=has_dockerfile,
+                    require_compose=has_compose,
+                )
+
+                if validation_errors:
+                    print("Auto-Healing skipped invalid generated Docker files:")
+                    for err in validation_errors:
+                        print(f"- {err}")
+                    return
+
         # Write any generated files to the project directory
         for file_path, content in files.items():
             try:

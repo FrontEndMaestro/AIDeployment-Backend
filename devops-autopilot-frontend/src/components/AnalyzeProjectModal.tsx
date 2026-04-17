@@ -131,6 +131,13 @@ export const AnalyzeProjectModal: React.FC<AnalyzeProjectModalProps> = ({
         }, 2000);
 
         setPollingInterval(pollInterval as any);
+      } else {
+        const message =
+          response.message ||
+          "Analysis could not be started";
+        setError(message);
+        addLog(message, "warning");
+        setLoading(false);
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Analysis failed";

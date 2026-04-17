@@ -10,7 +10,6 @@ import {
   AnalysisResponse,
   DockerChatResponse,
   DockerContextResponse,
-  DockerfileInfo,
 } from "../types/api";
 
 const rawApiBase =
@@ -54,11 +53,25 @@ class ApiClient {
   }
 
   private async handleResponse(response: Response) {
+    const raw = await response.text();
+    const data = raw ? (() => {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    })() : null;
+
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || "API request failed");
+      const message =
+        data?.message ||
+        data?.detail ||
+        data?.error ||
+        `API request failed (${response.status})`;
+      throw new Error(message);
     }
-    return response.json();
+
+    return data ?? {};
   }
 
   // ============ AUTH ENDPOINTS ============

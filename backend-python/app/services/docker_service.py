@@ -487,7 +487,7 @@ def build_project_stream(
                     require_compose=True,
                 )
 
-            if validation_errors and not generated_files:
+            if validation_errors:
                 msg = (
                     "ERROR: Agent did not produce valid Docker files:\n"
                     + "\n".join(f"- {err}" for err in validation_errors)

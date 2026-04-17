@@ -26,7 +26,7 @@ from ..utils.detector import find_project_root
 from ..utils.file_system import read_file
 from ..LLM.docker_deploy_agent import (
     run_docker_deploy_chat,
-    parse_generated_docker_files,
+    parse_and_validate_generated_docker_response,
     run_k8s_manifest_generation,
     parse_generated_k8s_files,
 )
@@ -68,15 +68,31 @@ def _scan_deployment_files(project_root: str, services: List[Dict]) -> Dict[str,
     """
     k8s_dir = os.path.join(project_root, "k8s")
 
-    # Check Dockerfiles — at least one must exist
-    has_dockerfile = False
-    for root, _, files in os.walk(project_root):
-        for name in files:
-            if name.lower() == "dockerfile":
-                has_dockerfile = True
+    # Check Dockerfiles against service paths when metadata is available.
+    app_services = [
+        svc for svc in services
+        if str(svc.get("type", "")).lower() != "database"
+    ]
+    expected_dockerfiles = []
+    for svc in app_services:
+        svc_path = str(svc.get("path") or ".").strip("./\\")
+        expected_dockerfiles.append(
+            os.path.join(project_root, svc_path, "Dockerfile")
+            if svc_path
+            else os.path.join(project_root, "Dockerfile")
+        )
+
+    if expected_dockerfiles:
+        has_dockerfile = all(os.path.exists(path) for path in expected_dockerfiles)
+    else:
+        has_dockerfile = False
+        for root, _, files in os.walk(project_root):
+            for name in files:
+                if name.lower() == "dockerfile":
+                    has_dockerfile = True
+                    break
+            if has_dockerfile:
                 break
-        if has_dockerfile:
-            break
 
     # Check docker-compose
     has_compose = any(
@@ -217,7 +233,16 @@ def _generate_docker_files(
         services=services,
     )
 
-    return parse_generated_docker_files(response)
+    files, errors = parse_and_validate_generated_docker_response(
+        response,
+        metadata,
+        services,
+        require_dockerfiles=not has_dockerfile,
+        require_compose=not has_compose,
+    )
+    if errors:
+        raise ValueError("; ".join(errors))
+    return files
 
 
 def _generate_k8s_files(
