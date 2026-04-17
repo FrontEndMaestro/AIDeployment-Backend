@@ -5,6 +5,21 @@ import { Badge } from "./Badge";
 import { apiClient } from "../api/client";
 import { Project } from "../types/api";
 import AWSDeployPanel from "./AWSDeployPanel";
+import { 
+  FileCode, 
+  Terminal, 
+  Layers, 
+  Database, 
+  Cpu, 
+  Activity, 
+  Clock, 
+  Folder, 
+  ExternalLink,
+  ChevronRight,
+  ShieldCheck,
+  Box,
+  Container
+} from "lucide-react";
 
 interface ProjectDetailsModalProps {
   project: Project;
@@ -17,23 +32,22 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<"overview" | "metadata" | "logs" | "deploy">(
-    "overview"
-  );
+  const [activeTab, setActiveTab ] = useState<string>("overview");
   const [exporting, setExporting] = useState(false);
+
+  if (!isOpen) return null;
 
   const handleExport = async (format: "json" | "yaml") => {
     try {
       setExporting(true);
-      const response = await apiClient.exportMetadata(project._id, format);
-      if (response.success) {
-        const dataStr = JSON.stringify(response.data, null, 2);
-        const dataBlob = new Blob([dataStr], { type: "application/json" });
-        const url = URL.createObjectURL(dataBlob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = `${project.project_name}-metadata.${format}`;
-        link.click();
+      const resp = await apiClient.exportMetadata(project._id, format);
+      if (resp && resp.success) {
+        const blob = new Blob([JSON.stringify(resp.data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${project.project_name}-metadata.${format}`;
+        a.click();
         URL.revokeObjectURL(url);
       }
     } catch (err) {
@@ -43,778 +57,268 @@ export const ProjectDetailsModal: React.FC<ProjectDetailsModalProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "uploaded":
-        return "info";
-      case "extracting":
-      case "analyzing":
-        return "warning";
-      case "analyzed":
-      case "completed":
-        return "success";
-      case "failed":
-        return "error";
-      default:
-        return "default";
-    }
-  };
+  const statusVariant: any = 
+    project.status === "uploaded" ? "info" :
+    (project.status === "extracting" || project.status === "analyzing") ? "warning" :
+    (project.status === "analyzed" || project.status === "completed") ? "success" :
+    project.status === "failed" ? "error" : "default";
 
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
-        <div className="p-6">
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-xl z-[70] flex items-center justify-center p-2 sm:p-6 lg:p-10">
+      <Card className="w-full max-w-[98vw] h-[95vh] flex flex-col overflow-hidden border-white/10 shadow-2xl animate-scale-in bg-[#0d1117]/95">
+        <div className="p-6 md:p-12 flex flex-col h-full overflow-hidden">
+          
           {/* Header */}
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex justify-between items-start mb-10 shrink-0">
             <div>
-              <h2 className="text-2xl font-bold text-white mb-2">
-                {project.project_name}
-              </h2>
-              <div className="flex items-center gap-2">
-                <Badge variant={getStatusColor(project.status) as any}>
-                  {project.status}
-                </Badge>
-                <span className="text-gray-400 text-sm">
+              <div className="flex items-center gap-3 mb-4">
+                <Badge variant={statusVariant} size="md">{project.status.toUpperCase()}</Badge>
+                <div className="h-4 w-[1px] bg-white/10 mx-1"></div>
+                <span className="text-gray-500 font-mono text-xs tracking-widest">{project._id}</span>
+              </div>
+              <h2 className="text-4xl md:text-6xl font-black text-white mb-2 tracking-tighter uppercase">{project.project_name}</h2>
+              <div className="flex items-center gap-4 text-gray-500 text-sm font-medium">
+                <div className="flex items-center gap-1.5">
+                  <FileCode size={14} className="text-cyan-400" />
                   {project.file_name}
-                </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                   <Clock size={14} />
+                   {new Date(project.upload_date).toLocaleDateString()}
+                </div>
               </div>
             </div>
-            <button
-              onClick={onClose}
-              className="text-gray-400 hover:text-white transition text-2xl leading-none"
+            <button 
+              onClick={onClose} 
+              className="w-14 h-14 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 hover:rotate-90 transition-all text-3xl"
             >
               ×
             </button>
           </div>
 
-          {/* Tabs */}
-          <div className="flex gap-4 mb-6 border-b border-gray-700">
-            <button
-              onClick={() => setActiveTab("overview")}
-              className={`px-4 py-2 font-medium transition-colors border-b-2 ${
-                activeTab === "overview"
-                  ? "border-cyan-500 text-cyan-400"
-                  : "border-transparent text-gray-400 hover:text-gray-300"
-              }`}
-            >
-              Overview
-            </button>
-            <button
-              onClick={() => setActiveTab("metadata")}
-              className={`px-4 py-2 font-medium transition-colors border-b-2 ${
-                activeTab === "metadata"
-                  ? "border-cyan-500 text-cyan-400"
-                  : "border-transparent text-gray-400 hover:text-gray-300"
-              }`}
-            >
-              Metadata
-            </button>
-            <button
-              onClick={() => setActiveTab("logs")}
-              className={`px-4 py-2 font-medium transition-colors border-b-2 ${
-                activeTab === "logs"
-                  ? "border-cyan-500 text-cyan-400"
-                  : "border-transparent text-gray-400 hover:text-gray-300"
-              }`}
-            >
-              Logs
-            </button>
-            <button
-              onClick={() => setActiveTab("deploy")}
-              className={`px-4 py-2 font-medium transition-colors border-b-2 ${
-                activeTab === "deploy"
-                  ? "border-cyan-500 text-cyan-400"
-                  : "border-transparent text-gray-400 hover:text-gray-300"
-              }`}
-            >
-              ☁️ AWS Deploy
-            </button>
+          {/* Navigation Bar - Modernized */}
+          <div className="flex gap-2 sm:gap-10 mb-10 border-b border-white/5 shrink-0 overflow-x-auto custom-scroll no-scrollbar">
+            {[
+              { id: 'overview', label: 'Vitals', icon: <Activity size={16} /> },
+              { id: 'discovery', label: 'Tech Stack', icon: <Layers size={16} /> },
+              { id: 'logs', label: 'Deep Logs', icon: <Terminal size={16} /> },
+              { id: 'deploy', label: 'Deploy Panel', icon: <ChevronRight size={16} /> }
+            ].map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setActiveTab(t.id)}
+                className={`pb-5 px-1 font-black text-sm transition-all relative flex items-center gap-2.5 whitespace-nowrap tracking-wider uppercase ${
+                  activeTab === t.id ? "text-cyan-400 border-b-2 border-cyan-400" : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                {t.icon}
+                {t.label}
+              </button>
+            ))}
           </div>
 
-          {/* Overview Tab */}
-          {activeTab === "overview" && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">
-                    File Name
-                  </p>
-                  <p className="text-white font-medium">{project.file_name}</p>
+          {/* Scrollable Content */}
+          <div className="flex-1 overflow-y-auto pr-4 custom-scroll">
+            {activeTab === 'overview' && (
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-8 pb-12">
+                <div className="lg:col-span-3 space-y-8">
+                  {/* Metric Tiles */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                    <div className="bg-white/5 p-8 rounded-[2rem] border border-white/5 relative overflow-hidden">
+                       <p className="text-gray-500 text-[10px] font-black uppercase tracking-[0.2em] mb-3">Memory Footprint</p>
+                       <p className="text-4xl font-black text-white">{(project.file_size / (1024 * 1024)).toFixed(2)} MB</p>
+                       <Box className="absolute top-8 right-8 text-white/5" size={48} />
+                    </div>
+                    <div className="bg-white/5 p-8 rounded-[2rem] border border-white/5 relative overflow-hidden">
+                       <p className="text-gray-500 text-[10px] font-black uppercase tracking-[0.2em] mb-3">Asset Count</p>
+                       <p className="text-4xl font-black text-white">{project.files_count.toLocaleString()}</p>
+                       <FileCode className="absolute top-8 right-8 text-white/5" size={48} />
+                    </div>
+                    <div className="bg-white/5 p-8 rounded-[2rem] border border-white/5 relative overflow-hidden">
+                       <p className="text-gray-500 text-[10px] font-black uppercase tracking-[0.2em] mb-3">Folder Depth</p>
+                       <p className="text-4xl font-black text-white">{project.folders_count}</p>
+                       <Folder className="absolute top-8 right-8 text-white/5" size={48} />
+                    </div>
+                  </div>
+
+                  {/* Sessions Group */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                    {project.extraction_date && (
+                      <div className="p-8 bg-cyan-500/[0.03] border border-cyan-500/10 rounded-3xl flex items-center gap-6">
+                        <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 flex items-center justify-center text-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.1)]">
+                          <Activity size={24} />
+                        </div>
+                        <div>
+                          <p className="text-cyan-400/60 font-black text-[10px] uppercase tracking-widest mb-1">Source Extraction</p>
+                          <p className="text-gray-300 font-bold">{new Date(project.extraction_date).toLocaleString()}</p>
+                        </div>
+                      </div>
+                    )}
+                    {project.analysis_date && (
+                      <div className="p-8 bg-emerald-500/[0.03] border border-emerald-500/10 rounded-3xl flex items-center gap-6">
+                        <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 flex items-center justify-center text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.1)]">
+                          <ShieldCheck size={24} />
+                        </div>
+                        <div>
+                          <p className="text-emerald-400/60 font-black text-[10px] uppercase tracking-widest mb-1">AI Logic Pass</p>
+                          <p className="text-gray-300 font-bold">{new Date(project.analysis_date).toLocaleString()}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">
-                    File Size
-                  </p>
-                  <p className="text-white font-medium">
-                    {(project.file_size / (1024 * 1024)).toFixed(2)} MB
-                  </p>
-                </div>
-
-                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">
-                    Upload Date
-                  </p>
-                  <p className="text-white font-medium">
-                    {new Date(project.upload_date).toLocaleString()}
-                  </p>
-                </div>
-
-                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">Status</p>
-                  <Badge variant={getStatusColor(project.status) as any}>
-                    {project.status}
-                  </Badge>
-                </div>
-
-                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">
-                    Total Files
-                  </p>
-                  <p className="text-white font-medium">
-                    {project.files_count}
-                  </p>
-                </div>
-
-                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <p className="text-gray-400 text-xs mb-2 uppercase">
-                    Total Folders
-                  </p>
-                  <p className="text-white font-medium">
-                    {project.folders_count}
-                  </p>
+                {/* Sidebar Summary */}
+                <div className="lg:col-span-1">
+                   <div className="bg-white/[0.02] border border-white/5 rounded-[2.5rem] p-10 h-full">
+                      <h4 className="text-white font-black text-xl mb-8 flex items-center gap-3 italic">
+                         <Activity size={20} className="text-cyan-400" />
+                         VITALS
+                      </h4>
+                      <div className="space-y-8">
+                         {[
+                           { label: 'Language', val: project.metadata?.language || 'Identifying', icon: <Cpu size={14} /> },
+                           { label: 'Framework', val: project.metadata?.framework || 'Identifying', icon: <Layers size={14} /> },
+                           { label: 'Exposed Port', val: project.metadata?.backend_port || project.metadata?.port || 'Automated', icon: <ExternalLink size={14} /> },
+                           { label: 'DB Logic', val: project.metadata?.database || 'None', icon: <Database size={14} /> }
+                         ].map((item, i) => (
+                           <div key={i} className="flex justify-between items-center group">
+                              <span className="text-gray-500 text-xs font-bold uppercase tracking-widest flex items-center gap-2 group-hover:text-gray-300 transition-colors">
+                                {item.icon} {item.label}
+                              </span>
+                              <span className="text-white font-black text-sm">{item.val}</span>
+                           </div>
+                         ))}
+                      </div>
+                      
+                      <div className="mt-14 pt-8 border-t border-white/5">
+                         <div className="p-5 bg-cyan-400/5 rounded-2xl border border-cyan-400/10">
+                            <p className="text-[10px] font-black text-cyan-400 uppercase tracking-widest mb-2">AUTOPILOT INSIGHT</p>
+                            <p className="text-xs text-gray-400 leading-relaxed font-medium">
+                               This project is candidate for high-speed deployment. All core components successfully identified and mapped to infrastructure.
+                            </p>
+                         </div>
+                      </div>
+                   </div>
                 </div>
               </div>
+            )}
 
-              {project.extraction_date && (
-                <div className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 border border-cyan-500/20 rounded-lg p-4">
-                  <p className="text-cyan-400 font-semibold mb-1">
-                    Extraction Date
-                  </p>
-                  <p className="text-gray-300">
-                    {new Date(project.extraction_date).toLocaleString()}
-                  </p>
+            {activeTab === 'discovery' && (
+              <div className="space-y-10 animate-fade-in pb-20">
+                {project.metadata ? (
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                       {[
+                         { l: 'Environment', v: project.metadata.language, i: <Cpu /> },
+                         { l: 'Architecture', v: project.metadata.framework, i: <Layers /> },
+                         { l: 'Gateway', v: project.metadata.backend_port || project.metadata.port || '80', i: <ExternalLink /> },
+                         { l: 'Persistence', v: project.metadata.database || 'Filesystem', i: <Database /> }
+                       ].map((x, i) => (
+                         <div key={i} className="bg-white/5 p-8 rounded-3xl border border-white/5 flex flex-col justify-between">
+                            <div className="text-gray-500 text-[10px] font-black uppercase tracking-widest mb-4">{x.l}</div>
+                            <div className="text-white font-black text-2xl">{x.v}</div>
+                         </div>
+                       ))}
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                       <div className="bg-white/5 p-10 rounded-[3rem] border border-white/5">
+                          <h4 className="text-white font-black mb-8 uppercase tracking-widest text-sm flex items-center gap-3">
+                             <Box size={18} className="text-cyan-400" />
+                             Dependency Map
+                          </h4>
+                          <div className="flex flex-wrap gap-2 max-h-[400px] overflow-y-auto custom-scroll pr-4">
+                             {project.metadata.dependencies?.length > 0 ? project.metadata.dependencies.map((d, i) => (
+                               <Badge key={`${d}-${i}`} variant="default" size="sm">{d}</Badge>
+                             )) : <span className="text-gray-600 italic">Universal compatibility - no specific packages detected.</span>}
+                          </div>
+                       </div>
+                       
+                       <div className="bg-white/5 p-10 rounded-[3rem] border border-white/5">
+                          <h4 className="text-white font-black mb-8 uppercase tracking-widest text-sm flex items-center gap-3">
+                             <FileCode size={18} className="text-emerald-400" />
+                             Core File Analysis
+                          </h4>
+                          <div className="space-y-3 max-h-[400px] overflow-y-auto custom-scroll pr-4">
+                             {project.metadata.detected_files?.length > 0 ? project.metadata.detected_files.map((file, i) => (
+                               <div key={i} className="flex items-center gap-4 p-4 bg-white/[0.03] rounded-2xl border border-white/5 group hover:bg-white/[0.05] transition-all">
+                                  <span className="text-cyan-400 font-black text-[10px] opacity-40">{String(i+1).padStart(2, '0')}</span>
+                                  <span className="text-gray-400 font-mono text-xs truncate group-hover:text-white transition-colors">{file}</span>
+                               </div>
+                             )) : <span className="text-gray-600 italic">No entry files mapping required.</span>}
+                          </div>
+                       </div>
+                    </div>
+                  </>
+                ) : <div className="text-center py-32 text-gray-600 border-2 border-dashed border-white/5 rounded-[4rem]">Logic pass scheduled for this project. Discovery will initiate shortly.</div>}
+              </div>
+            )}
+
+            {activeTab === 'logs' && (
+              <div className="bg-[#050810] p-10 rounded-[3rem] font-mono text-xs border border-white/5 animate-fade-in shadow-2xl relative overflow-hidden h-full min-h-[500px]">
+                <div className="flex items-center justify-between mb-8 pb-6 border-b border-white/5">
+                   <div className="flex items-center gap-3">
+                      <Terminal size={18} className="text-cyan-400" />
+                      <h4 className="text-white font-black tracking-widest uppercase opacity-70">SYSTEM_STDOUT / EVENT_PIPE</h4>
+                   </div>
+                   <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></div>
+                      <span className="text-[10px] font-black text-cyan-400 uppercase tracking-widest">Live Sync Active</span>
+                   </div>
                 </div>
-              )}
-
-              {project.analysis_date && (
-                <div className="bg-gradient-to-r from-green-500/10 to-emerald-500/10 border border-green-500/20 rounded-lg p-4">
-                  <p className="text-green-400 font-semibold mb-1">
-                    Analysis Date
-                  </p>
-                  <p className="text-gray-300">
-                    {new Date(project.analysis_date).toLocaleString()}
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Metadata Tab */}
-          {activeTab === "metadata" && (
-            <div className="space-y-4">
-              {project.metadata ? (
-                <>
-                  {/* Core metadata grid */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Framework
-                      </p>
-                      <p className="text-white font-medium text-lg">
-                        {project.metadata.framework}
-                      </p>
-                    </div>
-
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Language
-                      </p>
-                      <p className="text-white font-medium text-lg">
-                        {project.metadata.language}
-                      </p>
-                    </div>
-
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Runtime
-                      </p>
-                      <p className="text-white font-medium text-sm">
-                        {project.metadata.runtime || "N/A"}
-                      </p>
-                    </div>
-
-                    {/* Backend Port (keeps legacy port field compatible) */}
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Backend Port
-                      </p>
-                      <p className="text-white font-medium">
-                        {project.metadata.backend_port ??
-                          project.metadata.port ??
-                          "N/A"}
-                      </p>
-                    </div>
-
-                    {/* Frontend Port (new) */}
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Frontend Port
-                      </p>
-                      <p className="text-white font-medium">
-                        {project.metadata.frontend_port ?? "N/A"}
-                      </p>
-                    </div>
-
-                    {/* Primary Database */}
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Primary Database
-                      </p>
-                      <p className="text-white font-medium">
-                        {project.metadata.database || "Unknown"}
-                      </p>
-                    </div>
-
-                    {/* Database Port (optional – backend field is `database_port`) */}
-                    {typeof project.metadata.database_port !== "undefined" && (
-                      <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                        <p className="text-gray-400 text-xs mb-2 uppercase">
-                          Database Port
-                        </p>
-                        <p className="text-white font-medium">
-                          {project.metadata.database_port ?? "N/A"}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Build Command */}
-                  {project.metadata.build_command && (
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Build Command
-                      </p>
-                      <code className="text-cyan-400 text-sm break-all">
-                        {project.metadata.build_command}
-                      </code>
-                    </div>
-                  )}
-
-                  {/* Start Command */}
-                  {project.metadata.start_command && (
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Start Command
-                      </p>
-                      <code className="text-cyan-400 text-sm break-all">
-                        {project.metadata.start_command}
-                      </code>
-                    </div>
-                  )}
-
-                  {/* Docker flags */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Dockerfile
-                      </p>
-                      <p className="text-lg font-bold">
-                        {project.metadata.dockerfile ? (
-                          <span className="text-green-400">✅ Yes</span>
-                        ) : (
-                          <span className="text-gray-400">❌ No</span>
-                        )}
-                      </p>
-                    </div>
-
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Docker Compose
-                      </p>
-                      <p className="text-lg font-bold">
-                        {project.metadata.docker_compose ? (
-                          <span className="text-green-400">✅ Yes</span>
-                        ) : (
-                          <span className="text-gray-400">❌ No</span>
-                        )}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Docker Ports (from docker-compose / Dockerfile) */}
-                  {(project.metadata.docker_backend_ports ||
-                    project.metadata.docker_frontend_ports ||
-                    project.metadata.docker_database_ports ||
-                    project.metadata.docker_other_ports ||
-                    project.metadata.docker_expose_ports ||
-                    project.metadata.docker_backend_container_ports ||
-                    project.metadata.docker_frontend_container_ports ||
-                    project.metadata.docker_database_container_ports ||
-                    project.metadata.docker_other_container_ports) && (
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 space-y-3">
-                      <p className="text-gray-400 text-xs mb-2 uppercase">
-                        Docker Ports
-                      </p>
-
-                      {/* Backend services */}
-                      {Array.isArray(project.metadata.docker_backend_ports) &&
-                        project.metadata.docker_backend_ports.length > 0 && (
-                          <div>
-                            <p className="text-gray-400 text-xs mb-1">
-                              Backend Services
-                            </p>
-                            <div className="flex flex-wrap gap-2">
-                              {project.metadata.docker_backend_ports.map(
-                                (port: number, idx: number) => (
-                                  <Badge key={idx} variant="info" size="sm">
-                                    {port}
-                                  </Badge>
-                                )
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                      {/* Frontend services */}
-                      {Array.isArray(project.metadata.docker_frontend_ports) &&
-                        project.metadata.docker_frontend_ports.length > 0 && (
-                          <div>
-                            <p className="text-gray-400 text-xs mb-1">
-                              Frontend Services
-                            </p>
-                            <div className="flex flex-wrap gap-2">
-                              {project.metadata.docker_frontend_ports.map(
-                                (port: number, idx: number) => (
-                                  <Badge key={idx} variant="info" size="sm">
-                                    {port}
-                                  </Badge>
-                                )
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                      {/* Database services */}
-                      {Array.isArray(project.metadata.docker_database_ports) &&
-                        project.metadata.docker_database_ports.length > 0 && (
-                          <div>
-                            <p className="text-gray-400 text-xs mb-1">
-                              Database Services
-                            </p>
-                            <div className="flex flex-wrap gap-2">
-                              {project.metadata.docker_database_ports.map(
-                                (port: number, idx: number) => (
-                                  <Badge key={idx} variant="info" size="sm">
-                                    {port}
-                                  </Badge>
-                                )
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                      {/* Other docker services */}
-                      {project.metadata.docker_other_ports &&
-                        Object.keys(project.metadata.docker_other_ports)
-                          .length > 0 && (
-                          <div>
-                            <p className="text-gray-400 text-xs mb-1">
-                              Other Services
-                            </p>
-                            <div className="space-y-1">
-                              {Object.entries(
-                                project.metadata.docker_other_ports
-                              ).map(
-                                ([service, ports]: [string, number[]], idx) => (
-                                  <div
-                                    key={idx}
-                                    className="flex items-center gap-2 flex-wrap"
-                                  >
-                                    <span className="text-gray-300 text-xs">
-                                      {service}
-                                    </span>
-                                    <div className="flex flex-wrap gap-1">
-                                      {ports.map((p: number, pIdx: number) => (
-                                        <Badge
-                                          key={pIdx}
-                                          variant="default"
-                                          size="sm"
-                                        >
-                                          {p}
-                                        </Badge>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                      {/* Dockerfile EXPOSE ports */}
-                      {Array.isArray(project.metadata.docker_expose_ports) &&
-                        project.metadata.docker_expose_ports.length > 0 && (
-                          <div>
-                            <p className="text-gray-400 text-xs mb-1">
-                              Dockerfile EXPOSE Ports
-                            </p>
-                            <div className="flex flex-wrap gap-2">
-                              {project.metadata.docker_expose_ports.map(
-                                (port: number, idx: number) => (
-                                  <Badge key={idx} variant="default" size="sm">
-                                    {port}
-                                  </Badge>
-                                )
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                      {/* --- NEW: CONTAINER PORTS (inside containers) --- */}
-
-                      {(Array.isArray(
-                        project.metadata.docker_backend_container_ports
-                      ) &&
-                        project.metadata.docker_backend_container_ports.length >
-                          0) ||
-                      (Array.isArray(
-                        project.metadata.docker_frontend_container_ports
-                      ) &&
-                        project.metadata.docker_frontend_container_ports
-                          .length > 0) ||
-                      (Array.isArray(
-                        project.metadata.docker_database_container_ports
-                      ) &&
-                        project.metadata.docker_database_container_ports
-                          .length > 0) ||
-                      (project.metadata.docker_other_container_ports &&
-                        Object.keys(
-                          project.metadata.docker_other_container_ports
-                        ).length > 0) ? (
-                        <div className="pt-2 border-t border-gray-800 mt-2 space-y-3">
-                          <p className="text-gray-400 text-xs mb-1 uppercase">
-                            Container Ports
-                          </p>
-
-                          {/* Backend container ports */}
-                          {Array.isArray(
-                            project.metadata.docker_backend_container_ports
-                          ) &&
-                            project.metadata.docker_backend_container_ports
-                              .length > 0 && (
-                              <div>
-                                <p className="text-gray-400 text-xs mb-1">
-                                  Backend Containers
-                                </p>
-                                <div className="flex flex-wrap gap-2">
-                                  {project.metadata.docker_backend_container_ports.map(
-                                    (port: number, idx: number) => (
-                                      <Badge
-                                        key={idx}
-                                        variant="default"
-                                        size="sm"
-                                      >
-                                        {port}
-                                      </Badge>
-                                    )
-                                  )}
-                                </div>
-                              </div>
-                            )}
-
-                          {/* Frontend container ports */}
-                          {Array.isArray(
-                            project.metadata.docker_frontend_container_ports
-                          ) &&
-                            project.metadata.docker_frontend_container_ports
-                              .length > 0 && (
-                              <div>
-                                <p className="text-gray-400 text-xs mb-1">
-                                  Frontend Containers
-                                </p>
-                                <div className="flex flex-wrap gap-2">
-                                  {project.metadata.docker_frontend_container_ports.map(
-                                    (port: number, idx: number) => (
-                                      <Badge
-                                        key={idx}
-                                        variant="default"
-                                        size="sm"
-                                      >
-                                        {port}
-                                      </Badge>
-                                    )
-                                  )}
-                                </div>
-                              </div>
-                            )}
-
-                          {/* Database container ports */}
-                          {Array.isArray(
-                            project.metadata.docker_database_container_ports
-                          ) &&
-                            project.metadata.docker_database_container_ports
-                              .length > 0 && (
-                              <div>
-                                <p className="text-gray-400 text-xs mb-1">
-                                  Database Containers
-                                </p>
-                                <div className="flex flex-wrap gap-2">
-                                  {project.metadata.docker_database_container_ports.map(
-                                    (port: number, idx: number) => (
-                                      <Badge
-                                        key={idx}
-                                        variant="default"
-                                        size="sm"
-                                      >
-                                        {port}
-                                      </Badge>
-                                    )
-                                  )}
-                                </div>
-                              </div>
-                            )}
-
-                          {/* Other container services */}
-                          {project.metadata.docker_other_container_ports &&
-                            Object.keys(
-                              project.metadata.docker_other_container_ports
-                            ).length > 0 && (
-                              <div>
-                                <p className="text-gray-400 text-xs mb-1">
-                                  Other Container Services
-                                </p>
-                                <div className="space-y-1">
-                                  {Object.entries(
-                                    project.metadata
-                                      .docker_other_container_ports
-                                  ).map(
-                                    (
-                                      [service, ports]: [string, number[]],
-                                      idx
-                                    ) => (
-                                      <div
-                                        key={idx}
-                                        className="flex items-center gap-2 flex-wrap"
-                                      >
-                                        <span className="text-gray-300 text-xs">
-                                          {service}
-                                        </span>
-                                        <div className="flex flex-wrap gap-1">
-                                          {ports.map(
-                                            (p: number, pIdx: number) => (
-                                              <Badge
-                                                key={pIdx}
-                                                variant="default"
-                                                size="sm"
-                                              >
-                                                {p}
-                                              </Badge>
-                                            )
-                                          )}
-                                        </div>
-                                      </div>
-                                    )
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
-
-                  {/* Detected Databases list */}
-                  {project.metadata.databases &&
-                    project.metadata.databases.length > 0 && (
-                      <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                        <p className="text-gray-400 text-xs mb-3 uppercase">
-                          Detected Databases (
-                          {project.metadata.databases.length})
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {project.metadata.databases.map((db, idx) => (
-                            <Badge key={idx} variant="info" size="sm">
-                              {db}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                  {/* Dependencies */}
-                  {project.metadata.dependencies.length > 0 && (
-                    <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                      <p className="text-gray-400 text-xs mb-3 uppercase">
-                        Dependencies ({project.metadata.dependencies.length})
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {project.metadata.dependencies.map((dep, idx) => (
-                          <Badge key={idx} variant="info" size="sm">
-                            {dep}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ML Confidence */}
-                  {project.metadata.ml_confidence && (
-                    <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4">
-                      <p className="text-yellow-400 font-semibold mb-3">
-                        ML Confidence Scores
-                      </p>
-                      <div className="space-y-3">
-                        <div>
-                          <div className="flex justify-between mb-1">
-                            <span className="text-gray-300 text-sm">
-                              Language
-                            </span>
-                            <span className="text-white font-bold">
-                              {Math.round(
-                                project.metadata.ml_confidence.language * 100
-                              )}
-                              %
-                            </span>
-                          </div>
-                          <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-gradient-to-r from-cyan-500 to-blue-600"
-                              style={{
-                                width: `${project.metadata.ml_confidence.language * 100}%`,
-                              }}
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between mb-1">
-                            <span className="text-gray-300 text-sm">
-                              Framework
-                            </span>
-                            <span className="text-white font-bold">
-                              {Math.round(
-                                project.metadata.ml_confidence.framework * 100
-                              )}
-                              %
-                            </span>
-                          </div>
-                          <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-gradient-to-r from-cyan-500 to-blue-600"
-                              style={{
-                                width: `${project.metadata.ml_confidence.framework * 100}%`,
-                              }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="text-center py-12 text-gray-400">
-                  <p>
-                    No metadata available. Please analyze the project first.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Logs Tab */}
-          {activeTab === "logs" && (
-            <div>
-              {project.logs && project.logs.length > 0 ? (
-                <div className="bg-gray-900/80 rounded-lg border border-gray-700 font-mono text-sm max-h-96 overflow-y-auto">
-                  <div className="divide-y divide-gray-700">
-                    {project.logs.map((log, idx) => (
-                      <div
-                        key={idx}
-                        className="p-3 hover:bg-gray-800/30 transition flex gap-3"
-                      >
-                        <span className="text-gray-500 flex-shrink-0 min-w-fit">
-                          {new Date(log.timestamp).toLocaleTimeString()}
-                        </span>
-                        <span className="text-cyan-400 flex-1 break-all">
-                          {log.message}
+                {project.logs?.length > 0 ? (
+                  <div className="space-y-4 max-h-[60vh] overflow-y-auto custom-scroll pr-6 pb-10">
+                    {project.logs.map((l, i) => (
+                      <div key={i} className="flex gap-8 py-2 border-b border-white/[0.02] last:border-0 group">
+                        <span className="text-gray-700 shrink-0 font-black tracking-tighter w-24">{new Date(l.timestamp).toLocaleTimeString([], { hour12: false })}</span>
+                        <span className="text-gray-500 group-hover:text-cyan-100 transition-colors leading-relaxed selection:bg-cyan-500/30 selection:text-white font-medium">
+                          {l.message}
                         </span>
                       </div>
                     ))}
                   </div>
-                </div>
-              ) : (
-                <div className="text-center py-12 text-gray-400">
-                  <p>No logs available</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Deploy Tab */}
-          {activeTab === "deploy" && (
-            <div>
-              <AWSDeployPanel
-                projectId={project._id}
-                projectName={project.project_name}
-              />
-            </div>
-          )}
-
-          {/* Actions */}
-          <div className="flex items-center gap-3 pt-6 border-t border-gray-700 flex-wrap">
-            {project.status === "analyzed" && (
-              <>
-                <Button
-                  variant="secondary"
-                  onClick={() => handleExport("json")}
-                  loading={exporting}
-                >
-                  <svg
-                    className="w-5 h-5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                    />
-                  </svg>
-                  Export JSON
-                </Button>
-
-                <Button
-                  variant="secondary"
-                  onClick={() => handleExport("yaml")}
-                  loading={exporting}
-                >
-                  <svg
-                    className="w-5 h-5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                    />
-                  </svg>
-                  Export YAML
-                </Button>
-              </>
+                ) : <div className="py-40 text-center text-gray-600 uppercase tracking-[0.3em] font-black opacity-20 text-xl">Event stream empty</div>}
+                
+                {/* Decorative Terminal Endings */}
+                <div className="absolute bottom-6 right-10 text-white/5 font-black text-6xl pointer-events-none">_EOF</div>
+              </div>
             )}
 
-            <Button variant="secondary" onClick={onClose} className="ml-auto">
-              Close
+            {activeTab === 'deploy' && (
+              <div className="animate-fade-in pb-12">
+                 <AWSDeployPanel projectId={project._id} />
+              </div>
+            )}
+          </div>
+
+          {/* Persistent Footer */}
+          <div className="mt-10 pt-8 border-t border-white/5 flex justify-between items-center shrink-0">
+            <div className="flex gap-5">
+              {(project.status === "analyzed" || project.status === "completed") && (
+                <>
+                  <button 
+                    onClick={() => handleExport('json')} 
+                    disabled={exporting}
+                    className="flex items-center gap-2 text-[10px] font-black text-gray-500 hover:text-cyan-400 uppercase tracking-widest transition-colors px-4 py-2 bg-white/5 rounded-xl border border-white/5"
+                  >
+                    {exporting ? 'EXPORTING...' : <><Box size={14} /> EXPORT_JSON</>}
+                  </button>
+                  <button 
+                    onClick={() => handleExport('yaml')} 
+                    disabled={exporting}
+                    className="flex items-center gap-2 text-[10px] font-black text-gray-500 hover:text-emerald-400 uppercase tracking-widest transition-colors px-4 py-2 bg-white/5 rounded-xl border border-white/5"
+                  >
+                    {exporting ? 'EXPORTING...' : <><Container size={14} /> EXPORT_YAML</>}
+                  </button>
+                </>
+              )}
+            </div>
+            <Button variant="primary" onClick={onClose} className="px-16 h-14 text-xs font-black tracking-[0.3em] uppercase bg-white text-black hover:bg-gray-200">
+               TERMINATE SESSION
             </Button>
           </div>
+
         </div>
       </Card>
     </div>

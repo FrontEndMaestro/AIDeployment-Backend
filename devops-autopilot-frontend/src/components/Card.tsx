@@ -3,11 +3,16 @@ import React from 'react';
 interface CardProps {
   children: React.ReactNode;
   className?: string;
+  glow?: boolean;
+  style?: React.CSSProperties;
 }
 
-export const Card: React.FC<CardProps> = ({ children, className = '' }) => {
+export const Card: React.FC<CardProps> = ({ children, className = '', glow = false, style }) => {
   return (
-    <div className={`bg-gray-800 border border-gray-700 rounded-xl shadow-lg hover:shadow-xl transition ${className}`}>
+    <div
+      className={`glass-card ${glow ? 'border-cyan-500/20 shadow-[0_0_32px_rgba(34,211,238,0.08)]' : ''} ${className}`}
+      style={style}
+    >
       {children}
     </div>
   );

@@ -1,101 +1,98 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import LogoMark from './LogoMark';
+import {
+  ChevronDown, Settings, LogOut, Activity, LayoutGrid
+} from 'lucide-react';
 
 export const Navbar: React.FC = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  const handleLogout = () => {
-    logout();
-    navigate('/login');
-  };
+  const handleLogout = () => { logout(); navigate('/login'); };
+  const initial = user?.username?.charAt(0).toUpperCase() ?? '?';
 
   return (
-    <nav className="bg-gray-900/95 backdrop-blur-xl border-b border-gray-800 sticky top-0 z-50 shadow-lg">
-      <div className="max-w-7xl mx-auto px-6 py-4">
+    <nav className="sticky top-0 z-50 bg-[#050810]/80 backdrop-blur-2xl border-b border-white/5 h-20 flex items-center">
+      <div className="max-w-[1600px] w-full mx-auto px-6">
         <div className="flex justify-between items-center">
-          {/* Logo & Brand */}
-          <div className="flex items-center gap-3 group cursor-pointer">
-            <div className="w-12 h-12 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-cyan-500/30 group-hover:shadow-cyan-500/50 transition-all group-hover:scale-110">
-              <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
+
+          {/* Logo Group */}
+          <Link to="/dashboard" className="flex items-center gap-4 group">
+            <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center transition-all group-hover:bg-white/10 group-hover:border-white/20">
+              <LogoMark size={24} />
             </div>
-            <div>
-              <h1 className="text-xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">
-                DevOps AutoPilot
-              </h1>
-              <p className="text-xs text-gray-500">Module 1 - Pipeline Generator</p>
+            <div className="hidden sm:block">
+              <p className="text-sm font-black text-white uppercase italic tracking-tighter">AutoPilot</p>
+              <p className="text-[9px] text-gray-600 font-black uppercase tracking-[0.2em]">Deployment Suite</p>
             </div>
+          </Link>
+
+          {/* Navigation Links */}
+          <div className="hidden md:flex items-center gap-8">
+             <Link to="/dashboard" className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500 hover:text-white transition-colors flex items-center gap-2">
+                <LayoutGrid size={14} /> Dashboard
+             </Link>
+             <div className="h-4 w-[1px] bg-white/5"></div>
+             <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/5 border border-emerald-500/10 rounded-full">
+                <Activity size={12} className="text-emerald-500 animate-pulse" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-emerald-500">System Online</span>
+             </div>
           </div>
 
-          {/* User Menu */}
+          {/* User Section */}
           <div className="flex items-center gap-4">
-            {/* User Info (Desktop) */}
-            <div className="hidden md:flex items-center gap-4">
-              <div className="text-right">
-                <p className="text-sm font-semibold text-gray-200">{user?.username}</p>
-                <p className="text-xs text-gray-500">{user?.email}</p>
-              </div>
-              
-              {/* Avatar */}
+            {user && (
               <div className="relative">
                 <button
-                  onClick={() => setShowUserMenu(!showUserMenu)}
-                  className="w-10 h-10 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-lg flex items-center justify-center text-white font-bold hover:shadow-lg hover:shadow-cyan-500/30 transition-all hover:scale-110"
+                  onClick={() => setShowUserMenu(v => !v)}
+                  className={`flex items-center gap-3 pl-2 pr-4 py-2 rounded-2xl transition-all border ${
+                    showUserMenu ? 'bg-white/10 border-white/20' : 'bg-white/5 border-white/5 hover:bg-white/10'
+                  }`}
                 >
-                  {user?.username?.charAt(0).toUpperCase()}
-                </button>
-                
-                {/* Dropdown Menu */}
-                {showUserMenu && (
-                  <div className="absolute right-0 mt-2 w-48 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl py-2 animate-fade-in">
-                    <div className="px-4 py-2 border-b border-gray-700">
-                      <p className="text-sm font-medium text-white truncate">{user?.username}</p>
-                      <p className="text-xs text-gray-400 truncate">{user?.email}</p>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setShowUserMenu(false);
-                        // Add settings navigation here
-                      }}
-                      className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition flex items-center gap-2"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                      </svg>
-                      Settings
-                    </button>
-                    <button
-                      onClick={() => {
-                        setShowUserMenu(false);
-                        handleLogout();
-                      }}
-                      className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-gray-700 hover:text-red-300 transition flex items-center gap-2"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                      </svg>
-                      Logout
-                    </button>
+                  <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-white to-gray-400 flex items-center justify-center text-xs font-black text-black">
+                    {initial}
                   </div>
+                  <div className="hidden md:block text-left">
+                    <p className="text-xs font-black text-white leading-none mb-1 uppercase tracking-tight">{user.username}</p>
+                    <p className="text-[9px] text-gray-500 font-medium leading-none truncate max-w-[100px]">{user.email}</p>
+                  </div>
+                  <ChevronDown size={14} className={`text-gray-600 transition-transform ${showUserMenu ? 'rotate-180' : ''}`} />
+                </button>
+
+                {showUserMenu && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setShowUserMenu(false)} />
+                    <div className="absolute right-0 top-full mt-3 w-64 z-20 animate-fade-in">
+                      <div className="rounded-[2rem] overflow-hidden bg-[#0d1117]/95 backdrop-blur-3xl border border-white/10 shadow-2xl p-2">
+                        <div className="px-5 py-4 border-b border-white/5">
+                           <p className="text-[10px] font-black uppercase tracking-widest text-gray-600 mb-2">Authenticated As</p>
+                           <p className="text-sm font-black text-white">{user.username}</p>
+                           <p className="text-xs text-gray-500">{user.email}</p>
+                        </div>
+
+                        <div className="py-2">
+                          <button
+                            onClick={() => setShowUserMenu(false)}
+                            className="w-full flex items-center gap-3 px-5 py-3 text-xs font-black uppercase tracking-widest text-gray-400 hover:text-white hover:bg-white/5 transition-all rounded-xl"
+                          >
+                            <Settings size={15} /> Settings
+                          </button>
+                          <button
+                            onClick={() => { setShowUserMenu(false); handleLogout(); }}
+                            className="w-full flex items-center gap-3 px-5 py-3 text-xs font-black uppercase tracking-widest text-rose-500 hover:bg-rose-500/10 transition-all rounded-xl"
+                          >
+                            <LogOut size={15} /> Terminate
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </>
                 )}
               </div>
-            </div>
-
-            {/* Mobile Logout Button */}
-            <button
-              onClick={handleLogout}
-              className="md:hidden px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 border border-red-500/30 hover:border-red-500/50 rounded-lg transition flex items-center gap-2"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-              <span className="hidden sm:inline">Logout</span>
-            </button>
+            )}
           </div>
         </div>
       </div>

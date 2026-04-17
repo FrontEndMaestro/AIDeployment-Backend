@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Card } from './Card';
 import { Button } from './Button';
 import { Alert } from './Alert';
 import { ProgressBar } from './ProgressBar';
 import { apiClient } from '../api/client';
 import { Project } from '../types/api';
+import {
+  X, FolderOpen, File, Zap, FileText, CheckCircle
+} from 'lucide-react';
 
 interface ExtractProjectModalProps {
   project: Project;
@@ -21,74 +23,67 @@ interface ExtractedFile {
   extension?: string;
 }
 
+const PANEL = {
+  bg:     'rgba(5,8,16,0.97)',
+  border: 'rgba(255,255,255,0.08)',
+  card:   'rgba(13,17,23,0.9)',
+};
+
 export const ExtractProjectModal: React.FC<ExtractProjectModalProps> = ({
-  project,
-  isOpen,
-  onClose,
-  onSuccess,
+  project, isOpen, onClose, onSuccess,
 }) => {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError]     = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [extractedFiles, setExtractedFiles] = useState<ExtractedFile[]>([]);
   const [showFiles, setShowFiles] = useState(false);
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
-
-  const pollExtractionStatus = async () => {
-    try {
-      const response = await apiClient.getExtractionStatus(project._id);
-      if (response.success) {
-        if (response.data.status === 'extracted') {
-          setSuccess(true);
-          setLoading(false);
-          if (pollingInterval) clearInterval(pollingInterval);
-          setTimeout(onSuccess, 2000);
-        }
-      }
-    } catch (err) {
-      // Continue polling
-    }
-  };
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
     if (loading && !pollingInterval) {
-      const interval = setInterval(pollExtractionStatus, 2000);
+      let tick = 10;
+      const interval = setInterval(async () => {
+        tick = Math.min(tick + 8, 85);
+        setProgress(tick);
+        try {
+          const r = await apiClient.getExtractionStatus(project._id);
+          if (r.success && r.data.status === 'extracted') {
+            clearInterval(interval);
+            setProgress(100);
+            setSuccess(true);
+            setLoading(false);
+            setTimeout(onSuccess, 2000);
+          }
+        } catch { /* keep polling */ }
+      }, 2000);
       setPollingInterval(interval);
       return () => clearInterval(interval);
     }
-  }, [loading, pollingInterval]);
+  }, [loading]);
 
   const handleExtract = async () => {
     setError(null);
     setSuccess(false);
     setLoading(true);
-
+    setProgress(10);
     try {
-      const response = await apiClient.extractProject(project._id);
-
-      if (response.success) {
-        // Start polling for extraction status
+      const resp = await apiClient.extractProject(project._id);
+      if (resp.success) {
         const pollInterval = setInterval(async () => {
           try {
-            const statusResponse = await apiClient.getExtractionStatus(project._id);
-            if (statusResponse.data.status === 'extracted') {
+            const status = await apiClient.getExtractionStatus(project._id);
+            if (status.data.status === 'extracted') {
               clearInterval(pollInterval);
+              setProgress(100);
               setSuccess(true);
               setLoading(false);
-
-              // Fetch extracted files
-              const filesResponse = await apiClient.getExtractedFiles(project._id);
-              if (filesResponse.success) {
-                setExtractedFiles(filesResponse.files);
-              }
-
+              const filesResp = await apiClient.getExtractedFiles(project._id);
+              if (filesResp.success) setExtractedFiles(filesResp.files);
               onSuccess();
             }
-          } catch (err) {
-            // Continue polling
-          }
+          } catch { /* keep polling */ }
         }, 2000);
-
         setPollingInterval(pollInterval as any);
       }
     } catch (err) {
@@ -99,11 +94,8 @@ export const ExtractProjectModal: React.FC<ExtractProjectModalProps> = ({
 
   const fetchExtractedFiles = async () => {
     try {
-      const response = await apiClient.getExtractedFiles(project._id);
-      if (response.success) {
-        setExtractedFiles(response.files);
-        setShowFiles(true);
-      }
+      const resp = await apiClient.getExtractedFiles(project._id);
+      if (resp.success) { setExtractedFiles(resp.files); setShowFiles(true); }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch files');
     }
@@ -112,160 +104,150 @@ export const ExtractProjectModal: React.FC<ExtractProjectModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <div className="p-6">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h2 className="text-2xl font-bold text-white mb-1">Extract Project</h2>
-              <p className="text-gray-400 text-sm">{project.project_name}</p>
-            </div>
-            <button
-              onClick={onClose}
-              className="text-gray-400 hover:text-white transition text-2xl leading-none"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)' }}
+    >
+      <div
+        className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl overflow-hidden animate-scale-in"
+        style={{ background: PANEL.bg, border: `1px solid ${PANEL.border}`, boxShadow: '0 32px 80px rgba(0,0,0,0.8)' }}
+      >
+        {/* Header */}
+        <div
+          className="flex items-center justify-between px-6 py-4 flex-shrink-0"
+          style={{ borderBottom: `1px solid ${PANEL.border}`, background: 'rgba(22,27,34,0.5)' }}
+        >
+          <div className="flex items-center gap-3">
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center"
+              style={{ background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.2)' }}
             >
-              ×
-            </button>
-          </div>
-
-          {/* Project Info */}
-          <div className="bg-gray-900/50 rounded-lg p-4 mb-6 border border-gray-700">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-gray-500 text-xs mb-1">File Name</p>
-                <p className="text-white font-medium">{project.file_name}</p>
-              </div>
-              <div>
-                <p className="text-gray-500 text-xs mb-1">File Size</p>
-                <p className="text-white font-medium">
-                  {(project.file_size / (1024 * 1024)).toFixed(2)} MB
-                </p>
-              </div>
-              <div>
-                <p className="text-gray-500 text-xs mb-1">Current Status</p>
-                <p className="text-white font-medium capitalize">{project.status}</p>
-              </div>
-              <div>
-                <p className="text-gray-500 text-xs mb-1">Upload Date</p>
-                <p className="text-white font-medium">
-                  {new Date(project.upload_date).toLocaleDateString()}
-                </p>
-              </div>
+              <Zap size={17} className="text-cyan-400" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-white">Extract & Analyze</h2>
+              <p className="text-xs text-gray-500">{project.project_name}</p>
             </div>
           </div>
-
-          {/* Error Alert */}
-          {error && (
-            <div className="mb-6">
-              <Alert type="error" title="Error" message={error} onClose={() => setError(null)} />
-            </div>
-          )}
-
-          {/* Success Alert */}
-          {success && (
-            <div className="mb-6">
-              <Alert
-                type="success"
-                title="Success"
-                message={`Project extracted successfully! ${project.files_count} files, ${project.folders_count} folders`}
-              />
-            </div>
-          )}
-
-          {/* Loading State */}
-          {loading && (
-            <div className="mb-6">
-              <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-lg p-4">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-8 h-8 border-3 border-cyan-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-                  <div>
-                    <p className="text-white font-medium">Extracting project...</p>
-                    <p className="text-cyan-400 text-sm">This may take a moment</p>
-                  </div>
-                </div>
-                <ProgressBar value={50} label="Extraction Progress" showPercentage={false} />
-              </div>
-            </div>
-          )}
-
-          {/* Extracted Files */}
-          {showFiles && extractedFiles.length > 0 && (
-            <div className="mb-6">
-              <h3 className="text-lg font-bold text-white mb-3">Extracted Files</h3>
-              <div className="bg-gray-900/50 rounded-lg border border-gray-700 max-h-96 overflow-y-auto">
-                <div className="divide-y divide-gray-700">
-                  {extractedFiles.slice(0, 50).map((file, idx) => (
-                    <div key={idx} className="p-3 flex items-center gap-3 hover:bg-gray-800/50 transition">
-                      <div className="flex-shrink-0">
-                        {file.type === 'folder' ? (
-                          <svg className="w-5 h-5 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
-                            <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
-                          </svg>
-                        ) : (
-                          <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                            />
-                          </svg>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-white text-sm truncate">{file.name}</p>
-                        <p className="text-gray-500 text-xs">{file.path}</p>
-                      </div>
-                    </div>
-                  ))}
-                  {extractedFiles.length > 50 && (
-                    <div className="p-3 text-center text-gray-400 text-sm">
-                      +{extractedFiles.length - 50} more files
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Actions */}
-          <div className="flex items-center gap-3 pt-6 border-t border-gray-700">
-            {!loading && !success && (
-              <Button variant="primary" onClick={handleExtract}>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M13 10V3L4 14h7v7l9-11h-7z"
-                  />
-                </svg>
-                Extract Project
-              </Button>
-            )}
-
-            {success && (
-              <>
-                <Button variant="secondary" onClick={fetchExtractedFiles}>
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                    />
-                  </svg>
-                  View Files
-                </Button>
-                <Button variant="secondary" onClick={onClose}>
-                  Close
-                </Button>
-              </>
-            )}
-          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-white hover:bg-white/10 transition-all"
+          >
+            <X size={16} />
+          </button>
         </div>
-      </Card>
+
+        {/* Body */}
+        <div className="overflow-y-auto custom-scroll flex-1 p-6 space-y-4">
+          {/* Project Info */}
+          <div
+            className="grid grid-cols-2 gap-3 p-4 rounded-xl"
+            style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${PANEL.border}` }}
+          >
+            {[
+              { label: 'File name',  value: project.file_name },
+              { label: 'File size',  value: `${(project.file_size / 1024 / 1024).toFixed(2)} MB` },
+              { label: 'Status',     value: project.status },
+              { label: 'Uploaded',   value: new Date(project.upload_date).toLocaleDateString() },
+            ].map(item => (
+              <div key={item.label}>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-600 mb-0.5">{item.label}</p>
+                <p className="text-sm font-medium text-white capitalize">{item.value}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Error / Success alerts */}
+          {error   && <Alert type="error"   title="Extraction failed"     message={error}  onClose={() => setError(null)} />}
+          {success && <Alert type="success" title="Extraction complete"   message={`${project.files_count ?? ''} files extracted successfully`} />}
+
+          {/* Loading progress */}
+          {loading && (
+            <div
+              className="p-4 rounded-xl"
+              style={{ background: 'rgba(34,211,238,0.06)', border: '1px solid rgba(34,211,238,0.15)' }}
+            >
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                  style={{ background: 'rgba(34,211,238,0.1)' }}>
+                  <div className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-white">Extracting project</p>
+                  <p className="text-xs text-cyan-400/70">Unpacking archive and scanning structure…</p>
+                </div>
+              </div>
+              <ProgressBar value={progress} showPercentage color="cyan" />
+            </div>
+          )}
+
+          {/* Extracted file list */}
+          {showFiles && extractedFiles.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 mb-3">
+                Extracted files ({extractedFiles.length})
+              </p>
+              <div
+                className="rounded-xl max-h-72 overflow-y-auto custom-scroll"
+                style={{ background: 'rgba(5,8,16,0.8)', border: `1px solid ${PANEL.border}` }}
+              >
+                {extractedFiles.slice(0, 60).map((file, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.03] transition-colors"
+                    style={{ borderBottom: i < extractedFiles.length - 1 ? `1px solid rgba(255,255,255,0.04)` : 'none' }}
+                  >
+                    {file.type === 'folder'
+                      ? <FolderOpen size={14} className="text-amber-400 flex-shrink-0" />
+                      : <File       size={14} className="text-blue-400  flex-shrink-0" />
+                    }
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-white font-medium truncate">{file.name}</p>
+                      <p className="text-[10px] text-gray-600 truncate font-mono">{file.path}</p>
+                    </div>
+                  </div>
+                ))}
+                {extractedFiles.length > 60 && (
+                  <div className="px-4 py-3 text-center">
+                    <p className="text-xs text-gray-600">+{extractedFiles.length - 60} more files</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div
+          className="flex items-center gap-3 px-6 py-4 flex-shrink-0"
+          style={{ borderTop: `1px solid ${PANEL.border}`, background: 'rgba(22,27,34,0.4)' }}
+        >
+          {!loading && !success && (
+            <Button variant="primary" onClick={handleExtract}>
+              <Zap size={15} />
+              Extract Project
+            </Button>
+          )}
+          {success && (
+            <>
+              <Button variant="secondary" onClick={fetchExtractedFiles}>
+                <FileText size={15} />
+                View Files
+              </Button>
+              <Button variant="secondary" onClick={onClose}>
+                <CheckCircle size={15} className="text-emerald-400" />
+                Done
+              </Button>
+            </>
+          )}
+          <button
+            onClick={onClose}
+            className="ml-auto text-xs text-gray-600 hover:text-gray-400 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
