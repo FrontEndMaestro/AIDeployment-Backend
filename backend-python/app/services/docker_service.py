@@ -14,6 +14,31 @@ from ..config.settings import settings
 
 
 # --------- helpers to discover compose + Dockerfiles ---------
+
+_DB_TOKENS = {"mongo", "postgres", "postgresql", "mysql", "mariadb", "redis", "sqlite", "database", "db"}
+
+
+def _is_database_service(service_name: str, image_name: str) -> bool:
+    """Return True if this compose service is a database (should not be pushed to DockerHub)."""
+    combined = f"{service_name} {image_name}".lower()
+    return any(token in combined for token in _DB_TOKENS)
+
+
+def _infer_compose_image_name(compose_dir: str, service_name: str) -> str:
+    """
+    Derive the docker compose auto-generated image name for a service with build: but no image:.
+    Docker names these as: {project_name}-{service_name}
+    where project_name = lowercase directory name, spaces/hyphens → underscores not applied
+    (Docker actually uses the folder name lowercased with non-alphanums replaced by hyphens).
+    """
+    folder = os.path.basename(compose_dir) or "project"
+    # Docker compose project naming: lowercase, non-alphanumeric → hyphen, then collapse
+    import re as _re
+    project = _re.sub(r"[^a-z0-9]", "-", folder.lower()).strip("-")
+    project = _re.sub(r"-+", "-", project)
+    # Compose image name = {project}-{service}
+    return f"{project}-{service_name}"
+
 def _docker_login(stage: str) -> Generator[Dict, None, None]:
     """
     If DOCKER_HUB_USERNAME / DOCKER_HUB_PASSWORD are set, perform
@@ -1429,14 +1454,25 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
                 # 1. Check Warnings
                 yield from _check_volumes(svc_name, svc.get("volumes", []))
 
-                # 2. Get Resolved Image
-                source_image = svc.get("image")
-                if not source_image:
+                # 2. Skip pure database images (mongo, postgres, redis, mysql)
+                svc_image_raw = svc.get("image") or ""
+                if _is_database_service(svc_name, svc_image_raw):
                     yield {
-                        "line": f"Resolved config for '{svc_name}' has no image name. Skipping.",
+                        "line": f"Skipping database service '{svc_name}' (not pushed to DockerHub).",
                         "stage": "push",
                     }
                     continue
+
+                # 3. Resolve source image — explicit or compose auto-name
+                source_image = svc_image_raw or None
+                if not source_image:
+                    # Docker Compose auto-names build images as {project_dir}-{service_name}
+                    inferred = _infer_compose_image_name(compose_dir, svc_name)
+                    yield {
+                        "line": f"Service '{svc_name}' has no explicit image. Inferring built image: {inferred}",
+                        "stage": "push",
+                    }
+                    source_image = inferred
 
                 dest_image = f"{image_repo}-{svc_name}:latest"
                 yield from _tag_and_push(source_image, dest_image, cwd=compose_dir)
@@ -1457,16 +1493,31 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
             # 1. Check Warnings
             yield from _check_volumes(svc_name, svc.get("volumes", []))
 
-            # 2. Get Explicit Image (NO GUESSING)
-            source_image = svc.get("image")
-            if not source_image:
+            # 2. Skip pure database images
+            svc_image_raw = svc.get("image") or ""
+            if _is_database_service(svc_name, svc_image_raw):
                 yield {
-                    "line": (
-                        f"WARNING: Service '{svc_name}' has no explicit 'image' field. Skipping push to avoid errors."
-                    ),
+                    "line": f"Skipping database service '{svc_name}' (not pushed to DockerHub).",
                     "stage": "push",
                 }
                 continue
+
+            # 3. Resolve source image — explicit or compose auto-name
+            source_image = svc_image_raw or None
+            if not source_image:
+                if "build" in svc:
+                    inferred = _infer_compose_image_name(compose_dir, svc_name)
+                    yield {
+                        "line": f"Service '{svc_name}' has no explicit image. Inferring built image: {inferred}",
+                        "stage": "push",
+                    }
+                    source_image = inferred
+                else:
+                    yield {
+                        "line": f"WARNING: Service '{svc_name}' has no image and no build config. Skipping.",
+                        "stage": "push",
+                    }
+                    continue
 
             dest_image = f"{image_repo}-{svc_name}:latest"
             yield from _tag_and_push(source_image, dest_image, cwd=compose_dir)
@@ -1603,6 +1654,138 @@ def _ensure_compose_env_files(project_root: str) -> None:
 # --------- Kubernetes Deployment Streaming ---------
 
 
+def _read_compose_services_for_k8s(compose_path: str) -> List[Dict]:
+    """
+    Read docker-compose.yml and return a list of app services with their
+    locally-built image names (skip database services).
+    Returns: [{name, image, port}]
+    """
+    try:
+        with open(compose_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return []
+
+    compose_dir = os.path.dirname(compose_path)
+    services = data.get("services") or {}
+    result: List[Dict] = []
+
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        image_raw = svc.get("image") or ""
+        # Skip database services
+        if _is_database_service(svc_name, image_raw):
+            continue
+        # Resolve image name
+        if image_raw:
+            image = image_raw
+        elif "build" in svc:
+            image = _infer_compose_image_name(compose_dir, svc_name)
+        else:
+            continue
+        # Get first exposed port
+        port = 80
+        ports = svc.get("ports") or []
+        for p in ports:
+            if isinstance(p, str):
+                parts = p.split(":")
+                try:
+                    port = int(parts[-1].split("/")[0])
+                    break
+                except ValueError:
+                    pass
+            elif isinstance(p, dict):
+                try:
+                    port = int(p.get("target") or p.get("container_port") or 80)
+                    break
+                except (TypeError, ValueError):
+                    pass
+        result.append({"name": svc_name, "image": image, "port": port})
+    return result
+
+
+def _build_k8s_manifests_from_compose(
+    services: List[Dict],
+    project_label: str,
+    base_node_port: int,
+) -> str:
+    """
+    Generate a combined Kubernetes YAML (multi-document) for all app services.
+    Uses imagePullPolicy: IfNotPresent so local Docker images are used directly
+    without needing them on DockerHub — perfect for Docker Desktop Kubernetes.
+    """
+    import re as _re
+    docs: List[str] = []
+    current_port = base_node_port
+
+    for svc in services:
+        svc_name = _re.sub(r"[^a-z0-9-]", "-", svc["name"].lower()).strip("-")
+        image = svc["image"]
+        container_port = svc["port"]
+
+        deployment = (
+            f"apiVersion: apps/v1\n"
+            f"kind: Deployment\n"
+            f"metadata:\n"
+            f"  name: {svc_name}\n"
+            f"  labels:\n"
+            f"    app: {svc_name}\n"
+            f"    project: {project_label}\n"
+            f"spec:\n"
+            f"  replicas: 1\n"
+            f"  selector:\n"
+            f"    matchLabels:\n"
+            f"      app: {svc_name}\n"
+            f"  template:\n"
+            f"    metadata:\n"
+            f"      labels:\n"
+            f"        app: {svc_name}\n"
+            f"        project: {project_label}\n"
+            f"    spec:\n"
+            f"      containers:\n"
+            f"      - name: {svc_name}\n"
+            f"        image: {image}\n"
+            f"        imagePullPolicy: IfNotPresent\n"
+            f"        ports:\n"
+            f"        - containerPort: {container_port}\n"
+            f"        resources:\n"
+            f"          requests:\n"
+            f"            memory: \"128Mi\"\n"
+            f"            cpu: \"100m\"\n"
+            f"          limits:\n"
+            f"            memory: \"512Mi\"\n"
+            f"            cpu: \"500m\"\n"
+        )
+
+        # Clamp node port to valid range
+        node_port = max(30000, min(32767, current_port))
+        current_port += 1
+
+        service = (
+            f"apiVersion: v1\n"
+            f"kind: Service\n"
+            f"metadata:\n"
+            f"  name: {svc_name}-svc\n"
+            f"  labels:\n"
+            f"    app: {svc_name}\n"
+            f"    project: {project_label}\n"
+            f"spec:\n"
+            f"  type: NodePort\n"
+            f"  selector:\n"
+            f"    app: {svc_name}\n"
+            f"  ports:\n"
+            f"  - port: {container_port}\n"
+            f"    targetPort: {container_port}\n"
+            f"    nodePort: {node_port}\n"
+        )
+
+        docs.append(deployment)
+        docs.append(service)
+
+    return "\n---\n".join(docs) + "\n"
+
+
 def _find_k8s_manifests(project_root: str) -> List[str]:
     """
     Find Kubernetes manifest YAML files under project_root/k8s/.
@@ -1710,6 +1893,26 @@ def k8s_deploy_stream(
 
     # 3. Find or generate k8s manifests
     k8s_manifests = _find_k8s_manifests(project_root)
+
+    if not k8s_manifests:
+        services = meta.get("services", [])
+
+        # ── Compose-aware: build per-service manifests using local image names ──
+        compose_path_found = _find_compose_file(project_root)
+        if compose_path_found:
+            yield {"line": "Reading compose services to generate per-service k8s manifests...", "stage": "k8s_deploy"}
+            try:
+                compose_services = _read_compose_services_for_k8s(compose_path_found)
+                if compose_services:
+                    manifest_content = _build_k8s_manifests_from_compose(compose_services, deployment_name, node_port)
+                    manifest_path = os.path.join(project_root, "k8s")
+                    os.makedirs(manifest_path, exist_ok=True)
+                    with open(os.path.join(manifest_path, "deployment.yaml"), "w", encoding="utf-8") as f:
+                        f.write(manifest_content)
+                    yield {"line": "✅ Generated k8s/deployment.yaml from compose services", "stage": "k8s_deploy"}
+                    k8s_manifests = _find_k8s_manifests(project_root)
+            except Exception as e:
+                yield {"line": f"Warning: compose-aware k8s generation failed: {e}. Falling back to Gemini.", "stage": "k8s_deploy"}
 
     if not k8s_manifests:
         services = meta.get("services", [])
