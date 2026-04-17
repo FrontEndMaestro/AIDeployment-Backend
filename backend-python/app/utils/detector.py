@@ -1224,35 +1224,30 @@ def detect_framework(project_path: str, use_ml: bool = True) -> Dict:
                 results["consistency_warnings"] = consistency_warnings
         
         # =======================================================================
-        # DEPLOY BLOCKED CHECK: Backend service requires .env file
-        # If backend exists but has no .env, block deployment and notify user
+        # ENV FILE CHECK: Note missing .env for auto-generation during build
+        # We no longer BLOCK deployment — instead the build pipeline auto-generates
+        # a .env template using Gemini, so user has zero manual work.
         # =======================================================================
         backend_services = [s for s in results.get("services", []) if s.get("type") in ("backend", "monolith")]
         backend_missing_env = any(
             svc.get("type") in ("backend", "monolith") and not svc.get("env_file")
             for svc in results.get("services", [])
         )
-        
+
         if backend_services and backend_missing_env:
+            results["deploy_blocked"] = False
+            results["deploy_blocked_reason"] = None
+            results["backend_env_missing"] = True
             if results.get("database") != "Unknown":
-                # Database detected + no .env → BLOCK deployment
-                results["deploy_blocked"] = True
-                results["deploy_blocked_reason"] = (
-                    "Backend .env file is required because a database was detected. "
-                    "Please add a .env file with DATABASE_URL, PORT, and other secrets."
-                )
-                results["backend_env_missing"] = True
-                results["deploy_warning"] = None
-                print("Deploy blocked: Backend .env file missing (database detected)")
-            else:
-                # No database + no .env → WARNING only (not blocked)
-                results["deploy_blocked"] = False
-                results["deploy_blocked_reason"] = None
-                results["backend_env_missing"] = True
                 results["deploy_warning"] = (
-                    "No .env detected. Proceed only if your app doesn't require secrets."
+                    "No .env file detected. One will be auto-generated before build."
                 )
-                print("Deploy warning: Backend .env file missing (no database)")
+                print("Deploy info: Backend .env missing (database detected) — will auto-generate")
+            else:
+                results["deploy_warning"] = (
+                    "No .env detected. Auto-generating template — review and fill in secrets if needed."
+                )
+                print("Deploy info: Backend .env missing (no database) — will auto-generate template")
         else:
             results["deploy_blocked"] = False
             results["deploy_blocked_reason"] = None

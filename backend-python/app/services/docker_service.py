@@ -217,6 +217,33 @@ def _tag_and_push(
         yield event
 
 
+def _extract_env_from_llm_response(response: str) -> str:
+    """
+    Extract .env content from an LLM markdown response.
+    Looks for ```env, ```.env, or plain ```  blocks containing KEY=VALUE lines.
+    Falls back to extracting bare KEY=VALUE lines from the response.
+    """
+    import re as _re
+    # Try code fences: ```env, ```.env, ```dotenv, ```txt, plain ```
+    fence_pattern = _re.compile(
+        r"```(?:env|\.env|dotenv|txt|plaintext)?\s*\n(.*?)```",
+        _re.DOTALL | _re.IGNORECASE,
+    )
+    for match in fence_pattern.finditer(response):
+        block = match.group(1).strip()
+        # Accept block if it looks like KEY=VALUE content
+        if _re.search(r"^[A-Z_][A-Z0-9_]*\s*=", block, _re.MULTILINE | _re.IGNORECASE):
+            return block
+
+    # Fallback: extract all KEY=VALUE lines from raw response
+    kv_lines = _re.findall(r"^[A-Z_][A-Z0-9_]*\s*=.*$", response, _re.MULTILINE | _re.IGNORECASE)
+    if kv_lines:
+        return "\n".join(kv_lines)
+
+    return ""
+
+
+
 # --------- external network preflight for compose ---------
 
 
@@ -316,6 +343,51 @@ def build_project_stream(
             "tail": [msg],
         }
         return
+
+    # ---- Auto-generate .env if missing (never block the user) ----
+    backend_missing_env = (metadata or {}).get("backend_env_missing", False)
+    env_path = os.path.join(project_root, ".env")
+    if backend_missing_env and not os.path.exists(env_path):
+        yield {"line": "No .env file found. Auto-generating one via Gemini AI...", "stage": "build"}
+        try:
+            source_files = _collect_source_files_for_llm(project_root)
+            file_tree = _build_file_tree_text(project_root)
+            project_name = os.path.basename(project_root) or "project"
+            database = (metadata or {}).get("database", "Unknown")
+
+            env_response = run_docker_deploy_chat(
+                project_name=project_name,
+                metadata=metadata or {},
+                dockerfiles=[],
+                compose_files=[],
+                source_files=source_files,
+                file_tree=file_tree,
+                user_message=(
+                    "Generate a .env file for this project. "
+                    f"Database detected: {database}. "
+                    "Scan the source files for all environment variable references "
+                    "(process.env.XYZ, os.environ['XYZ'], dotenv etc.) and "
+                    "output a complete .env file with sensible placeholder values. "
+                    "Use real defaults where you can infer them (e.g. PORT=5000, "
+                    "MONGO_URI=mongodb://localhost:27017/mydb). "
+                    "Output ONLY the .env content inside a ```env``` code block. No extra text."
+                ),
+                logs=None,
+                extra_instructions=None,
+                services=(metadata or {}).get("services", []),
+            )
+
+            # Extract the .env content from the LLM response
+            env_content = _extract_env_from_llm_response(env_response)
+            if env_content:
+                with open(env_path, "w", encoding="utf-8") as f:
+                    f.write(env_content)
+                yield {"line": f"\u2705 Auto-generated .env at project root ({len(env_content.splitlines())} vars)", "stage": "build"}
+                yield {"line": "\u26a0\ufe0f  .env was auto-generated with placeholder values. Review and update secrets before production.", "stage": "build"}
+            else:
+                yield {"line": "Warning: Gemini response did not contain a parseable .env block. Continuing without .env...", "stage": "build"}
+        except Exception as e:
+            yield {"line": f"Warning: .env auto-generation failed ({e}). Continuing without .env...", "stage": "build"}
 
     # ---- Compose-based build ----
     compose_path = _find_compose_file(project_root)
