@@ -18,6 +18,7 @@ from ..services.docker_service import (
     build_project_stream,
     run_project_stream,
     push_image_stream,
+    k8s_deploy_stream,
 )
 
 _ENV_FILE_CANDIDATES = (".env", ".env.local", ".env.production")
@@ -82,14 +83,24 @@ def _augment_services_runtime_hints(
         svc_dir = _resolve_service_dir(project_root, svc_path)
 
         if refresh_env or not svc.get("env_file"):
+            env_found = False
             for env_name in _ENV_FILE_CANDIDATES:
                 env_path = os.path.join(svc_dir, env_name)
+                root_env_path = os.path.join(project_root, env_name)
+                
+                # Check service dir first
                 if os.path.exists(env_path):
                     if svc_path and svc_path != ".":
                         normalized_path = svc_path.replace("\\", "/")
                         svc["env_file"] = f"./{normalized_path}/{env_name}"
                     else:
                         svc["env_file"] = f"./{env_name}"
+                    env_found = True
+                    break
+                # Fallback to root dir if different
+                elif svc_path and svc_path != "." and os.path.exists(root_env_path):
+                    svc["env_file"] = f"./{env_name}"
+                    env_found = True
                     break
 
         if svc.get("type") in ("backend", "monolith") and not svc.get("entry_point"):
@@ -197,6 +208,34 @@ def _collect_docker_files(project_root: str) -> Tuple[List[Dict[str, str]], List
     return dockerfiles, compose_files
 
 
+def _collect_source_files(project_root: str, max_files: int = 5) -> List[Dict[str, str]]:
+    source_files: List[Dict[str, str]] = []
+    
+    # Priority targets for understanding dependencies and endpoints
+    targets = ["package.json", "server.js", "app.js", "index.js", "main.py", "requirements.txt"]
+    
+    collected = 0
+    for root, _, files in os.walk(project_root):
+        if "node_modules" in root or ".venv" in root or "venv" in root or "__pycache__" in root:
+            continue
+            
+        for name in files:
+            if collected >= max_files:
+                break
+            # Match directly or by typical entrypoint names
+            if name in targets or name.endswith(".js") or name.endswith(".ts") or name.endswith(".py"):
+                full_path = os.path.join(root, name)
+                rel_path = os.path.relpath(full_path, project_root)
+                
+                content = read_file(full_path) or ""
+                # Prevent massive minified files
+                if len(content) > 0 and len(content) < 50000:
+                    source_files.append({"path": rel_path, "content": content})
+                    collected += 1
+
+    return source_files
+
+
 def _build_file_tree(project_root: str, max_depth: int = 4, max_entries: int = 200) -> Tuple[str, List[Dict]]:
     """
     Returns a simple indented text tree for Llama context and a structured tree for the UI.
@@ -240,6 +279,20 @@ def _build_file_tree(project_root: str, max_depth: int = 4, max_entries: int = 2
     if count >= max_entries:
         tree_text += "\n...truncated"
     return tree_text, structured
+
+
+def _collect_k8s_files(project_root: str) -> List[Dict[str, str]]:
+    """Collect k8s manifest files from project_root/k8s/."""
+    k8s_dir = os.path.join(project_root, "k8s")
+    k8s_files: List[Dict[str, str]] = []
+    if not os.path.isdir(k8s_dir):
+        return k8s_files
+    for name in sorted(os.listdir(k8s_dir)):
+        if name.endswith(".yaml") or name.endswith(".yml"):
+            full_path = os.path.join(k8s_dir, name)
+            content = read_file(full_path) or ""
+            k8s_files.append({"path": f"k8s/{name}", "content": content})
+    return k8s_files
 
 
 def _ensure_analyzed(project: Dict):
@@ -297,6 +350,41 @@ async def get_docker_context_handler(project_id: str, current_user: dict) -> Dic
     # Update services in metadata
     metadata["services"] = services
 
+    # Collect k8s manifests
+    k8s_files = _collect_k8s_files(project_root)
+
+    # Compute missing deployment files for the UI
+    has_dockerfile = bool(dockerfiles)
+    has_compose = bool(compose_files)
+    has_k8s = bool(k8s_files)
+    has_env = any(
+        svc.get("env_file") for svc in services
+    ) or os.path.exists(os.path.join(project_root, ".env"))
+
+    missing_files = []
+    if not has_dockerfile:
+        missing_files.append("Dockerfile")
+    if not has_compose:
+        missing_files.append("docker-compose.yml")
+    if not has_k8s:
+        missing_files.append("k8s/deployment.yaml")
+        missing_files.append("k8s/service.yaml")
+    if not has_env:
+        missing_files.append(".env")
+
+    import re as _re
+    project_name_raw = project.get("project_name", "project")
+    sanitized = _re.sub(r"[^a-z0-9_-]", "-", project_name_raw.lower()).strip("-")[:50]
+    hub_user = settings.DOCKER_HUB_USERNAME
+    repo_prefix = settings.APP_REGISTRY_PREFIX or "devops-autopilot"
+    if hub_user:
+        image_repo = f"{hub_user}/{repo_prefix}-{sanitized}"
+    else:
+        image_repo = f"{repo_prefix}-{sanitized}"
+
+    node_port = 30000 + (hash(project_root) % 2767)
+    node_port = max(30000, min(32767, node_port))
+
     return {
         "success": True,
         "project": {
@@ -307,11 +395,24 @@ async def get_docker_context_handler(project_id: str, current_user: dict) -> Dic
         "metadata": metadata,
         "dockerfiles": dockerfiles,
         "compose_files": compose_files,
+        "k8s_files": k8s_files,
         "file_tree": {
             "text": file_tree_text,
             "tree": file_tree_struct,
         },
         "docker_compose_present": bool(compose_files),
+        "k8s_manifests_present": has_k8s,
+        "missing_files": missing_files,
+        "deployment_readiness": {
+            "has_dockerfile": has_dockerfile,
+            "has_docker_compose": has_compose,
+            "has_k8s_manifests": has_k8s,
+            "has_env": has_env,
+            "is_ready": len(missing_files) == 0,
+            "missing": missing_files,
+        },
+        "image_repo": image_repo,
+        "k8s_node_port": node_port,
     }
 
 
@@ -418,6 +519,7 @@ async def docker_chat_stream_setup(
     project_root = _resolve_project_root(project)
 
     dockerfiles, compose_files = _collect_docker_files(project_root)
+    source_files = _collect_source_files(project_root)
     file_tree_text, _ = _build_file_tree(project_root)
     metadata = project.get("metadata", {}) or {}
     metadata.setdefault("schema_version", PORT_SCHEMA_VERSION)
@@ -430,6 +532,7 @@ async def docker_chat_stream_setup(
         "metadata": metadata,
         "dockerfiles": dockerfiles,
         "compose_files": compose_files,
+        "source_files": source_files,
         "file_tree": file_tree_text,
         "user_message": user_message,
         "logs": logs,
@@ -448,6 +551,7 @@ def docker_chat_stream_generator(prepared_data: Dict):
         metadata=prepared_data["metadata"],
         dockerfiles=prepared_data["dockerfiles"],
         compose_files=prepared_data["compose_files"],
+        source_files=prepared_data.get("source_files", []),
         file_tree=prepared_data["file_tree"],
         user_message=prepared_data["user_message"],
         logs=prepared_data["logs"],
@@ -612,7 +716,9 @@ async def stream_docker_logs_handler(
     elif action == "run":
         generator = run_project_stream(project_root, image_repo, backend_host_port, metadata)
     elif action == "push":
-        generator = push_image_stream(project_root, image_repo,metadata)
+        generator = push_image_stream(project_root, image_repo, metadata)
+    elif action == "k8s_deploy":
+        generator = k8s_deploy_stream(project_root, image_repo, metadata)
     else:
         raise HTTPException(status_code=400, detail="Invalid action")
 

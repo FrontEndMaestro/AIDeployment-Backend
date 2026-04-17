@@ -7,6 +7,7 @@ import json
 from ..LLM.docker_deploy_agent import (
     parse_and_validate_generated_docker_response,
     run_docker_deploy_chat,
+    run_k8s_manifest_generation,
 )
 
 from ..config.settings import settings
@@ -1597,3 +1598,216 @@ def _ensure_compose_env_files(project_root: str) -> None:
                 except Exception:
                     # Best-effort -- if this fails, docker compose will still show the real error
                     pass
+
+
+# --------- Kubernetes Deployment Streaming ---------
+
+
+def _find_k8s_manifests(project_root: str) -> List[str]:
+    """
+    Find Kubernetes manifest YAML files under project_root/k8s/.
+    Returns list of absolute file paths.
+    """
+    k8s_dir = os.path.join(project_root, "k8s")
+    found: List[str] = []
+    if not os.path.isdir(k8s_dir):
+        return found
+    for name in os.listdir(k8s_dir):
+        if name.endswith(".yaml") or name.endswith(".yml"):
+            found.append(os.path.join(k8s_dir, name))
+    return sorted(found)
+
+
+def _write_k8s_files(project_root: str, files: Dict[str, str]) -> List[str]:
+    """Write k8s manifest files to disk under project_root. Returns list of written paths."""
+    root_abs = os.path.abspath(project_root)
+    written: List[str] = []
+    for rel_path, content in files.items():
+        clean = rel_path.replace("\\", "/").lstrip("/")
+        dest = os.path.abspath(os.path.join(root_abs, clean))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(content.rstrip() + "\n")
+        written.append(clean)
+    return written
+
+
+def k8s_deploy_stream(
+    project_root: str,
+    image_repo: str,
+    metadata: Optional[Dict] = None,
+) -> Generator[Dict, None, None]:
+    """
+    High-level Kubernetes deployment streamer.
+
+    Flow:
+    1. Check kubectl is available
+    2. Check k8s cluster is reachable
+    3. Find k8s manifests in project_root/k8s/
+    4. If none found → generate via Gemini and save them
+    5. Run `kubectl apply -f k8s/` and stream output
+    6. Wait a few seconds then stream pod status
+    """
+    import re as _re
+    import time as _time
+
+    meta = metadata or {}
+    project_name = os.path.basename(project_root) or "project"
+    import re as _re2
+    sanitized = _re2.sub(r"[^a-z0-9_-]", "-", project_name.lower()).strip("-")[:50]
+    hub_user = settings.DOCKER_HUB_USERNAME
+    repo_prefix = settings.APP_REGISTRY_PREFIX or "devops-autopilot"
+    if hub_user:
+        _image_repo = image_repo  # Already fully qualified from caller
+    else:
+        _image_repo = image_repo
+
+    deployment_name = _re.sub(r"[^a-z0-9-]", "-", sanitized).strip("-")
+    node_port = 30000 + (hash(project_root) % 2767)
+    node_port = max(30000, min(32767, node_port))
+
+    # 1. Check kubectl available
+    yield {"line": "Checking kubectl availability...", "stage": "k8s_deploy"}
+    try:
+        check = subprocess.run(
+            ["kubectl", "version", "--client", "--output=yaml"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10
+        )
+        if check.returncode != 0:
+            msg = "ERROR: kubectl not found or not working. Install kubectl and ensure it is in PATH."
+            yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+            return
+        yield {"line": "✅ kubectl found", "stage": "k8s_deploy"}
+    except FileNotFoundError:
+        msg = "ERROR: kubectl binary not found. Please install kubectl."
+        yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+        return
+    except Exception as e:
+        msg = f"ERROR: kubectl check failed: {e}"
+        yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+        return
+
+    # 2. Check cluster reachable
+    yield {"line": "Checking Kubernetes cluster connectivity...", "stage": "k8s_deploy"}
+    try:
+        cluster_check = subprocess.run(
+            ["kubectl", "cluster-info"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15
+        )
+        if cluster_check.returncode != 0:
+            stderr_msg = cluster_check.stderr.decode("utf-8", errors="replace").strip()
+            msg = (
+                f"ERROR: Kubernetes cluster not reachable. {stderr_msg}\n"
+                "Ensure Docker Desktop Kubernetes is enabled and running."
+            )
+            yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+            return
+        yield {"line": "✅ Kubernetes cluster is reachable", "stage": "k8s_deploy"}
+    except Exception as e:
+        msg = f"ERROR: Cluster check failed: {e}"
+        yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+        return
+
+    # 3. Find or generate k8s manifests
+    k8s_manifests = _find_k8s_manifests(project_root)
+
+    if not k8s_manifests:
+        services = meta.get("services", [])
+        yield {
+            "line": "No k8s/ manifests found. Generating via Gemini AI...",
+            "stage": "k8s_deploy",
+        }
+        try:
+            generated = run_k8s_manifest_generation(
+                project_name=project_name,
+                deployment_name=deployment_name,
+                image_repo=_image_repo,
+                node_port=node_port,
+                services=services,
+                metadata=meta,
+            )
+            if not generated:
+                msg = "ERROR: Gemini could not generate k8s manifests. Check GEMINI_API_KEY."
+                yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+                return
+
+            written = _write_k8s_files(project_root, generated)
+            for rel in written:
+                yield {"line": f"✅ Generated and saved: {rel}", "stage": "k8s_deploy"}
+
+            k8s_manifests = _find_k8s_manifests(project_root)
+        except Exception as e:
+            msg = f"ERROR: k8s manifest generation failed: {e}"
+            yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+            return
+
+    if not k8s_manifests:
+        msg = "ERROR: No k8s manifests available after generation attempt."
+        yield {"line": msg, "stage": "k8s_deploy", "exit_code": 1, "complete": True, "tail": [msg]}
+        return
+
+    # 4. Apply manifests
+    k8s_dir = os.path.join(project_root, "k8s")
+    yield {"line": f"Applying {len(k8s_manifests)} manifest(s) from k8s/ ...", "stage": "k8s_deploy"}
+
+    apply_cmd = ["kubectl", "apply", "-f", k8s_dir, "--validate=false"]
+    yield {"line": f"Running: {' '.join(apply_cmd)}", "stage": "k8s_deploy"}
+
+    last_apply_event: Optional[Dict] = None
+    for event in _stream_command(apply_cmd, cwd=project_root, stage="k8s_deploy"):
+        last_apply_event = event
+        yield event
+
+    if last_apply_event and last_apply_event.get("exit_code", 0) != 0:
+        tail = last_apply_event.get("tail") or []
+        msg = "ERROR: kubectl apply failed. See logs above."
+        yield {"line": msg, "stage": "k8s_deploy", "exit_code": last_apply_event.get("exit_code", 1), "complete": True, "tail": tail + [msg]}
+        return
+
+    yield {"line": "✅ kubectl apply succeeded", "stage": "k8s_deploy"}
+
+    # 5. Wait briefly then check pod status
+    yield {"line": "⏳ Waiting for pods to start (10 seconds)...", "stage": "k8s_deploy"}
+    _time.sleep(10)
+
+    pod_cmd = ["kubectl", "get", "pods", "-l", f"app={deployment_name}", "-o", "wide"]
+    yield {"line": f"Checking pod status: {' '.join(pod_cmd)}", "stage": "k8s_deploy"}
+
+    try:
+        pod_proc = subprocess.run(
+            pod_cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15
+        )
+        stdout = pod_proc.stdout.decode("utf-8", errors="replace").strip()
+        stderr = pod_proc.stderr.decode("utf-8", errors="replace").strip()
+        if stdout:
+            for line in stdout.splitlines():
+                yield {"line": line, "stage": "k8s_deploy"}
+        if stderr:
+            yield {"line": f"[stderr] {stderr}", "stage": "k8s_deploy"}
+    except Exception as e:
+        yield {"line": f"Warning: Could not get pod status: {e}", "stage": "k8s_deploy"}
+
+    # 6. Stream recent events for the deployment
+    events_cmd = ["kubectl", "get", "events", "--sort-by=lastTimestamp", "--field-selector=reason!=SuccessfulCreate"]
+    try:
+        ev_proc = subprocess.run(
+            events_cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15
+        )
+        ev_out = ev_proc.stdout.decode("utf-8", errors="replace").strip()
+        if ev_out:
+            yield {"line": "--- Recent Kubernetes Events ---", "stage": "k8s_deploy"}
+            for line in ev_out.splitlines()[-20:]:
+                yield {"line": line, "stage": "k8s_deploy"}
+    except Exception:
+        pass  # Events are nice-to-have
+
+    yield {
+        "line": f"🚀 Deployment complete! Service exposed on NodePort {node_port}. Access at http://localhost:{node_port}",
+        "stage": "k8s_deploy",
+        "complete": True,
+        "exit_code": 0,
+        "service_url": f"http://localhost:{node_port}",
+        "deployment_name": deployment_name,
+    }

@@ -285,52 +285,72 @@ def cleanup_deployment(deployment_name: str) -> Dict:
 
 
 async def stream_pod_logs(deployment_name: str) -> AsyncGenerator[str, None]:
-    """Streams live pod logs for a deployment using asyncio subprocess."""
+    """
+    Streams live pod logs for a deployment using asyncio subprocess.
+    Includes timestamps, stderr, and heartbeat SSE comments to keep connections alive.
+    """
     # First get the pod name
     pod_status = get_pod_status(deployment_name)
     pod_name = pod_status.get("pod_name")
-    
+
     if not pod_name:
-        yield "data: {\"type\": \"error\", \"message\": \"No pod found for deployment\"}\n\n"
+        yield "data: {\"type\": \"error\", \"message\": \"No pod found for deployment. Is it running?\"}\n\n"
         return
-        
-    yield f"data: {{\"type\": \"info\", \"message\": \"Streaming logs for {pod_name}...\"}}\n\n"
-    
-    # Run kubectl logs -f asynchronously so it doesn't block the thread
+
+    yield f"data: {{\"type\": \"info\", \"message\": \"Streaming logs for pod: {pod_name}\"}}\n\n"
+
+    # Run kubectl logs -f with timestamps
     process = await asyncio.create_subprocess_exec(
-        "kubectl", "logs", "-f", pod_name,
+        "kubectl", "logs", "-f", pod_name, "--timestamps=true",
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        stderr=asyncio.subprocess.PIPE,
     )
-    
+
+    last_heartbeat_time = asyncio.get_event_loop().time()
+
     try:
-        # Read lines asynchronously
         while True:
-            # We must handle both stdout and stderr in real-time, but for simplicity primarily stdout
-            line = await process.stdout.readline()
+            # Use asyncio.wait_for to implement heartbeat while waiting for a line
+            try:
+                line = await asyncio.wait_for(process.stdout.readline(), timeout=15.0)
+            except asyncio.TimeoutError:
+                # Send a heartbeat comment every 15 seconds of silence
+                yield ": heartbeat\n\n"
+                last_heartbeat_time = asyncio.get_event_loop().time()
+                # Check if process ended
+                if process.returncode is not None:
+                    break
+                continue
+
             if not line:
                 break
-            
-            decoded_line = line.decode('utf-8', errors='replace').strip()
-            # Send as Server-Sent Event (SSE)
+
+            decoded_line = line.decode("utf-8", errors="replace").strip()
             yield f"data: {{\"type\": \"log\", \"message\": {json.dumps(decoded_line)}}}\n\n"
-            
+
+            # Opportunistically send heartbeat if a lot of time has passed
+            now = asyncio.get_event_loop().time()
+            if now - last_heartbeat_time > 15:
+                yield ": heartbeat\n\n"
+                last_heartbeat_time = now
+
     except asyncio.CancelledError:
-        # Client disconnected
         process.terminate()
         try:
             await process.wait()
         except Exception:
             pass
         raise
-        
-    # Check if process exited with an error
+
+    # Check stderr for errors
     await process.wait()
-    if process.returncode != 0:
+    if process.returncode is not None and process.returncode != 0:
         err = await process.stderr.read()
-        err_msg = err.decode('utf-8', errors='replace').strip()
+        err_msg = err.decode("utf-8", errors="replace").strip() if err else ""
         if err_msg:
-             yield f"data: {{\"type\": \"error\", \"message\": {json.dumps(err_msg)}}}\n\n"
+            yield f"data: {{\"type\": \"error\", \"message\": {json.dumps(err_msg)}}}\n\n"
+
+    yield "data: {\"type\": \"done\", \"message\": \"Log stream ended\"}\n\n"
 
 
 def diagnose_pod_health(deployment_name: str) -> Dict:
