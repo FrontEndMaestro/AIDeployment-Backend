@@ -19,6 +19,7 @@ from ..services.docker_service import (
     run_project_stream,
     push_image_stream,
     k8s_deploy_stream,
+    _collect_source_files_for_llm,
 )
 
 _ENV_FILE_CANDIDATES = (".env", ".env.local", ".env.production")
@@ -440,6 +441,7 @@ async def docker_chat_handler(
         metadata=metadata,
         dockerfiles=dockerfiles,
         compose_files=compose_files,
+        source_files=_collect_source_files_for_llm(project_root),
         file_tree=file_tree_text,
         user_message=user_message,
         logs=logs,

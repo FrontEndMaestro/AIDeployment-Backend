@@ -345,112 +345,120 @@ def build_project_stream(
     # ---- No compose: build all Dockerfiles ----
     dockerfiles = _find_all_dockerfiles(project_root)
     if not dockerfiles:
-        # Check if we can auto-generate Dockerfiles using the Agent
+        # Always attempt auto-generation — even if services list is empty
         services = (metadata or {}).get("services", [])
-        if services:
-            yield {
-                "line": f"No Dockerfiles found. Auto-generating for {len(services)} detected service(s) via Agent...",
-                "stage": "build",
-            }
-            
-            try:
-                # Collect file tree for context
-                file_tree = _build_file_tree_text(project_root)
-                project_name = os.path.basename(project_root) or "project"
-                
-                # Call Agent in GENERATE_MISSING mode
-                llm_response = run_docker_deploy_chat(
+        yield {
+            "line": "No Dockerfiles found. Auto-generating deployment files via Gemini AI...",
+            "stage": "build",
+        }
+
+        try:
+            file_tree = _build_file_tree_text(project_root)
+            source_files = _collect_source_files_for_llm(project_root)
+            project_name = os.path.basename(project_root) or "project"
+
+            yield {"line": f"Analyzing {len(source_files)} source file(s) for context...", "stage": "build"}
+
+            # Call Agent in GENERATE_MISSING mode
+            llm_response = run_docker_deploy_chat(
+                project_name=project_name,
+                metadata=metadata or {},
+                dockerfiles=[],
+                compose_files=[],
+                source_files=source_files,
+                file_tree=file_tree,
+                user_message=(
+                    "Analyze the source files and generate ALL Docker files needed:\n"
+                    "1. A Dockerfile for every service directory\n"
+                    "2. A docker-compose.yml at the project root\n"
+                    "Use the actual files to detect ports, entry points, and dependencies. "
+                    "Do NOT use placeholders — use real values from the code."
+                ),
+                logs=None,
+                extra_instructions=None,
+                services=services,
+            )
+
+            generated_files, validation_errors = parse_and_validate_generated_docker_response(
+                llm_response,
+                metadata or {},
+                services,
+                require_dockerfiles=True,
+                require_compose=True,
+            )
+
+            if validation_errors:
+                yield {
+                    "line": f"Generated Docker files have {len(validation_errors)} issue(s). Requesting auto-repair...",
+                    "stage": "build",
+                }
+                repair_response = run_docker_deploy_chat(
                     project_name=project_name,
                     metadata=metadata or {},
-                    dockerfiles=[],  # None exist
-                    compose_files=[],  # None exist
+                    dockerfiles=[],
+                    compose_files=[],
+                    source_files=source_files,
                     file_tree=file_tree,
-                    user_message="Generate ALL Docker files: Dockerfile for each service AND docker-compose.yml. Use metadata for ports and commands.",
-                    logs=None,
-                    extra_instructions=None,
+                    user_message=(
+                        "Regenerate complete Docker files. Fix these validation errors:\\n"
+                        + "\\n".join(f"- {err}" for err in validation_errors)
+                    ),
+                    logs=validation_errors,
+                    extra_instructions=f"Previous invalid response:\n{llm_response[:4000]}",
                     services=services,
                 )
-                
                 generated_files, validation_errors = parse_and_validate_generated_docker_response(
-                    llm_response,
+                    repair_response,
                     metadata or {},
                     services,
                     require_dockerfiles=True,
                     require_compose=True,
                 )
 
-                if validation_errors:
-                    yield {
-                        "line": "Generated Docker files failed validation. Asking agent for one corrected response...",
-                        "stage": "build",
-                    }
-                    repair_response = run_docker_deploy_chat(
-                        project_name=project_name,
-                        metadata=metadata or {},
-                        dockerfiles=[],
-                        compose_files=[],
-                        file_tree=file_tree,
-                        user_message=(
-                            "Regenerate complete Docker files. Fix these validation errors exactly:\n"
-                            + "\n".join(f"- {err}" for err in validation_errors)
-                        ),
-                        logs=validation_errors,
-                        extra_instructions=f"Previous invalid response:\n{llm_response[:4000]}",
-                        services=services,
-                    )
-                    generated_files, validation_errors = parse_and_validate_generated_docker_response(
-                        repair_response,
-                        metadata or {},
-                        services,
-                        require_dockerfiles=True,
-                        require_compose=True,
-                    )
-
-                if validation_errors:
-                    msg = "ERROR: Agent did not produce valid Docker files:\n" + "\n".join(
-                        f"- {err}" for err in validation_errors
-                    )
-                    yield {
-                        "line": msg,
-                        "stage": "build",
-                        "exit_code": 1,
-                        "complete": True,
-                        "tail": validation_errors,
-                    }
-                    return
-
-                written_files = _write_generated_files(project_root, generated_files)
-                for rel_path in written_files:
-                    yield {
-                        "line": f"Generated {rel_path}",
-                        "stage": "build",
-                    }
-
-                if "docker-compose.yml" in generated_files:
-                    yield {
-                        "line": "Using generated docker-compose.yml for build...",
-                        "stage": "build",
-                    }
-                    cmd = ["docker", "compose", "-f", "docker-compose.yml", "build"]
-                    for event in _stream_command(cmd, cwd=project_root, stage="build"):
-                        yield event
-                    return
-
-                dockerfiles = _find_all_dockerfiles(project_root)
-                
-            except Exception as e:
+            if validation_errors and not generated_files:
+                msg = (
+                    "ERROR: Agent did not produce valid Docker files:\n"
+                    + "\n".join(f"- {err}" for err in validation_errors)
+                )
                 yield {
-                    "line": f"ERROR: Auto-generation failed: {e}",
+                    "line": msg,
                     "stage": "build",
                     "exit_code": 1,
                     "complete": True,
-                    "tail": [str(e)],
+                    "tail": validation_errors,
                 }
                 return
-        
-        # If still no dockerfiles after trying to generate
+
+            written_files = _write_generated_files(project_root, generated_files)
+            for rel_path in written_files:
+                yield {"line": f"\u2705 Generated {rel_path}", "stage": "build"}
+
+            # If a compose file was generated, use it to build
+            compose_generated = any(
+                "docker-compose" in k for k in generated_files
+            )
+            if compose_generated:
+                yield {"line": "Using generated docker-compose.yml for build...", "stage": "build"}
+                cmd = ["docker", "compose", "-f", "docker-compose.yml", "build"]
+                for event in _stream_command(cmd, cwd=project_root, stage="build"):
+                    yield event
+                return
+
+            dockerfiles = _find_all_dockerfiles(project_root)
+
+        except Exception as e:
+            yield {
+                "line": f"ERROR: Auto-generation failed: {e}",
+                "stage": "build",
+                "exit_code": 1,
+                "complete": True,
+                "tail": [str(e)],
+            }
+            return
+
+        # If still no dockerfiles after generation
         if not dockerfiles:
-            msg = "ERROR: No docker-compose.yml and no Dockerfiles found. Auto-generation could not produce valid files."
+            msg = "ERROR: Auto-generation did not produce any buildable files. Please check the project structure."
             yield {
                 "line": msg,
                 "stage": "build",
@@ -1025,6 +1033,51 @@ def _build_file_tree_text(project_root: str, max_depth: int = 4, max_entries: in
     
     walk(project_root, 0)
     return "\n".join(lines)
+
+
+def _collect_source_files_for_llm(project_root: str, max_files: int = 6, max_bytes: int = 40_000) -> List[Dict]:
+    """
+    Collect key source files to give the LLM concrete context when generating
+    Docker files. Prefers entry points, manifests, and small config files.
+    Returns: [{path: str, content: str}]
+    """
+    priority_names = {
+        "package.json", "requirements.txt", "setup.py", "pyproject.toml",
+        "go.mod", "pom.xml", "build.gradle", "Gemfile", "composer.json",
+        "main.py", "app.py", "server.py", "index.js", "server.js", "app.js",
+        "main.go", "App.tsx", "index.ts",
+    }
+    priority_exts = {".py", ".js", ".ts", ".go", ".java", ".rb"}
+    skip_dirs = {"node_modules", "__pycache__", ".git", "venv", ".venv", "dist", "build", ".next"}
+
+    found_priority: List[Dict] = []
+    found_other: List[Dict] = []
+    total_bytes = 0
+
+    for root, dirs, files in os.walk(project_root):
+        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
+        for name in files:
+            if total_bytes >= max_bytes or (len(found_priority) + len(found_other)) >= max_files * 3:
+                break
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, project_root).replace("\\", "/")
+            try:
+                size = os.path.getsize(full)
+                if size == 0 or size > 60_000:
+                    continue
+                content = open(full, "r", encoding="utf-8", errors="ignore").read()
+                entry = {"path": rel, "content": content[:8000]}
+                if name in priority_names:
+                    found_priority.append(entry)
+                    total_bytes += min(len(content), 8000)
+                elif any(name.endswith(ext) for ext in priority_exts):
+                    found_other.append(entry)
+                    total_bytes += min(len(content), 8000)
+            except Exception:
+                pass
+
+    combined = found_priority + found_other
+    return combined[:max_files]
 
 
 # --------- RUN: compose-aware runner ---------
