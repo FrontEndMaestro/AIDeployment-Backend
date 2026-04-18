@@ -1238,6 +1238,78 @@ def _compose_build_context(value: object) -> str:
     return "."
 
 
+def remap_generated_docker_paths(
+    files: Dict[str, str],
+    metadata: Dict,
+    services: Optional[List[Dict]],
+) -> Dict[str, str]:
+    """
+    Fix common LLM path errors before validation:
+    1. Remap Dockerfiles placed at the wrong path to match service definitions
+    2. Fix docker-compose build contexts to match service paths
+    """
+    if not files:
+        return files
+
+    _, normalized_services = _normalize_ports_v2_contract(
+        dict(metadata or {}), list(services or [])
+    )
+    app_services = [svc for svc in normalized_services if _is_app_service(svc)]
+    if not app_services:
+        return files
+
+    new_files = dict(files)
+
+    # ── 1. Remap misplaced Dockerfiles ─────────────────────────────────
+    expected = {_expected_dockerfile_path(svc): svc for svc in app_services}
+    gen_dockerfiles = [
+        p for p in new_files if os.path.basename(p).lower() == "dockerfile"
+    ]
+    misplaced = [p for p in gen_dockerfiles if p not in expected]
+    missing = [p for p in expected if p not in gen_dockerfiles]
+
+    if misplaced and missing and len(misplaced) == len(missing):
+        for old, new in zip(misplaced, missing):
+            new_files[new] = new_files.pop(old)
+            print(f"🔧 Path remap: {old} → {new}")
+
+    # ── 2. Fix compose build contexts ──────────────────────────────────
+    compose_key = _compose_path(new_files)
+    if compose_key:
+        try:
+            import yaml
+            data = yaml.safe_load(new_files[compose_key])
+            if isinstance(data, dict) and isinstance(data.get("services"), dict):
+                svc_map = {
+                    str(s.get("name", "")).strip(): _clean_path(s.get("path", "."))
+                    for s in app_services
+                }
+                changed = False
+                for name, expected_ctx in svc_map.items():
+                    cs = data["services"].get(name)
+                    if not isinstance(cs, dict):
+                        continue
+                    want = f"./{expected_ctx}" if expected_ctx != "." else "."
+                    bv = cs.get("build")
+                    if isinstance(bv, str):
+                        if _clean_path(bv) != expected_ctx:
+                            cs["build"] = want
+                            changed = True
+                    elif isinstance(bv, dict):
+                        if _clean_path(bv.get("context", ".")) != expected_ctx:
+                            bv["context"] = want
+                            changed = True
+                if changed:
+                    new_files[compose_key] = yaml.dump(
+                        data, default_flow_style=False, sort_keys=False
+                    )
+                    print("🔧 Fixed compose build contexts")
+        except Exception:
+            pass
+
+    return new_files
+
+
 def _compose_port_matches(value: object, runtime_port: object, container_port: object) -> bool:
     expected = f"{runtime_port}:{container_port}"
     if isinstance(value, str):
@@ -1439,6 +1511,7 @@ def parse_and_validate_generated_docker_response(
     require_compose: bool = True,
 ) -> tuple[Dict[str, str], List[str]]:
     files = parse_generated_docker_files(response_text)
+    files = remap_generated_docker_paths(files, metadata, services)
     errors = validate_generated_docker_files(
         files=files,
         metadata=metadata,

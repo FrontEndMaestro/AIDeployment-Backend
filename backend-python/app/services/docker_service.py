@@ -481,7 +481,7 @@ def build_project_stream(
         if len(path_parts) == 1:
             service_name = "root"
         else:
-            service_name = path_parts[-2] or "root"
+            service_name = (path_parts[-2] or "root").lower()
 
         # e.g. abdul/devops-autopilot-<project_id>-server:latest
         service_image = f"{image_repo}-{service_name}:latest"
@@ -1527,7 +1527,7 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
                     }
                     source_image = inferred
 
-                dest_image = f"{image_repo}-{svc_name}:latest"
+                dest_image = f"{image_repo}-{svc_name.lower()}:latest"
                 yield from _tag_and_push(source_image, dest_image, cwd=compose_dir)
             return
 
@@ -1572,7 +1572,7 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
                     }
                     continue
 
-            dest_image = f"{image_repo}-{svc_name}:latest"
+            dest_image = f"{image_repo}-{svc_name.lower()}:latest"
             yield from _tag_and_push(source_image, dest_image, cwd=compose_dir)
         return
 
