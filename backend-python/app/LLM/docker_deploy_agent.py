@@ -70,6 +70,33 @@ Rules:
 - ALWAYS add ENV PORT={service.container_port} before EXPOSE to provide a fallback if .env is missing.
 - COPY paths are relative to build context (COPY package*.json ./ NOT COPY backend/package*.json ./)
 
+--- PYTHON BACKEND (single-stage, pip-optimized) ---
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --timeout 120 --retries 5 -r requirements.txt
+COPY . .
+ENV PORT={service.container_port}
+EXPOSE {service.container_port}
+CMD ["python", "{entry_point}"]
+
+Python Rules (CRITICAL for performance — MUST follow exactly):
+- ALWAYS copy requirements.txt FIRST, then run pip, THEN copy the rest of the code.
+  This allows Docker layer cache to skip pip install on rebuilds when requirements.txt is unchanged.
+- ALWAYS use: pip install --no-cache-dir --timeout 120 --retries 5 -r requirements.txt
+  --no-cache-dir: prevents pip from wasting time writing to disk cache inside the container
+  --timeout 120:  prevents silent hangs on slow PyPI mirrors (default is 15s which is too short)
+  --retries 5:    auto-retries on flaky network connections during package download
+- Use python:3.11-slim (NOT python:3.11 full image — slim is 4x smaller and faster to pull)
+- For poetry projects: RUN pip install poetry && poetry config virtualenvs.create false && poetry install --no-interaction
+- For pipenv projects: RUN pip install pipenv && pipenv install --system --deploy
+- Entry point priority: service.entry_point -> ["python", "{entry_point}"], else examine requirements.txt:
+  FastAPI/uvicorn -> ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{container_port}"]
+  Flask           -> ["python", "app.py"] or ["flask", "run", "--host", "0.0.0.0", "--port", "{container_port}"]
+  Django          -> ["python", "manage.py", "runserver", "0.0.0.0:{container_port}"]
+- Do NOT use CMD ["python", "-m", "uvicorn"] in shell form — always use exec (JSON array) form.
+
+
 --- FRONTEND (multi-stage REQUIRED) ---
 FROM {service.runtime or RUNTIME} AS builder
 WORKDIR /app
