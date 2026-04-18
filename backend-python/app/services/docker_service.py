@@ -1430,12 +1430,59 @@ def run_project_stream(
         or host_port
     )
 
+    # ── Port conflict resolution ───────────────────────────────────────────────
+    # Check if the host port is already in use. If a Docker container owns it,
+    # stop that container. If a non-Docker process owns it, find the next free port.
+    def _port_in_use(port: int) -> bool:
+        """Returns True if something is already listening on the given host port."""
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.3)
+            return s.connect_ex(("127.0.0.1", port)) == 0
+
+    def _find_container_on_port(port: int) -> Optional[str]:
+        """Returns container ID using the given host port, or None."""
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "--format", "{{.ID}}\t{{.Ports}}"],
+                capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.splitlines():
+                parts = line.split("\t", 1)
+                if len(parts) == 2 and f":{port}->" in parts[1]:
+                    return parts[0].strip()
+        except Exception:
+            pass
+        return None
+
+    resolved_host_port = host_port
+    if _port_in_use(host_port):
+        container_id = _find_container_on_port(host_port)
+        if container_id:
+            yield {"line": f"⚠️  Port {host_port} is used by container {container_id[:12]}. Stopping it...", "stage": "run"}
+            subprocess.run(["docker", "stop", container_id], capture_output=True, timeout=15)
+            yield {"line": f"✅ Stopped container {container_id[:12]}. Port {host_port} is now free.", "stage": "run"}
+        else:
+            # Non-Docker process on this port — find next free port
+            for offset in range(1, 11):
+                candidate = host_port + offset
+                if not _port_in_use(candidate):
+                    resolved_host_port = candidate
+                    yield {
+                        "line": f"⚠️  Port {host_port} is in use by a system process. Using port {resolved_host_port} instead.",
+                        "stage": "run"
+                    }
+                    break
+            else:
+                yield {"line": f"❌ Could not find a free port near {host_port}. Please free port {host_port} and retry.", "stage": "run", "exit_code": 1, "complete": True}
+                return
+
     cmd = [
         "docker",
         "run",
         "--rm",
         "-p",
-        f"{host_port}:{container_port}",
+        f"{resolved_host_port}:{container_port}",
         "--add-host", "host.docker.internal:host-gateway",  # Allow access to host services
     ]
 
@@ -1452,11 +1499,12 @@ def run_project_stream(
     yield {
         "line": (
             f"Running single container {image_tag} with port mapping "
-            f"Host:{host_port} -> Container:{container_port}"
+            f"Host:{resolved_host_port} -> Container:{container_port}"
         ),
         "stage": "run",
     }
     yield from _stream_command(cmd, cwd=".", stage="run")
+
 
 
 
