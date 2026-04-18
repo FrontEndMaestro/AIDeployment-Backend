@@ -14,6 +14,7 @@ GEMINI_API_KEY = settings.GEMINI_API_KEY
 GEMINI_API_BASE = settings.GEMINI_API_BASE.rstrip("/")
 GEMINI_MODEL_NAME = settings.GEMINI_MODEL_NAME
 GEMINI_MAX_OUTPUT_TOKENS = settings.GEMINI_MAX_OUTPUT_TOKENS
+GEMINI_FALLBACK_MODEL_NAME = settings.GEMINI_FALLBACK_MODEL_NAME
 
 
 def _messages_to_prompt(messages: List[Dict[str, str]]) -> str:
@@ -200,59 +201,80 @@ def call_llama_stream(messages: List[Dict[str, str]], custom_options: Optional[D
         yield {"token": f"ERROR: LLM stream failed - {str(e)}", "done": True, "error": True}
 
 
+def _call_gemini_once(
+    messages: List[Dict[str, str]],
+    model_name: str,
+    custom_options: Optional[Dict] = None,
+) -> tuple[str, int]:
+    """
+    Single Gemini API call. Returns (response_text, http_status_code).
+    On success http_status_code is 200; on error, the response_text starts with 'ERROR:'.
+    """
+    system_text, user_text = _split_messages_for_gemini(messages)
+    model_path = model_name if model_name.startswith("models/") else f"models/{model_name}"
+    url = f"{GEMINI_API_BASE}/{model_path}:generateContent"
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": user_text}],
+            }
+        ],
+        "generationConfig": _gemini_generation_config(custom_options),
+    }
+    if system_text:
+        payload["systemInstruction"] = {"parts": [{"text": system_text}]}
+
+    resp = requests.post(
+        url,
+        params={"key": GEMINI_API_KEY},
+        headers={"Content-Type": "application/json"},
+        json=payload,
+        timeout=LLM_TIMEOUT,
+    )
+
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+
+    if resp.status_code >= 400:
+        detail = (data.get("error") or {}).get("message") or resp.text[:500]
+        return f"ERROR: Gemini HTTP {resp.status_code} - {detail}", resp.status_code
+
+    candidates = data.get("candidates") or []
+    if not candidates:
+        feedback = data.get("promptFeedback") or {}
+        return f"ERROR: Gemini returned no candidates. Feedback: {feedback}", resp.status_code
+
+    parts = ((candidates[0].get("content") or {}).get("parts") or [])
+    text = "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
+    if not text.strip():
+        finish_reason = candidates[0].get("finishReason")
+        return f"ERROR: Gemini returned an empty response. Finish reason: {finish_reason}", resp.status_code
+    return text, resp.status_code
+
+
 def call_gemini(messages: List[Dict[str, str]], custom_options: Optional[Dict] = None) -> str:
     """
     Call Gemini for Docker generation. This is intentionally separate from
     call_llama so Terraform and other Ollama paths keep their existing behavior.
+
+    If the primary model returns 429 or 503 and a fallback model is configured,
+    the request is retried once with the fallback model.
     """
     if not GEMINI_API_KEY:
         return "ERROR: GEMINI_API_KEY is not set. Set it in backend-python/.env to use Gemini."
 
     try:
-        system_text, user_text = _split_messages_for_gemini(messages)
-        model_path = GEMINI_MODEL_NAME if GEMINI_MODEL_NAME.startswith("models/") else f"models/{GEMINI_MODEL_NAME}"
-        url = f"{GEMINI_API_BASE}/{model_path}:generateContent"
+        result, status = _call_gemini_once(messages, GEMINI_MODEL_NAME, custom_options)
 
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": user_text}],
-                }
-            ],
-            "generationConfig": _gemini_generation_config(custom_options),
-        }
-        if system_text:
-            payload["systemInstruction"] = {"parts": [{"text": system_text}]}
+        if status in (429, 503) and GEMINI_FALLBACK_MODEL_NAME and GEMINI_FALLBACK_MODEL_NAME != GEMINI_MODEL_NAME:
+            print(f"⚠️ Gemini primary model ({GEMINI_MODEL_NAME}) returned {status}. Retrying with fallback ({GEMINI_FALLBACK_MODEL_NAME})...")
+            result, status = _call_gemini_once(messages, GEMINI_FALLBACK_MODEL_NAME, custom_options)
 
-        resp = requests.post(
-            url,
-            params={"key": GEMINI_API_KEY},
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            timeout=LLM_TIMEOUT,
-        )
-
-        try:
-            data = resp.json()
-        except ValueError:
-            data = {}
-
-        if resp.status_code >= 400:
-            detail = (data.get("error") or {}).get("message") or resp.text[:500]
-            return f"ERROR: Gemini HTTP {resp.status_code} - {detail}"
-
-        candidates = data.get("candidates") or []
-        if not candidates:
-            feedback = data.get("promptFeedback") or {}
-            return f"ERROR: Gemini returned no candidates. Feedback: {feedback}"
-
-        parts = ((candidates[0].get("content") or {}).get("parts") or [])
-        text = "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
-        if not text.strip():
-            finish_reason = candidates[0].get("finishReason")
-            return f"ERROR: Gemini returned an empty response. Finish reason: {finish_reason}"
-        return text
+        return result
     except requests.exceptions.ConnectionError as e:
         return f"ERROR: Cannot connect to Gemini API at {GEMINI_API_BASE}. Details: {str(e)}"
     except requests.exceptions.Timeout:

@@ -149,6 +149,13 @@ def _write_generated_files(project_root: str, files: Dict[str, str]) -> List[str
     return written
 
 
+def _generated_file_location(project_root: str, rel_path: str) -> str:
+    """Format a generated file path for log output."""
+    clean_rel = rel_path.replace("\\", "/").lstrip("/")
+    abs_path = os.path.abspath(os.path.join(project_root, clean_rel))
+    return f"{clean_rel} -> {abs_path}"
+
+
 # --------- core command streamer (SSE-compatible) ---------
 
 
@@ -503,7 +510,10 @@ def build_project_stream(
 
             written_files = _write_generated_files(project_root, generated_files)
             for rel_path in written_files:
-                yield {"line": f"\u2705 Generated {rel_path}", "stage": "build"}
+                yield {
+                    "line": f"\u2705 Gemini wrote {_generated_file_location(project_root, rel_path)}",
+                    "stage": "build",
+                }
 
             # If a compose file was generated, use it to build
             compose_generated = any(
@@ -1294,7 +1304,7 @@ def run_project_stream(
                 with open(compose_path, "w", encoding="utf-8") as f:
                     f.write(compose_yaml + "\n")
                 yield {
-                    "line": f"Wrote generated docker-compose.yml to {compose_path}.",
+                    "line": f"Gemini wrote docker-compose.yml -> {compose_path}.",
                     "stage": "run",
                 }
             except Exception as e:
@@ -2109,7 +2119,10 @@ def k8s_deploy_stream(
 
             written = _write_k8s_files(project_root, generated)
             for rel in written:
-                yield {"line": f"✅ Generated and saved: {rel}", "stage": "k8s_deploy"}
+                yield {
+                    "line": f"Gemini wrote {_generated_file_location(project_root, rel)}",
+                    "stage": "k8s_deploy",
+                }
 
             k8s_manifests = _find_k8s_manifests(project_root)
         except Exception as e:

@@ -606,7 +606,11 @@ async def write_project_file_handler(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Unable to write file: {exc}")
 
-    return {"success": True, "path": relative_path.replace("\\", "/")}
+    return {
+        "success": True,
+        "path": relative_path.replace("\\", "/"),
+        "location": normalized,
+    }
 
 
 async def create_project_folder_handler(

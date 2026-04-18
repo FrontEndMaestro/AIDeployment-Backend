@@ -586,7 +586,7 @@ export function streamDockerChat(
  */
 export function streamAWSTerraform(
   projectId: string,
-  operation: 'apply' | 'destroy' | 'scale-zero',
+  operation: 'apply' | 'destroy' | 'scale-zero' | 'scale-up',
   onEvent: (event: { type: string; message: string; stage?: string }) => void,
   onComplete: (outputs?: Record<string, any>) => void,
   onError: (error: Error) => void
@@ -629,6 +629,8 @@ export function streamAWSTerraform(
 
     const decoder = new TextDecoder();
     let buffer = "";
+    let completed = false;
+    let failed = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -644,8 +646,10 @@ export function streamAWSTerraform(
             const data = JSON.parse(line.slice(6));
             
             if (data.type === "complete") {
+              completed = true;
               onComplete(data.outputs);
             } else if (data.type === "error") {
+              failed = true;
               onError(new Error(data.message));
             } else {
               onEvent(data);
@@ -656,8 +660,10 @@ export function streamAWSTerraform(
         }
       }
     }
-    
-    onComplete();
+
+    if (!completed && !failed) {
+      onComplete();
+    }
   }).catch(onError);
 
   // Return a dummy EventSource for API compatibility

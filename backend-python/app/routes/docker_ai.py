@@ -190,8 +190,11 @@ async def docker_chat_stream(
         # Write any generated files to the project directory
         for file_path, content in files.items():
             try:
-                await write_project_file_handler(project_id, current_user, file_path, content)
-                print(f"✅ Auto-Healing: Rewrote {file_path}")
+                result = await write_project_file_handler(project_id, current_user, file_path, content)
+                print(
+                    "✅ Auto-Healing: Rewrote "
+                    f"{result.get('path', file_path)} -> {result.get('location', file_path)}"
+                )
             except Exception as e:
                 print(f"❌ Auto-Healing failed to write {file_path}: {e}")
                 

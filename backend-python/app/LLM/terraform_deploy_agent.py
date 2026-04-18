@@ -8,18 +8,18 @@ on a single EC2 t2.micro instance using docker-compose (no ALB/ELB, no ECS).
 import os
 from typing import Dict, List, Optional
 
-from .llm_client import call_llama, call_llama_stream
+from .llm_client import call_gemini, call_gemini_stream
 
 # System prompt for Terraform generation - EC2 Free Tier Version
 TERRAFORM_DEPLOY_SYSTEM_PROMPT = """You generate Terraform for deploying Docker containers to AWS EC2 (Free Tier).
 
 ## TASK
-Generate a complete `main.tf` that deploys services to a single EC2 t3.micro instance.
+Generate a complete `main.tf` that deploys services to a single EC2 t2.micro instance.
 
 ## CRITICAL RULES (MUST FOLLOW)
 1. ALWAYS include: terraform { required_providers { aws = { source = "hashicorp/aws", version = "~> 5.0" } } }
 2. ALWAYS include: provider "aws" { region = var.aws_region }
-3. ALWAYS use data "aws_ami" to get Amazon Linux 2 AMI - NEVER hardcode AMI IDs
+3. ALWAYS use data "aws_ami" to get Amazon Linux 2023 AMI - NEVER hardcode AMI IDs
 4. Declare ONLY 3 variables with hardcoded defaults: project_name, aws_region, docker_repo_prefix
 5. Use vpc_security_group_ids = [aws_security_group.X.id] NOT security_groups
 6. Add map_public_ip_on_launch = true to subnet
@@ -27,6 +27,7 @@ Generate a complete `main.tf` that deploys services to a single EC2 t3.micro ins
 8. For availability_zone use: "${var.aws_region}a"
 9. In user_data heredoc, use 'COMPOSE' for inner delimiter
 10. HARDCODE all values in docker-compose.yml - NO variable interpolation
+11. Include docker login using only DOCKER_USERNAME and DOCKER_PASSWORD placeholders; the backend replaces them before writing main.tf
 
 ## REQUIRED STRUCTURE (in this order)
 1. terraform { required_providers { aws } }
@@ -34,23 +35,24 @@ Generate a complete `main.tf` that deploys services to a single EC2 t3.micro ins
 3. variable "project_name" { default = "..." }
 4. variable "aws_region" { default = "..." }
 5. variable "docker_repo_prefix" { default = "..." }
-6. data "aws_ami" "amazon_linux_2" { most_recent = true, owners = ["amazon"], filter for amzn2-ami-hvm-*-x86_64-gp2 }
+6. data "aws_ami" "amazon_linux" { most_recent = true, owners = ["amazon"], filter for al2023-ami-*-x86_64 }
 7. aws_vpc, aws_internet_gateway, aws_subnet (map_public_ip_on_launch = true), aws_route_table, aws_route_table_association
 8. aws_security_group (ingress: 22, 80, 443, 3000-5000; egress: all)
-9. aws_instance with ami = data.aws_ami.amazon_linux_2.id and vpc_security_group_ids
+9. aws_instance with instance_type = "t2.micro", ami = data.aws_ami.amazon_linux.id and vpc_security_group_ids
 10. outputs
 
 ## EXACT user_data FORMAT
 ```
 user_data = <<-EOF
 #!/bin/bash
-yum update -y
-amazon-linux-extras install docker -y
-service docker start
+dnf update -y
+dnf install -y docker
+systemctl start docker
+systemctl enable docker
 usermod -a -G docker ec2-user
-chkconfig docker on
 curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
+echo "DOCKER_PASSWORD" | docker login -u DOCKER_USERNAME --password-stdin
 mkdir -p /home/ec2-user/app
 cat > /home/ec2-user/app/docker-compose.yml << 'COMPOSE'
 services:
@@ -164,7 +166,7 @@ def build_terraform_message(
         "=== INSTRUCTIONS ===",
         "Generate a complete main.tf file with:",
         "1. VPC, Subnets, Security Groups",
-        "2. Single EC2 t3.micro running docker-compose (no ALB/ELB, no ECS)",
+        "2. Single EC2 t2.micro running docker-compose (no ALB/ELB, no ECS)",
     ])
     
     if existing_compose:
@@ -227,7 +229,7 @@ def run_terraform_deploy_chat(
     print(f"Message (first 500 chars):\n{message[:500]}...")
     print("=" * 40)
     
-    response = call_llama([
+    response = call_gemini([
         {"role": "system", "content": TERRAFORM_DEPLOY_SYSTEM_PROMPT},
         {"role": "user", "content": message},
     ])
@@ -265,7 +267,7 @@ def run_terraform_deploy_chat_stream(
     print(f"Project: {project_name}")
     print(f"Services: {[s.get('name') for s in services]}")
     
-    for chunk in call_llama_stream([
+    for chunk in call_gemini_stream([
         {"role": "system", "content": TERRAFORM_DEPLOY_SYSTEM_PROMPT},
         {"role": "user", "content": message},
     ]):
@@ -393,7 +395,7 @@ Return ONLY the HCL code, no explanations."""
     print(f"Error (first 500 chars): {error_output[:500]}...")
     print("=" * 40)
     
-    response = call_llama([
+    response = call_gemini([
         {"role": "system", "content": TERRAFORM_FIX_SYSTEM_PROMPT},
         {"role": "user", "content": message},
     ])
@@ -427,7 +429,7 @@ Return ONLY the HCL code, no explanations."""
     print(f"\n=== DEBUG: STREAMING TERRAFORM FIX ===")
     print(f"Project: {project_name}")
     
-    for chunk in call_llama_stream([
+    for chunk in call_gemini_stream([
         {"role": "system", "content": TERRAFORM_FIX_SYSTEM_PROMPT},
         {"role": "user", "content": message},
     ]):

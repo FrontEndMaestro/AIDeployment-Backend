@@ -10,6 +10,7 @@ Provides handlers for:
 """
 
 import os
+import re
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
@@ -26,6 +27,66 @@ from ..LLM.terraform_deploy_agent import (
     fix_terraform_error,
 )
 from ..services.aws_service import AWSDeploymentService, verify_aws_credentials
+from ..utils.detector import find_project_root
+
+
+def _shell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _inject_docker_credentials(terraform_code: str) -> str:
+    """
+    Replace Gemini's Docker login placeholders with configured Docker Hub credentials.
+    Only touches generated docker login lines/placeholders before main.tf is written.
+    """
+    username = settings.DOCKER_HUB_USERNAME or os.getenv("DOCKER_HUB_USERNAME")
+    password = settings.DOCKER_HUB_PASSWORD or os.getenv("DOCKER_HUB_PASSWORD")
+    has_placeholders = "DOCKER_USERNAME" in terraform_code or "DOCKER_PASSWORD" in terraform_code
+
+    if has_placeholders and not (username and password):
+        raise HTTPException(
+            status_code=400,
+            detail="Docker Hub credentials are required to replace Terraform docker login placeholders.",
+        )
+    if not (username and password):
+        return terraform_code
+
+    login_line = (
+        f"printf '%s\\n' {_shell_single_quote(password)} "
+        f"| docker login -u {_shell_single_quote(username)} --password-stdin"
+    )
+    terraform_code = re.sub(
+        r"^\s*echo\s+[\"']?DOCKER_PASSWORD[\"']?\s*\|\s*docker\s+login\s+-u\s+[\"']?DOCKER_USERNAME[\"']?\s+--password-stdin\s*$",
+        login_line,
+        terraform_code,
+        flags=re.MULTILINE,
+    )
+    return (
+        terraform_code
+        .replace('"DOCKER_PASSWORD"', _shell_single_quote(password))
+        .replace("'DOCKER_PASSWORD'", _shell_single_quote(password))
+        .replace("DOCKER_PASSWORD", _shell_single_quote(password))
+        .replace('"DOCKER_USERNAME"', _shell_single_quote(username))
+        .replace("'DOCKER_USERNAME'", _shell_single_quote(username))
+        .replace("DOCKER_USERNAME", _shell_single_quote(username))
+    )
+
+
+def _resolve_project_root(project: Dict, detail: str = "Project path not found") -> str:
+    extracted_path = project.get("extracted_path")
+    if not extracted_path:
+        raise HTTPException(status_code=400, detail=detail)
+    real_path = os.path.abspath(extracted_path)
+    if not os.path.exists(real_path):
+        raise HTTPException(status_code=400, detail=detail)
+    return find_project_root(real_path)
+
+
+def _optional_project_root(project: Dict) -> Optional[str]:
+    try:
+        return _resolve_project_root(project)
+    except HTTPException:
+        return None
 
 
 def get_compose_and_env_for_terraform(extracted_path: str, services: List[Dict]) -> Dict[str, Any]:
@@ -109,10 +170,12 @@ async def check_aws_prerequisites(project_id: str, current_user: dict) -> Dict[s
         issues.append("Terraform CLI not found. Please install Terraform.")
     
     # Check if docker-compose.yml exists (Docker deployment must be done first)
-    extracted_path = project.get("extracted_path", "")
-    compose_path = os.path.join(extracted_path, "docker-compose.yml") if extracted_path else ""
+    project_root = _optional_project_root(project)
+    compose_path = os.path.join(project_root, "docker-compose.yml") if project_root else ""
     docker_compose_exists = os.path.exists(compose_path) if compose_path else False
-    if not docker_compose_exists:
+    if not project_root:
+        issues.append("Extracted project files not found")
+    elif not docker_compose_exists:
         issues.append("Run Docker deployment first to generate docker-compose.yml")
     
     return {
@@ -122,7 +185,7 @@ async def check_aws_prerequisites(project_id: str, current_user: dict) -> Dict[s
         "aws_region": aws_creds.get("region", "us-east-1"),
         "docker_push_success": docker_push_success,
         "docker_hub_username": settings.DOCKER_HUB_USERNAME or "",
-        "terraform_exists": os.path.exists(os.path.join(project.get("extracted_path", ""), "infra", "main.tf")) if project.get("extracted_path") else False,
+        "terraform_exists": os.path.exists(os.path.join(project_root, "infra", "main.tf")) if project_root else False,
         "aws_deployment_status": project.get("aws_deployment_status", "not_deployed"),
     }
 
@@ -158,17 +221,14 @@ async def generate_terraform_handler(
         
         # Extract project info
         project_name = project.get("project_name", "app").replace(" ", "-").lower()
-        extracted_path = project.get("extracted_path")
+        project_root = _resolve_project_root(project, detail="Extracted project files not found")
         metadata = project.get("metadata", {})
-        
-        if not extracted_path or not os.path.exists(extracted_path):
-            raise HTTPException(status_code=400, detail="Extracted project files not found")
         
         # Build services list from metadata
         services = _build_services_from_metadata(metadata)
         
         # Get environment variables for each service
-        service_env_vars = get_service_env_vars_for_terraform(extracted_path, services)
+        service_env_vars = get_service_env_vars_for_terraform(project_root, services)
         
         # Merge any extra env vars from user
         extra_env = aws_config.get("extra_env", {})
@@ -180,7 +240,7 @@ async def generate_terraform_handler(
                 env_dict.update(extra_env)
         
         # Read existing docker-compose.yml and .env files (from Docker deployment)
-        compose_data = get_compose_and_env_for_terraform(extracted_path, services)
+        compose_data = get_compose_and_env_for_terraform(project_root, services)
         
         # Generate Terraform via LLM
         print(f"🏗️ Generating Terraform for project: {project_name}")
@@ -203,10 +263,11 @@ async def generate_terraform_handler(
                 status_code=500,
                 detail=f"LLM failed to generate Terraform: {terraform_code[:200]}"
             )
+        terraform_code = _inject_docker_credentials(terraform_code)
         
         # Write Terraform to project's infra directory
         terraform_path = getattr(settings, "TERRAFORM_PATH", "terraform")
-        aws_service = AWSDeploymentService(extracted_path, terraform_path)
+        aws_service = AWSDeploymentService(project_root, terraform_path)
         tf_file_path = aws_service.write_terraform(terraform_code)
         
         # Update project with terraform status
@@ -221,14 +282,14 @@ async def generate_terraform_handler(
                 },
                 "$push": {
                     "logs": {
-                        "message": "Terraform configuration generated",
+                        "message": f"Terraform configuration generated: main.tf -> {tf_file_path}",
                         "timestamp": datetime.now()
                     }
                 }
             }
         )
         
-        print(f"✅ Terraform generated: {tf_file_path}")
+        print(f"Terraform generated: main.tf -> {tf_file_path}")
         
         return {
             "status": "generated",
@@ -266,13 +327,11 @@ async def apply_terraform_handler(
     if project.get("user_id") != str(current_user["_id"]):
         raise HTTPException(status_code=403, detail="Access denied: Not project owner")
     
-    extracted_path = project.get("extracted_path")
-    if not extracted_path or not os.path.exists(extracted_path):
-        raise HTTPException(status_code=400, detail="Project path not found")
+    project_root = _resolve_project_root(project)
     
     # Initialize AWS service
     terraform_path = getattr(settings, "TERRAFORM_PATH", "terraform")
-    aws_service = AWSDeploymentService(extracted_path, terraform_path)
+    aws_service = AWSDeploymentService(project_root, terraform_path)
     
     # Update status
     await collection.update_one(
@@ -348,12 +407,10 @@ async def destroy_terraform_handler(
     if project.get("user_id") != str(current_user["_id"]):
         raise HTTPException(status_code=403, detail="Access denied: Not project owner")
     
-    extracted_path = project.get("extracted_path")
-    if not extracted_path:
-        raise HTTPException(status_code=400, detail="Project path not found")
+    project_root = _resolve_project_root(project)
     
     terraform_path = getattr(settings, "TERRAFORM_PATH", "terraform")
-    aws_service = AWSDeploymentService(extracted_path, terraform_path)
+    aws_service = AWSDeploymentService(project_root, terraform_path)
     
     await collection.update_one(
         {"_id": ObjectId(project_id)},
@@ -398,9 +455,9 @@ async def scale_to_zero_handler(project_id: str, current_user: dict):
     if project.get("user_id") != str(current_user["_id"]):
         raise HTTPException(status_code=403, detail="Access denied")
     
-    extracted_path = project.get("extracted_path")
+    project_root = _resolve_project_root(project)
     terraform_path = getattr(settings, "TERRAFORM_PATH", "terraform")
-    aws_service = AWSDeploymentService(extracted_path, terraform_path)
+    aws_service = AWSDeploymentService(project_root, terraform_path)
     
     async def event_generator():
         import json
@@ -409,6 +466,39 @@ async def scale_to_zero_handler(project_id: str, current_user: dict):
             if event.get("exit_code") == 0:
                 await _update_aws_status(project_id, "scaled_to_zero")
     
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+async def scale_up_handler(project_id: str, current_user: dict):
+    """
+    Start a stopped EC2 instance.
+
+    Returns:
+        StreamingResponse with SSE events
+    """
+    if not ObjectId.is_valid(project_id):
+        raise HTTPException(status_code=400, detail="Invalid project ID format")
+
+    collection = get_projects_collection()
+    project = await collection.find_one({"_id": ObjectId(project_id)})
+
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.get("user_id") != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    project_root = _resolve_project_root(project)
+    terraform_path = getattr(settings, "TERRAFORM_PATH", "terraform")
+    aws_service = AWSDeploymentService(project_root, terraform_path)
+
+    async def event_generator():
+        import json
+        for event in aws_service.scale_up():
+            yield f"data: {json.dumps(event)}\n\n"
+            if event.get("exit_code") == 0:
+                await _update_aws_status(project_id, "deployed")
+
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
@@ -443,10 +533,10 @@ async def get_aws_status_handler(project_id: str, current_user: dict) -> Dict[st
     }
     
     # If deployed, try to get live status from terraform
-    extracted_path = project.get("extracted_path")
-    if extracted_path and status["aws_deployment_status"] == "deployed":
+    project_root = _optional_project_root(project)
+    if project_root and status["aws_deployment_status"] == "deployed":
         terraform_path = getattr(settings, "TERRAFORM_PATH", "terraform")
-        aws_service = AWSDeploymentService(extracted_path, terraform_path)
+        aws_service = AWSDeploymentService(project_root, terraform_path)
         live_status = aws_service.get_deployment_status()
         status.update({
             "live_public_ip": live_status.get("public_ip"),
@@ -490,9 +580,7 @@ async def fix_terraform_handler(
     if project.get("user_id") != str(current_user["_id"]):
         raise HTTPException(status_code=403, detail="Access denied")
     
-    extracted_path = project.get("extracted_path")
-    if not extracted_path:
-        raise HTTPException(status_code=400, detail="Project path not found")
+    project_root = _resolve_project_root(project)
     
     # Ensure terraform is available before attempting a fix
     terraform_path = getattr(settings, "TERRAFORM_PATH", "terraform")
@@ -503,7 +591,7 @@ async def fix_terraform_handler(
         )
     
     # Read current Terraform
-    tf_path = os.path.join(extracted_path, "infra", "main.tf")
+    tf_path = os.path.join(project_root, "infra", "main.tf")
     if not os.path.exists(tf_path):
         raise HTTPException(status_code=400, detail="No Terraform file found. Generate first.")
     
@@ -524,6 +612,7 @@ async def fix_terraform_handler(
     
     if not fixed_terraform or len(fixed_terraform) < 100:
         raise HTTPException(status_code=500, detail="LLM failed to generate fix")
+    fixed_terraform = _inject_docker_credentials(fixed_terraform)
     
     # Write fixed Terraform
     with open(tf_path, "w", encoding="utf-8") as f:
@@ -560,6 +649,24 @@ def _build_services_from_metadata(metadata: Dict) -> List[Dict]:
     Returns:
         List of dicts with {name, port, path, type} for each service
     """
+    # Prefer the detection pipeline's services list when available
+    detected = metadata.get("services")
+    if detected:
+        result = []
+        for svc in detected:
+            svc_type = str(svc.get("type", "backend")).lower()
+            if svc_type == "database":
+                continue  # Skip database services (handled via env vars)
+            result.append({
+                "name": svc.get("name", "app"),
+                "port": svc.get("container_port") or svc.get("runtime_port") or svc.get("port", 3000),
+                "path": svc.get("path", "."),
+                "type": svc_type,
+            })
+        if result:
+            return result
+
+    # Legacy fallback for metadata without a services list
     services = []
     
     # Check for fullstack project (has both backend and frontend)
