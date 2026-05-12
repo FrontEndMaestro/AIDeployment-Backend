@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Container,
@@ -63,6 +63,8 @@ export const DeployPage: React.FC = () => {
   const [eventSource, setEventSource] = useState<EventSource | null>(null);
   const [refreshingTree, setRefreshingTree] = useState<boolean>(false);
   const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
+  const [healingInProgress, setHealingInProgress] = useState<boolean>(false);
+  const [lastFailedAction, setLastFailedAction] = useState<"build" | "run" | "push" | null>(null);
 
   // Deploy mode toggle: docker or aws
   const [deployMode, setDeployMode] = useState<DeployMode>("docker");
@@ -221,62 +223,117 @@ export const DeployPage: React.FC = () => {
     setLogs((prev) => [...prev, incoming]);
   };
 
+  // ── Auto-heal: stream LLM analysis + auto-write fixed files ────────────────
+  const triggerAutoHeal = async (
+    action: "build" | "run" | "push",
+    allLogs: LogLine[]
+  ) => {
+    if (!projectId) return;
+    setHealingInProgress(true);
+    setLastFailedAction(action);
+
+    const logText = allLogs
+      .map((l) => `[${l.stage?.toUpperCase()}] ${l.line}`)
+      .slice(-40)
+      .join("\n");
+
+    const healPrompt =
+      `The Docker "${action}" step just failed. Here are the full build logs:\n\n` +
+      logText +
+      `\n\nPlease:\n` +
+      `1. Identify the root cause of the failure.\n` +
+      `2. Generate the corrected file(s) (Dockerfile, Gemfile, package.json, etc.) needed to fix it.\n` +
+      `3. Output the fixed files in fenced code blocks tagged with their filename.\n` +
+      `4. Briefly explain what was wrong and what you changed.`;
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "ai",
+        content:
+          `🔄 **Auto-Heal triggered** — ${action} exited with error.\n` +
+          `Analyzing ${allLogs.length} log lines and generating fixes...`,
+      },
+    ]);
+
+    const { streamDockerChat } = await import("../api/client");
+    let accumulated = "";
+    setMessages((prev) => [...prev, { role: "ai", content: "" }]);
+
+    streamDockerChat(
+      projectId,
+      { message: healPrompt, model: selectedModel },
+      (token) => {
+        accumulated += token;
+        setMessages((prev) => {
+          const next = [...prev];
+          for (let i = next.length - 1; i >= 0; i--) {
+            if (next[i].role === "ai") {
+              next[i] = { role: "ai", content: accumulated };
+              break;
+            }
+          }
+          return next;
+        });
+      },
+      async () => {
+        setHealingInProgress(false);
+        await refreshExplorer();
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "ai",
+            content:
+              `✅ **Auto-Heal complete.** Fixed files have been written to disk.\n` +
+              `Click **🔄 Retry ${action}** in the build panel to rebuild with the fixes applied.`,
+          },
+        ]);
+      },
+      (err) => {
+        setHealingInProgress(false);
+        setMessages((prev) => [
+          ...prev,
+          { role: "ai", content: `❌ Auto-Heal failed: ${err.message}` },
+        ]);
+      }
+    );
+  };
+
   const startStream = (action: "build" | "run" | "push") => {
     if (!projectId) return;
-    if (eventSource) {
-      eventSource.close();
-    }
+    if (eventSource) eventSource.close();
     setLogs([]);
+    setLastFailedAction(null);
     const token = apiClient.getToken();
     const url = new URL(`${apiBase}/docker/${projectId}/logs`);
     url.searchParams.set("action", action);
-    if (token) {
-      url.searchParams.set("token", token);
-    }
+    if (token) url.searchParams.set("token", token);
+
+    const collectedLogs: LogLine[] = [];
     const source = new EventSource(url.toString());
+
     source.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        appendLogs({
+        const logLine: LogLine = {
           line: data.line,
           stage: data.stage,
           exit_code: data.exit_code,
           complete: data.complete,
-        });
+        };
+        collectedLogs.push(logLine);
+        appendLogs(logLine);
 
         if (data.complete && typeof data.exit_code === "number") {
           source.close();
           setEventSource(null);
           if (data.exit_code !== 0) {
-            const tail: string[] = data.tail || [];
-            const summary = tail.slice(-20).join("\n");
+            triggerAutoHeal(action, collectedLogs);
+          } else {
             setMessages((prev) => [
               ...prev,
-              {
-                role: "ai",
-                content: `${action} failed, sending logs to Llama 3.1 for analysis...`,
-              },
+              { role: "ai", content: `✅ Docker **${action}** completed successfully!` },
             ]);
-            apiClient
-              .sendDockerChat(projectId, {
-                message: `${action} failed. Analyze these logs and fix Dockerfile.`,
-                logs: summary ? summary.split("\n") : undefined,
-              })
-              .then((resp) =>
-                setMessages((prev) => [...prev, { role: "ai", content: resp.reply }])
-              )
-              .catch((err) =>
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    role: "ai",
-                    content:
-                      err instanceof Error
-                        ? `Error sending logs to Llama 3.1: ${err.message}`
-                        : "Error sending logs to Llama 3.1",
-                  },
-                ])
-              );
           }
         }
       } catch (err) {
@@ -286,11 +343,13 @@ export const DeployPage: React.FC = () => {
         });
       }
     };
+
     source.onerror = () => {
       appendLogs({ line: "Log stream error or closed.", stage: action });
       source.close();
       setEventSource(null);
     };
+
     setEventSource(source);
   };
 
@@ -735,13 +794,23 @@ export const DeployPage: React.FC = () => {
 
                   {/* ─── Docker Build Panel ─── */}
                   {deployMode === "docker" && (
-                    <div className="flex-shrink-0 bg-[#0d1117] border border-cyan-500/15 rounded-2xl overflow-hidden">
+                    <div className={`flex-shrink-0 rounded-2xl overflow-hidden border transition-all ${
+                      healingInProgress
+                        ? "bg-[#0d1117] border-orange-500/40 shadow-lg shadow-orange-500/10"
+                        : "bg-[#0d1117] border-cyan-500/15"
+                    }`}>
                       {/* Header */}
-                      <div className="flex items-center justify-between px-4 py-3 border-b border-cyan-500/10">
+                      <div className={`flex items-center justify-between px-4 py-3 border-b ${healingInProgress ? "border-orange-500/20 bg-orange-500/5" : "border-cyan-500/10"}`}>
                         <div className="flex items-center gap-2">
-                          <TerminalIcon size={15} className="text-cyan-400" />
+                          <TerminalIcon size={15} className={healingInProgress ? "text-orange-400" : "text-cyan-400"} />
                           <span className="text-sm font-bold text-white">Docker Build Controls</span>
-                          {context.metadata.deploy_blocked && (
+                          {healingInProgress && (
+                            <span className="flex items-center gap-1.5 text-xs font-bold text-orange-300 bg-orange-500/10 px-2.5 py-0.5 rounded-full border border-orange-500/25 animate-pulse">
+                              <span className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-ping" />
+                              🔄 Auto-Healing...
+                            </span>
+                          )}
+                          {context.metadata.deploy_blocked && !healingInProgress && (
                             <span className="text-xs font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full border border-amber-400/20">
                               ⚠ Deployment Blocked
                             </span>
@@ -750,6 +819,18 @@ export const DeployPage: React.FC = () => {
                         <span className="text-xs text-gray-500 font-mono">Local Docker Desktop</span>
                       </div>
 
+                      {/* Healing status banner */}
+                      {healingInProgress && (
+                        <div className="mx-4 mt-3 p-3 bg-orange-500/5 border border-orange-500/15 rounded-xl flex items-start gap-3">
+                          <div className="w-5 h-5 rounded-full border-2 border-orange-400 border-t-transparent animate-spin flex-shrink-0 mt-0.5" />
+                          <div>
+                            <p className="text-sm font-bold text-orange-300">AI is analyzing the error and rewriting your files</p>
+                            <p className="text-xs text-orange-400/70 mt-0.5">Watch the AI Assistant panel on the right for live progress →</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Blocker warning */}
                       {context.metadata.deploy_blocked && (
                         <div className="mx-4 mt-3 p-3 bg-amber-500/5 border border-amber-500/15 rounded-xl">
                           <p className="text-sm text-amber-300">
@@ -761,14 +842,14 @@ export const DeployPage: React.FC = () => {
                       {/* Action buttons */}
                       <div className="grid grid-cols-3 gap-3 px-4 py-3">
                         {[
-                          { action: "build", emoji: "🔨", label: "Build Image",     cls: "bg-cyan-500/10 border-cyan-500/20 text-cyan-300 hover:bg-cyan-500/20" },
-                          { action: "run",   emoji: "▶",  label: "Run Container",   cls: "bg-emerald-500/10 border-emerald-500/20 text-emerald-300 hover:bg-emerald-500/20" },
-                          { action: "push",  emoji: "⬆",  label: "Push to Hub",     cls: "bg-violet-500/10 border-violet-500/20 text-violet-300 hover:bg-violet-500/20" },
+                          { action: "build", emoji: "🔨", label: "Build Image",   cls: "bg-cyan-500/10 border-cyan-500/20 text-cyan-300 hover:bg-cyan-500/20" },
+                          { action: "run",   emoji: "▶",  label: "Run Container", cls: "bg-emerald-500/10 border-emerald-500/20 text-emerald-300 hover:bg-emerald-500/20" },
+                          { action: "push",  emoji: "⬆",  label: "Push to Hub",   cls: "bg-violet-500/10 border-violet-500/20 text-violet-300 hover:bg-violet-500/20" },
                         ].map(({ action, emoji, label, cls }) => (
                           <button
                             key={action}
                             onClick={() => startStream(action as any)}
-                            disabled={!!context.metadata.deploy_blocked}
+                            disabled={!!context.metadata.deploy_blocked || healingInProgress}
                             className={`py-3 rounded-xl text-sm font-bold border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${cls}`}
                           >
                             {emoji} {label}
@@ -776,8 +857,22 @@ export const DeployPage: React.FC = () => {
                         ))}
                       </div>
 
+                      {/* Retry button — shown after failed build */}
+                      {lastFailedAction && !healingInProgress && (
+                        <div className="px-4 pb-3">
+                          <button
+                            onClick={() => startStream(lastFailedAction)}
+                            className="w-full py-2.5 rounded-xl text-sm font-bold bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 transition-all flex items-center justify-center gap-2"
+                          >
+                            🔄 Retry {lastFailedAction} with auto-applied fixes
+                          </button>
+                        </div>
+                      )}
+
                       {/* Log terminal */}
-                      <div className="mx-4 mb-4 bg-black/50 border border-white/8 rounded-xl p-3 h-32 overflow-y-auto custom-scroll font-mono text-xs leading-relaxed">
+                      <div className={`mx-4 mb-4 bg-black/50 rounded-xl p-3 h-32 overflow-y-auto custom-scroll font-mono text-xs leading-relaxed border ${
+                        healingInProgress ? "border-orange-500/20" : "border-white/8"
+                      }`}>
                         {logs.length === 0 ? (
                           <p className="text-gray-600 italic">No logs yet — click an action above to start streaming output...</p>
                         ) : (
@@ -795,6 +890,7 @@ export const DeployPage: React.FC = () => {
                       </div>
                     </div>
                   )}
+
 
                   {/* ─── AWS Cloud Panel ─── */}
                   {deployMode === "aws" && (
