@@ -514,7 +514,7 @@ export function streamMonitorLogs(
  */
 export function streamDockerChat(
   projectId: string,
-  params: { message: string; logs?: string[]; instructions?: string },
+  params: { message: string; logs?: string[]; instructions?: string; model?: string },
   onToken: (token: string) => void,
   onDone: () => void,
   onError: (error: Error) => void
@@ -535,6 +535,9 @@ export function streamDockerChat(
   }
   if (params.instructions) {
     url.searchParams.set("instructions", params.instructions);
+  }
+  if (params.model) {
+    url.searchParams.set("model", params.model);
   }
   if (token) {
     url.searchParams.set("token", token);

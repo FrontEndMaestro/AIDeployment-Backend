@@ -1,10 +1,17 @@
-﻿import React, { useRef, useEffect } from 'react';
-import { Send, Sparkles, ChevronDown, ChevronRight, Bot, User } from 'lucide-react';
+import React, { useRef, useEffect } from 'react';
+import { Send, Sparkles, ChevronDown, ChevronRight, Bot, User, ChevronUp } from 'lucide-react';
 
 interface Message {
   role: 'user' | 'ai';
   content: string;
 }
+
+const MODELS = [
+  { id: 'gemini-2.5-flash',         label: 'Gemini 2.5 Flash',         tag: 'Fast',     color: '#22d3ee' },
+  { id: 'gemini-2.5-pro',           label: 'Gemini 2.5 Pro',           tag: 'Powerful', color: '#a78bfa' },
+  { id: 'gemini-2.0-flash',         label: 'Gemini 2.0 Flash',         tag: 'Stable',   color: '#34d399' },
+  { id: 'gemini-1.5-pro',           label: 'Gemini 1.5 Pro',           tag: 'Legacy',   color: '#fb923c' },
+];
 
 interface AIChatSidebarProps {
   messages: Message[];
@@ -16,6 +23,8 @@ interface AIChatSidebarProps {
   onLogInputChange?: (value: string) => void;
   instructions?: string;
   onInstructionsChange?: (value: string) => void;
+  selectedModel?: string;
+  onModelChange?: (model: string) => void;
 }
 
 export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
@@ -28,10 +37,13 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
   onLogInputChange,
   instructions = '',
   onInstructionsChange,
+  selectedModel = 'gemini-2.5-flash',
+  onModelChange,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [logsExpanded, setLogsExpanded] = React.useState(false);
   const [instructionsExpanded, setInstructionsExpanded] = React.useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = React.useState(false);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -47,10 +59,12 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
   const SURFACE = 'rgba(13,17,23,0.9)';
   const BORDER = 'rgba(255,255,255,0.07)';
 
+  const activeModel = MODELS.find(m => m.id === selectedModel) || MODELS[0];
+
   return (
     <div
-      className="h-full flex flex-col rounded-xl overflow-hidden"
-      style={{ background: SURFACE, border: `1px solid ${BORDER}` }}
+      className="flex flex-col rounded-xl overflow-hidden"
+      style={{ background: SURFACE, border: `1px solid ${BORDER}`, height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' }}
     >
       {/* Header */}
       <div
@@ -63,12 +77,60 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
         >
           <Sparkles size={14} className="text-purple-400" />
         </div>
-        <div>
+        <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-white leading-tight">AI Assistant</p>
-          <p className="text-[10px] text-gray-600 leading-tight">Llama 3.1 - Docker expert</p>
+          <p className="text-[10px] text-gray-600 leading-tight truncate">Docker &amp; Deploy Expert</p>
         </div>
+
+        {/* Model selector */}
+        <div className="relative">
+          <button
+            onClick={() => setModelMenuOpen(v => !v)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all hover:bg-white/10"
+            style={{
+              background: 'rgba(255,255,255,0.05)',
+              border: `1px solid ${activeModel.color}40`,
+              color: activeModel.color,
+            }}
+          >
+            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: activeModel.color }} />
+            {activeModel.tag}
+            {modelMenuOpen ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+          </button>
+
+          {modelMenuOpen && (
+            <div
+              className="absolute right-0 top-full mt-2 z-50 rounded-xl overflow-hidden shadow-2xl"
+              style={{ background: 'rgba(13,17,23,0.98)', border: `1px solid ${BORDER}`, minWidth: '200px' }}
+            >
+              <p className="px-3 py-2 text-[9px] font-black uppercase tracking-widest text-gray-600 border-b border-white/5">
+                Select AI Model
+              </p>
+              {MODELS.map(model => (
+                <button
+                  key={model.id}
+                  onClick={() => {
+                    onModelChange?.(model.id);
+                    setModelMenuOpen(false);
+                  }}
+                  className="w-full px-3 py-2.5 flex items-center gap-3 text-left hover:bg-white/5 transition-colors"
+                >
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: model.color }} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-white truncate">{model.label}</p>
+                    <p className="text-[9px] text-gray-600 uppercase tracking-widest">{model.tag}</p>
+                  </div>
+                  {selectedModel === model.id && (
+                    <span className="text-[9px] font-black uppercase" style={{ color: model.color }}>Active</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div
-          className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded-full"
+          className="flex items-center gap-1 px-2 py-0.5 rounded-full"
           style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)' }}
         >
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -76,8 +138,8 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto custom-scroll px-3 py-3 space-y-2.5">
+      {/* Messages — this is the ONLY thing that scrolls */}
+      <div className="flex-1 overflow-y-auto custom-scroll px-3 py-3 space-y-2.5 min-h-0">
         {messages.map((msg, idx) => (
           <div
             key={idx}
@@ -100,7 +162,7 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
               }
             >
               <p className="text-[10px] font-semibold uppercase tracking-wider mb-1" style={{ opacity: 0.5 }}>
-                {msg.role === 'user' ? 'You' : 'Llama 3.1'}
+                {msg.role === 'user' ? 'You' : activeModel.label}
               </p>
               <pre className="text-xs whitespace-pre-wrap font-['JetBrains_Mono',monospace] leading-relaxed">
                 {msg.content || <span className="opacity-40 italic">Thinking...</span>}
@@ -119,7 +181,7 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Expandable sections + input */}
+      {/* Bottom controls — NEVER scroll, always visible */}
       <div className="flex-shrink-0" style={{ borderTop: `1px solid ${BORDER}` }}>
         {onLogInputChange && (
           <div style={{ borderBottom: `1px solid ${BORDER}` }}>
@@ -206,7 +268,7 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
             </button>
           </div>
           <p className="text-[9px] text-gray-700 mt-1.5 text-center">
-            Enter to send - Shift+Enter for newline
+            Enter to send · Shift+Enter newline · Model: <span style={{ color: activeModel.color }}>{activeModel.label}</span>
           </p>
         </div>
       </div>

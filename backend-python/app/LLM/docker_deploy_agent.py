@@ -1562,9 +1562,10 @@ def _call_gemini_docker_with_repair(
     services: Optional[List[Dict[str, str]]],
     mode: str,
     source_files: Optional[List[Dict[str, str]]] = None,
+    model_override: Optional[str] = None,
 ) -> str:
     source_files = source_files or []
-    response = call_gemini(messages, custom_options={"temperature": 0.0})
+    response = call_gemini(messages, custom_options={"temperature": 0.0}, model_override=model_override)
     if response.startswith("ERROR:") or mode != "GENERATE_MISSING" or not services:
         return response
 
@@ -1600,6 +1601,7 @@ def _call_gemini_docker_with_repair(
             {"role": "user", "content": repair_message},
         ],
         custom_options={"temperature": 0.0},
+        model_override=model_override,
     )
 
 
@@ -1674,6 +1676,7 @@ def run_docker_deploy_chat_stream(
     extra_instructions: Optional[str] = None,
     services: Optional[List[Dict[str, str]]] = None,
     source_files: Optional[List[Dict[str, str]]] = None,
+    model_override: Optional[str] = None,
 ):
     """
     Streaming version of run_docker_deploy_chat.
@@ -1719,6 +1722,7 @@ def run_docker_deploy_chat_stream(
             extra_instructions=extra_instructions,
             services=services,
             mode=mode,
+            model_override=model_override,
         )
         if response.startswith("ERROR:"):
             yield {"token": response, "done": True, "error": True}

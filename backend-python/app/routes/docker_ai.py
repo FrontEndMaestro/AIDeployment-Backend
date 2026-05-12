@@ -92,6 +92,7 @@ async def docker_chat_stream(
     logs: Optional[str] = Query(None, description="Newline-separated build/run logs"),
     instructions: Optional[str] = Query(None, description="Optional high-level deployment instructions"),
     token: Optional[str] = Query(None, description="Bearer token for EventSource auth"),
+    model: Optional[str] = Query(None, description="Gemini model to use (overrides default)"),
 ):
     """
     Stream LLM response as Server-Sent Events (SSE).
@@ -130,6 +131,7 @@ async def docker_chat_stream(
             user_message=message,
             logs=logs_list,
             instructions=instructions,
+            model_override=model,
         )
     except Exception as e:
         def error_stream():

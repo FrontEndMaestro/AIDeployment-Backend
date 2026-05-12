@@ -506,6 +506,7 @@ async def docker_chat_stream_setup(
     user_message: str,
     logs: Optional[List[str]] = None,
     instructions: Optional[str] = None,
+    model_override: Optional[str] = None,
 ) -> Dict:
     """
     Async function to validate and prepare data for streaming.
@@ -535,6 +536,7 @@ async def docker_chat_stream_setup(
         "logs": logs,
         "instructions": instructions,
         "services": services,
+        "model_override": model_override,
     }
 
 
@@ -554,6 +556,7 @@ def docker_chat_stream_generator(prepared_data: Dict):
         logs=prepared_data["logs"],
         extra_instructions=prepared_data["instructions"],
         services=prepared_data["services"],
+        model_override=prepared_data.get("model_override"),
     ):
         yield chunk
 

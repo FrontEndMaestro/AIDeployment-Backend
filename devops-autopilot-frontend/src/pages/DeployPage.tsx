@@ -66,6 +66,7 @@ export const DeployPage: React.FC = () => {
 
   // Deploy mode toggle: docker or aws
   const [deployMode, setDeployMode] = useState<DeployMode>("docker");
+  const [selectedModel, setSelectedModel] = useState<string>("gemini-2.5-flash");
   const [awsConfig, setAwsConfig] = useState({
     aws_region: "us-east-1",
     docker_repo_prefix: "",
@@ -181,7 +182,7 @@ export const DeployPage: React.FC = () => {
 
     streamDockerChat(
       projectId,
-      params,
+      { ...params, model: selectedModel },
       (token) => {
         accumulatedContent += token;
         setMessages((prev) => {
@@ -624,264 +625,241 @@ export const DeployPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[72vh]">
-            {/* Left sidebar */}
-            <div className="lg:col-span-3 flex flex-col gap-6 overflow-y-auto pr-1 custom-scroll">
-              <Card className="p-6 bg-white/[0.02] border-white/5 shadow-xl">
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2.5 bg-cyan-500/10 rounded-xl text-cyan-400">
-                      <Rocket size={18} />
+          {/* â”€â”€â”€ Main 3-column grid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+          <div
+            className="grid grid-cols-1 lg:grid-cols-12 gap-4"
+            style={{ height: 'calc(100vh - 260px)', minHeight: '640px' }}
+          >
+
+            {/* â”€â”€ Left: File tree + metadata â”€â”€ */}
+            <div className="lg:col-span-2 flex flex-col gap-4 overflow-y-auto custom-scroll pr-1">
+              <Card className="p-4 bg-white/[0.02] border-white/5 shadow-xl flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-cyan-500/10 rounded-lg text-cyan-400">
+                      <Rocket size={14} />
                     </div>
                     <div>
-                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Workspace</p>
-                      <p className="text-sm font-black text-white">{rootLabel}</p>
+                      <p className="text-[9px] font-black uppercase tracking-widest text-gray-500">Workspace</p>
+                      <p className="text-xs font-black text-white truncate max-w-[100px]">{rootLabel}</p>
                     </div>
                   </div>
                   <button
-                    className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 border border-white/10 text-gray-400 hover:text-white transition-all shadow-sm"
+                    className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-gray-400 hover:text-white transition-all"
                     onClick={() => refreshExplorer()}
                     disabled={refreshingTree}
                   >
-                    <RefreshCw size={14} className={refreshingTree ? "animate-spin" : ""} />
+                    <RefreshCw size={12} className={refreshingTree ? "animate-spin" : ""} />
                   </button>
                 </div>
 
-                <div className="flex flex-wrap gap-2 mb-4">
+                <div className="flex gap-1.5">
                   <button
-                    className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-xl bg-white/5 border border-white/5 text-gray-400 hover:text-white hover:border-cyan-500 transition-all"
+                    className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest px-2 py-1.5 rounded-lg bg-white/5 border border-white/5 text-gray-400 hover:text-white hover:border-cyan-500 transition-all"
                     onClick={() => handleCreateFile(null)}
                     disabled={refreshingTree}
                   >
-                    <FilePlus2 size={12} className="text-cyan-400" />
-                    Add File
+                    <FilePlus2 size={10} className="text-cyan-400" /> File
                   </button>
                   <button
-                    className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-xl bg-white/5 border border-white/5 text-gray-400 hover:text-white hover:border-cyan-500 transition-all"
+                    className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest px-2 py-1.5 rounded-lg bg-white/5 border border-white/5 text-gray-400 hover:text-white hover:border-cyan-500 transition-all"
                     onClick={() => handleCreateFolder(null)}
                     disabled={refreshingTree}
                   >
-                    <FolderPlus size={12} className="text-cyan-400" />
-                    Add Dir
+                    <FolderPlus size={10} className="text-cyan-400" /> Dir
                   </button>
                 </div>
 
-                <div className="max-h-[500px] overflow-y-auto custom-scroll rounded-2xl border border-white/5 bg-black/20 p-4">
+                <div className="overflow-y-auto custom-scroll rounded-xl border border-white/5 bg-black/20 p-3 flex-1" style={{ maxHeight: '380px' }}>
                   {renderFileTree(context.file_tree.tree)}
                 </div>
               </Card>
 
-              <Card className="p-6 bg-white/[0.02] border-white/5">
-                <h3 className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-6 flex items-center gap-2">
-                  <Settings size={14} /> System Profile
+              <Card className="p-4 bg-white/[0.02] border-white/5">
+                <h3 className="text-[9px] font-black uppercase tracking-widest text-gray-500 mb-3 flex items-center gap-1.5">
+                  <Settings size={11} /> System Profile
                 </h3>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-2">
                   {metadataList.map((item) => (
-                    <div key={item.label} className="bg-white/5 rounded-xl p-3 border border-white/5">
-                      <p className="text-[9px] font-black text-gray-600 uppercase mb-1">{item.label}</p>
-                      <p className="text-xs font-bold truncate text-white">{item.value as string}</p>
+                    <div key={item.label} className="bg-white/5 rounded-lg p-2 border border-white/5">
+                      <p className="text-[8px] font-black text-gray-600 uppercase mb-0.5">{item.label}</p>
+                      <p className="text-[10px] font-bold truncate text-white">{item.value as string}</p>
                     </div>
                   ))}
                 </div>
               </Card>
             </div>
 
-            {/* Center panel */}
-            <div className="lg:col-span-6 flex flex-col gap-6">
+            {/* â”€â”€ Center: Code editor + orchestration strip â”€â”€ */}
+            <div className="lg:col-span-6 flex flex-col gap-3 h-full" style={{ minHeight: 0 }}>
               {deployMode === "monitor" && projectId ? (
                 <MonitoringDashboard projectId={projectId} />
               ) : (
-                <Card className="flex-1 flex flex-col p-0 overflow-hidden bg-white/[0.02] border-white/5 relative shadow-2xl min-h-[500px]">
-                  <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/[0.03]">
-                    <div className="flex gap-2.5 overflow-x-auto no-scrollbar py-1">
-                      {openFiles.length === 0 ? (
-                        <div className="flex items-center gap-2 text-xs text-gray-500 font-bold uppercase tracking-widest opacity-50">
-                          <Code2 size={14} /> Source Explorer
-                        </div>
-                      ) : (
-                        openFiles.map((path) => (
-                          <button
-                            key={path}
-                            className={`px-4 py-2 rounded-xl text-xs font-black tracking-widest uppercase transition-all flex items-center gap-2 ${activeFile === path
-                              ? "bg-white text-black shadow-lg shadow-white/5"
-                              : "bg-white/5 text-gray-500 hover:text-gray-300 border border-white/5"
-                              }`}
-                            onClick={() => setActiveFile(path)}
-                          >
-                            {dirtyFlags[path] && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>}
-                            {path.split('/').pop()}
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex-1 flex flex-col min-h-0 relative">
-                    <textarea
-                      value={(activeFile && fileContents[activeFile]) || ''}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (!activeFile) return;
-                        setFileContents((prev) => ({ ...prev, [activeFile]: val }));
-                        setDirtyFlags((prev) => ({ ...prev, [activeFile]: true }));
-                      }}
-                      className="w-full flex-1 p-8 text-[13px] focus:outline-none resize-none custom-scroll font-mono leading-relaxed"
-                      style={{ background: 'transparent', color: '#f0f6fc', border: 'none' }}
-                      placeholder="Initialize workspace by selecting a manifest from the explorer..."
-                      spellCheck={false}
-                    />
-                  </div>
-
-                  <div className="px-6 py-4 border-t border-white/5 bg-black/40 flex justify-between items-center">
-                    <div className="flex items-center gap-2 text-gray-600 font-mono text-[10px] uppercase">
-                      <span className="w-2 h-2 rounded-full bg-gray-700"></span>
-                      {activeFile || 'IDLE_MODE'}
-                    </div>
-                    <Button
-                      variant="primary"
-                      disabled={!activeFile || !dirtyFlags[activeFile] || saving}
-                      loading={saving}
-                      onClick={handleSaveFile}
-                    >
-                      COMMIT_CHANGES
-                    </Button>
-                  </div>
-                </Card>
-              )}
-            </div>
-
-            {/* Right sidebar */}
-            <div className="lg:col-span-3 flex flex-col gap-6">
-              <Card className="p-8 bg-white/[0.02] border-white/5 flex flex-col gap-6">
-                {deployMode === "monitor" ? (
-                  <>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <Settings size={18} className="text-violet-400" />
-                        <h3 className="text-xs font-black uppercase tracking-widest text-white">MONITORING</h3>
-                      </div>
-                      <Badge variant="info">LIVE</Badge>
-                    </div>
-                    <p className="text-xs text-gray-500 leading-relaxed">
-                      Kubernetes and cloud health checks run in the monitoring panel.
-                    </p>
-                  </>
-                ) : deployMode === "docker" ? (
-                  <>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <TerminalIcon size={18} className="text-cyan-400" />
-                        <h3 className="text-xs font-black uppercase tracking-widest text-white">ORCHESTRATION</h3>
-                      </div>
-                      <Badge variant="info">DOCKER_BUILD</Badge>
-                    </div>
-
-                    {context.metadata.deploy_blocked && (
-                      <div className="p-4 bg-yellow-500/5 border border-yellow-500/10 rounded-2xl">
-                        <p className="text-[10px] text-yellow-500 font-black uppercase tracking-widest mb-1">Blocker Detected</p>
-                        <p className="text-xs text-yellow-300 opacity-60 leading-relaxed">
-                          {context.metadata.deploy_blocked_reason || "Missing .env configurations."}
-                        </p>
-                      </div>
-                    )}
-
-                    <div className="flex flex-col gap-2">
-                      {["build", "run", "push"].map(action => (
-                        <Button
-                          key={action}
-                          variant="secondary"
-                          className="w-full h-11 text-xs font-black uppercase tracking-widest"
-                          onClick={() => startStream(action as any)}
-                          disabled={context.metadata.deploy_blocked}
-                        >
-                          {action}_IMAGE
-                        </Button>
-                      ))}
-                    </div>
-
-                    <div className="bg-[#050810] rounded-2xl p-6 font-mono text-[10px] min-h-[150px] max-h-[250px] overflow-y-auto custom-scroll border border-white/5">
-                      {logs.length === 0 ? (
-                        <p className="text-gray-700 italic">Awaiting event stream...</p>
-                      ) : (
-                        logs.map((l, idx) => (
-                          <div key={idx} className="mb-2 text-gray-500 leading-relaxed">
-                            <span className="text-cyan-400 mr-3">[{l.stage.toUpperCase()}]</span>
-                            {l.line}
+                <>
+                  {/* Code editor */}
+                  <Card className="flex-1 flex flex-col p-0 overflow-hidden bg-white/[0.02] border-white/5 relative shadow-2xl" style={{ minHeight: 0 }}>
+                    <div className="flex-shrink-0 flex items-center justify-between px-5 py-3 border-b border-white/5 bg-white/[0.03]">
+                      <div className="flex gap-2 overflow-x-auto no-scrollbar py-0.5">
+                        {openFiles.length === 0 ? (
+                          <div className="flex items-center gap-2 text-xs text-gray-500 font-bold uppercase tracking-widest opacity-50">
+                            <Code2 size={13} /> Source Explorer
                           </div>
-                        ))
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <Cloud size={18} className="text-orange-400" />
-                        <h3 className="text-xs font-black uppercase tracking-widest text-white">CLOUD_UNIT</h3>
+                        ) : (
+                          openFiles.map((path) => (
+                            <button
+                              key={path}
+                              className={`px-3 py-1.5 rounded-lg text-[10px] font-black tracking-widest uppercase transition-all flex items-center gap-1.5 ${activeFile === path
+                                ? "bg-white text-black shadow-lg shadow-white/5"
+                                : "bg-white/5 text-gray-500 hover:text-gray-300 border border-white/5"}`}
+                              onClick={() => setActiveFile(path)}
+                            >
+                              {dirtyFlags[path] && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />}
+                              {path.split('/').pop()}
+                            </button>
+                          ))
+                        )}
                       </div>
-                      <Badge variant={awsStatus === 'deployed' ? 'success' : 'default'}>{awsStatus.toUpperCase()}</Badge>
                     </div>
 
-                    <div className="space-y-4">
-                      <div>
-                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-600 block mb-2">Region Path</label>
+                    <div className="flex-1 flex flex-col min-h-0">
+                      <textarea
+                        value={(activeFile && fileContents[activeFile]) || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (!activeFile) return;
+                          setFileContents((prev) => ({ ...prev, [activeFile]: val }));
+                          setDirtyFlags((prev) => ({ ...prev, [activeFile]: true }));
+                        }}
+                        className="w-full flex-1 p-6 text-[13px] focus:outline-none resize-none custom-scroll font-mono leading-relaxed"
+                        style={{ background: 'transparent', color: '#f0f6fc', border: 'none' }}
+                        placeholder="Select a file from the explorer to open it..."
+                        spellCheck={false}
+                      />
+                    </div>
+
+                    <div className="flex-shrink-0 px-5 py-3 border-t border-white/5 bg-black/40 flex justify-between items-center">
+                      <div className="flex items-center gap-2 text-gray-600 font-mono text-[10px] uppercase">
+                        <span className="w-1.5 h-1.5 rounded-full bg-gray-700" />
+                        {activeFile || 'IDLE_MODE'}
+                      </div>
+                      <Button
+                        variant="primary"
+                        disabled={!activeFile || !dirtyFlags[activeFile] || saving}
+                        loading={saving}
+                        onClick={handleSaveFile}
+                      >
+                        COMMIT_CHANGES
+                      </Button>
+                    </div>
+                  </Card>
+
+                  {/* Orchestration strip â€” compact horizontal bar */}
+                  <Card className="flex-shrink-0 p-4 bg-white/[0.02] border-white/5">
+                    {deployMode === "docker" ? (
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <div className="flex items-center gap-2 mr-2">
+                          <TerminalIcon size={14} className="text-cyan-400" />
+                          <span className="text-[10px] font-black uppercase tracking-widest text-white">Orchestration</span>
+                          {context.metadata.deploy_blocked && (
+                            <Badge variant="default">BLOCKED</Badge>
+                          )}
+                        </div>
+
+                        {["build", "run", "push"].map(action => (
+                          <Button
+                            key={action}
+                            variant="secondary"
+                            className="h-8 px-4 text-[10px] font-black uppercase tracking-widest"
+                            onClick={() => startStream(action as any)}
+                            disabled={context.metadata.deploy_blocked}
+                          >
+                            {action}
+                          </Button>
+                        ))}
+
+                        {/* Inline scrollable log strip */}
+                        <div className="flex-1 min-w-0 bg-[#050810] rounded-xl px-3 py-2 font-mono text-[10px] h-8 overflow-x-auto overflow-y-hidden border border-white/5 flex items-center gap-3 whitespace-nowrap">
+                          {logs.length === 0 ? (
+                            <span className="text-gray-700 italic">Awaiting stream...</span>
+                          ) : (
+                            logs.slice(-5).map((l, idx) => (
+                              <span key={idx} className="text-gray-500">
+                                <span className="text-cyan-400">[{l.stage.toUpperCase()}]</span> {l.line}
+                              </span>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : deployMode === "aws" ? (
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <div className="flex items-center gap-2 mr-2">
+                          <Cloud size={14} className="text-orange-400" />
+                          <span className="text-[10px] font-black uppercase tracking-widest text-white">Cloud</span>
+                          <Badge variant={awsStatus === 'deployed' ? 'success' : 'default'}>{awsStatus.toUpperCase()}</Badge>
+                        </div>
                         <select
                           value={awsConfig.aws_region}
                           onChange={(e) => setAwsConfig(prev => ({ ...prev, aws_region: e.target.value }))}
-                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-xs text-white focus:outline-none"
+                          className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-[10px] text-white focus:outline-none h-8"
                         >
-                          <option value="us-east-1">US-EAST-1 (Standard)</option>
-                          <option value="eu-west-1">EU-WEST-1 (Eir)</option>
+                          <option value="us-east-1">US-EAST-1</option>
+                          <option value="eu-west-1">EU-WEST-1</option>
                         </select>
+                        <Button variant="secondary" className="h-8 px-4 text-[10px] font-black uppercase" onClick={async () => {
+                          if (!projectId) return;
+                          setIsDeploying(true);
+                          setMessages(prev => [...prev, { role: "ai", content: "Generating Terraform Layer..." }]);
+                          try {
+                            const result = await apiClient.generateTerraform(projectId, awsConfig);
+                            setAwsStatus("terraform_generated");
+                            setMessages(prev => [...prev, { role: "ai", content: `Layer Generated at ${result.terraform_path}` }]);
+                            await refreshExplorer();
+                          } catch (err: any) {
+                            setMessages(prev => [...prev, { role: "ai", content: `Layer Fail: ${err.message}` }]);
+                          }
+                          setIsDeploying(false);
+                        }} disabled={isDeploying || !awsConfig.docker_repo_prefix}>GEN_INFRA</Button>
+                        <Button variant="primary" className="h-8 px-4 text-[10px] font-black uppercase bg-orange-500 hover:bg-orange-600" onClick={() => {
+                          if (!projectId) return;
+                          setIsDeploying(true);
+                          streamAWSTerraform(projectId, "apply", (ev) => setTerraformLogs(prev => [...prev, ev]), () => { setIsDeploying(false); setAwsStatus("deployed"); }, (err) => { setIsDeploying(false); setMessages(prev => [...prev, { role: "ai", content: err.message }]); });
+                        }} disabled={isDeploying || (awsStatus === "not_deployed" && !terraformExists)}>DEPLOY_CLOUD</Button>
+                        <div className="flex-1 min-w-0 bg-[#050810] rounded-xl px-3 py-2 font-mono text-[10px] h-8 overflow-x-auto overflow-y-hidden border border-white/5 flex items-center gap-3 whitespace-nowrap">
+                          {terraformLogs.length === 0 ? <span className="text-gray-700 italic">No cloud logs.</span> : terraformLogs.slice(-3).map((l, i) => (
+                            <span key={i} className={l.type === 'error' ? 'text-rose-400' : 'text-gray-500'}>[{l.stage || 'tf'}] {l.message}</span>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="flex flex-col gap-2">
-                      <Button variant="secondary" onClick={async () => {
-                        if (!projectId) return;
-                        setIsDeploying(true);
-                        setMessages(prev => [...prev, { role: "ai", content: "Generating Terraform Layer..." }]);
-                        try {
-                          const result = await apiClient.generateTerraform(projectId, awsConfig);
-                          setAwsStatus("terraform_generated");
-                          setMessages(prev => [...prev, { role: "ai", content: `Layer Generated at ${result.terraform_path}` }]);
-                          await refreshExplorer();
-                        } catch (err: any) {
-                          setMessages(prev => [...prev, { role: "ai", content: `Layer Fail: ${err.message}` }]);
-                        }
-                        setIsDeploying(false);
-                      }} disabled={isDeploying || !awsConfig.docker_repo_prefix}>GEN_INFRA</Button>
-
-                      <Button variant="primary" className="bg-orange-500 hover:bg-orange-600" onClick={() => {
-                        if (!projectId) return;
-                        setIsDeploying(true);
-                        streamAWSTerraform(projectId, "apply", (ev) => setTerraformLogs(prev => [...prev, ev]), () => { setIsDeploying(false); setAwsStatus("deployed"); }, (err) => { setIsDeploying(false); setMessages(prev => [...prev, { role: "ai", content: err.message }]); });
-                      }} disabled={isDeploying || (awsStatus === "not_deployed" && !terraformExists)}>DEPLOY_CLOUD</Button>
-                    </div>
-
-                    <div className="bg-[#050810] rounded-2xl p-6 font-mono text-[10px] border border-white/5 h-[150px] overflow-y-auto custom-scroll">
-                      {terraformLogs.length === 0 ? <p className="text-gray-700 italic">No cloud logs.</p> : terraformLogs.map((l, i) => (
-                        <div key={i} className={l.type === 'error' ? 'text-rose-400' : 'text-gray-500'}>[{l.stage || 'tf'}] {l.message}</div>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </Card>
-
-              <div className="flex-1">
-                <AIChatSidebar
-                  messages={messages}
-                  input={input}
-                  onInputChange={setInput}
-                  onSend={() => { if (!context.metadata.deploy_blocked) handleSend(); }}
-                  sending={sending || !!context.metadata.deploy_blocked}
-                  logInput={logInput}
-                  onLogInputChange={setLogInput}
-                  instructions={instructions}
-                  onInstructionsChange={setInstructions}
-                />
-              </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <Settings size={14} className="text-violet-400" />
+                        <span className="text-[10px] font-black uppercase tracking-widest text-white">Monitoring Active</span>
+                        <Badge variant="info">LIVE</Badge>
+                        <p className="text-[10px] text-gray-500 ml-2">Kubernetes health checks run in the panel above.</p>
+                      </div>
+                    )}
+                  </Card>
+                </>
+              )}
             </div>
+
+            {/* â”€â”€ Right: AI Chat â€” full height, nothing competing â”€â”€ */}
+            <div className="lg:col-span-4 h-full" style={{ minHeight: 0 }}>
+              <AIChatSidebar
+                messages={messages}
+                input={input}
+                onInputChange={setInput}
+                onSend={() => { if (!context.metadata.deploy_blocked) handleSend(); }}
+                sending={sending || !!context.metadata.deploy_blocked}
+                logInput={logInput}
+                onLogInputChange={setLogInput}
+                instructions={instructions}
+                onInstructionsChange={setInstructions}
+                selectedModel={selectedModel}
+                onModelChange={setSelectedModel}
+              />
+            </div>
+
           </div>
         </main>
       </div>
