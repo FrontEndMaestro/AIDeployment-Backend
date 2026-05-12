@@ -573,278 +573,337 @@ export const DeployPage: React.FC = () => {
       <div className="relative z-10 flex flex-col h-full bg-[#050810]/40">
         <Navbar />
 
-        <main className="flex-1 max-w-[1600px] w-full mx-auto px-6 py-8 flex flex-col gap-8">
+        <main className="flex-1 max-w-[1600px] w-full mx-auto px-6 py-6 flex flex-col gap-6">
 
-          {/* Hero Header */}
-          <div className="animate-fade-in">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
-              <div>
-                <h1 className="text-4xl md:text-5xl font-black text-white tracking-tighter uppercase flex items-center gap-4">
-                  {deployMode === "docker" ? (
-                    <><Container size={36} className="text-cyan-400" /> Docker Orchestration</>
-                  ) : deployMode === "aws" ? (
-                    <><Cloud size={36} className="text-orange-400" /> Cloud Deployment</>
-                  ) : (
-                    <><Settings size={36} className="text-violet-400" /> Live Monitoring</>
-                  )}
-                </h1>
-                <p className="text-gray-500 mt-2 font-medium flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
-                  Active Workspace: <span className="text-white font-bold">{context.project.project_name}</span>
-                </p>
+          {/* Header */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h1 className="text-3xl font-black text-white tracking-tight uppercase flex items-center gap-3">
+                {deployMode === "docker" ? (
+                  <><Container size={28} className="text-cyan-400" /> Docker Orchestration</>
+                ) : deployMode === "aws" ? (
+                  <><Cloud size={28} className="text-orange-400" /> Cloud Deployment</>
+                ) : (
+                  <><Settings size={28} className="text-violet-400" /> Live Monitoring</>
+                )}
+              </h1>
+              <p className="text-gray-400 mt-1 text-sm flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                Workspace: <span className="text-white font-semibold ml-1">{context.project.project_name}</span>
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">
+                {([
+                  { mode: "docker", label: "🐳 Infrastructure", active: "bg-cyan-500 text-white shadow-cyan-500/20" },
+                  { mode: "aws",    label: "☁️ Cloud AWS",     active: "bg-orange-500 text-white shadow-orange-500/20" },
+                  { mode: "monitor",label: "📊 Monitor",       active: "bg-violet-500 text-white shadow-violet-500/20" },
+                ] as const).map(({ mode, label, active }) => (
+                  <button
+                    key={mode}
+                    onClick={() => setDeployMode(mode)}
+                    className={`px-4 py-2 rounded-lg text-xs font-bold tracking-wide uppercase transition-all shadow-lg ${deployMode === mode ? active : "text-gray-400 hover:text-white"}`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
-
-              <div className="flex items-center gap-4">
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-1.5 flex gap-1">
-                  <button
-                    onClick={() => setDeployMode("docker")}
-                    className={`px-5 py-2.5 rounded-xl text-xs font-black tracking-widest uppercase transition-all ${deployMode === "docker" ? "bg-white text-black shadow-lg shadow-white/10" : "text-gray-500 hover:text-white"
-                      }`}
-                  >
-                    Infrastructure
-                  </button>
-                  <button
-                    onClick={() => setDeployMode("aws")}
-                    className={`px-5 py-2.5 rounded-xl text-xs font-black tracking-widest uppercase transition-all ${deployMode === "aws" ? "bg-orange-500 text-white shadow-lg shadow-orange-500/20" : "text-gray-500 hover:text-white"
-                      }`}
-                  >
-                    Cloud (AWS)
-                  </button>
-                  <button
-                    onClick={() => setDeployMode("monitor")}
-                    className={`px-5 py-2.5 rounded-xl text-xs font-black tracking-widest uppercase transition-all ${deployMode === "monitor" ? "bg-violet-500 text-white shadow-lg shadow-violet-500/20" : "text-gray-500 hover:text-white"
-                      }`}
-                  >
-                    Monitor
-                  </button>
-                </div>
-                <Button variant="secondary" onClick={() => navigate("/dashboard")}>
-                  <ArrowLeft size={16} /> Back to Hub
-                </Button>
-              </div>
+              <Button variant="secondary" onClick={() => navigate("/dashboard")}>
+                <ArrowLeft size={15} /> Back
+              </Button>
             </div>
           </div>
 
-          {/* â”€â”€â”€ Main 3-column grid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
-          <div
-            className="grid grid-cols-1 lg:grid-cols-12 gap-4"
-            style={{ height: 'calc(100vh - 260px)', minHeight: '640px' }}
-          >
+          {/* Main 3-column grid */}
+          <div className="grid grid-cols-12 gap-4" style={{ height: "calc(100vh - 210px)", minHeight: "640px" }}>
 
-            {/* â”€â”€ Left: File tree + metadata â”€â”€ */}
-            <div className="lg:col-span-2 flex flex-col gap-4 overflow-y-auto custom-scroll pr-1">
-              <Card className="p-4 bg-white/[0.02] border-white/5 shadow-xl flex flex-col gap-3">
-                <div className="flex items-center justify-between">
+            {/* ═══ LEFT: File Explorer ═══ */}
+            <div className="col-span-2 flex flex-col gap-4 h-full overflow-y-auto custom-scroll">
+
+              {/* File tree */}
+              <div className="flex-1 flex flex-col bg-[#0d1117] border border-white/8 rounded-2xl overflow-hidden min-h-0">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-white/8 flex-shrink-0">
                   <div className="flex items-center gap-2">
-                    <div className="p-2 bg-cyan-500/10 rounded-lg text-cyan-400">
-                      <Rocket size={14} />
-                    </div>
+                    <Rocket size={14} className="text-cyan-400" />
                     <div>
-                      <p className="text-[9px] font-black uppercase tracking-widest text-gray-500">Workspace</p>
-                      <p className="text-xs font-black text-white truncate max-w-[100px]">{rootLabel}</p>
+                      <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Workspace</p>
+                      <p className="text-sm font-bold text-white truncate max-w-[90px]">{rootLabel}</p>
                     </div>
                   </div>
                   <button
-                    className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-gray-400 hover:text-white transition-all"
                     onClick={() => refreshExplorer()}
                     disabled={refreshingTree}
+                    className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all"
                   >
                     <RefreshCw size={12} className={refreshingTree ? "animate-spin" : ""} />
                   </button>
                 </div>
 
-                <div className="flex gap-1.5">
-                  <button
-                    className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest px-2 py-1.5 rounded-lg bg-white/5 border border-white/5 text-gray-400 hover:text-white hover:border-cyan-500 transition-all"
-                    onClick={() => handleCreateFile(null)}
-                    disabled={refreshingTree}
-                  >
-                    <FilePlus2 size={10} className="text-cyan-400" /> File
+                <div className="flex gap-2 px-3 py-2 border-b border-white/5 flex-shrink-0">
+                  <button onClick={() => handleCreateFile(null)} disabled={refreshingTree}
+                    className="flex-1 flex items-center justify-center gap-1 text-xs font-semibold py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 hover:bg-cyan-500/20 transition-all">
+                    <FilePlus2 size={11} /> File
                   </button>
-                  <button
-                    className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest px-2 py-1.5 rounded-lg bg-white/5 border border-white/5 text-gray-400 hover:text-white hover:border-cyan-500 transition-all"
-                    onClick={() => handleCreateFolder(null)}
-                    disabled={refreshingTree}
-                  >
-                    <FolderPlus size={10} className="text-cyan-400" /> Dir
+                  <button onClick={() => handleCreateFolder(null)} disabled={refreshingTree}
+                    className="flex-1 flex items-center justify-center gap-1 text-xs font-semibold py-1.5 rounded-lg bg-white/5 border border-white/10 text-gray-400 hover:text-white transition-all">
+                    <FolderPlus size={11} /> Dir
                   </button>
                 </div>
 
-                <div className="overflow-y-auto custom-scroll rounded-xl border border-white/5 bg-black/20 p-3 flex-1" style={{ maxHeight: '380px' }}>
+                <div className="flex-1 overflow-y-auto custom-scroll p-3 min-h-0">
                   {renderFileTree(context.file_tree.tree)}
                 </div>
-              </Card>
+              </div>
 
-              <Card className="p-4 bg-white/[0.02] border-white/5">
-                <h3 className="text-[9px] font-black uppercase tracking-widest text-gray-500 mb-3 flex items-center gap-1.5">
-                  <Settings size={11} /> System Profile
-                </h3>
-                <div className="grid grid-cols-1 gap-2">
-                  {metadataList.map((item) => (
-                    <div key={item.label} className="bg-white/5 rounded-lg p-2 border border-white/5">
-                      <p className="text-[8px] font-black text-gray-600 uppercase mb-0.5">{item.label}</p>
-                      <p className="text-[10px] font-bold truncate text-white">{item.value as string}</p>
-                    </div>
-                  ))}
+              {/* Stack info */}
+              {metadataList.length > 0 && (
+                <div className="flex-shrink-0 bg-[#0d1117] border border-white/8 rounded-2xl p-4">
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3 flex items-center gap-2">
+                    <Settings size={12} /> Stack Info
+                  </h3>
+                  <div className="flex flex-col gap-2">
+                    {metadataList.map((item) => (
+                      <div key={item.label} className="flex justify-between items-center py-1 border-b border-white/5 last:border-0">
+                        <span className="text-xs text-gray-500 font-medium">{item.label}</span>
+                        <span className="text-xs font-bold text-cyan-300 truncate max-w-[70px] text-right">{item.value as string}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </Card>
+              )}
             </div>
 
-            {/* â”€â”€ Center: Code editor + orchestration strip â”€â”€ */}
-            <div className="lg:col-span-6 flex flex-col gap-3 h-full" style={{ minHeight: 0 }}>
+            {/* ═══ CENTER: Code Editor + Action Panel ═══ */}
+            <div className="col-span-6 flex flex-col gap-4 h-full" style={{ minHeight: 0 }}>
+
               {deployMode === "monitor" && projectId ? (
                 <MonitoringDashboard projectId={projectId} />
               ) : (
                 <>
-                  {/* Code editor */}
-                  <Card className="flex-1 flex flex-col p-0 overflow-hidden bg-white/[0.02] border-white/5 relative shadow-2xl" style={{ minHeight: 0 }}>
-                    <div className="flex-shrink-0 flex items-center justify-between px-5 py-3 border-b border-white/5 bg-white/[0.03]">
-                      <div className="flex gap-2 overflow-x-auto no-scrollbar py-0.5">
-                        {openFiles.length === 0 ? (
-                          <div className="flex items-center gap-2 text-xs text-gray-500 font-bold uppercase tracking-widest opacity-50">
-                            <Code2 size={13} /> Source Explorer
-                          </div>
-                        ) : (
-                          openFiles.map((path) => (
-                            <button
-                              key={path}
-                              className={`px-3 py-1.5 rounded-lg text-[10px] font-black tracking-widest uppercase transition-all flex items-center gap-1.5 ${activeFile === path
-                                ? "bg-white text-black shadow-lg shadow-white/5"
-                                : "bg-white/5 text-gray-500 hover:text-gray-300 border border-white/5"}`}
-                              onClick={() => setActiveFile(path)}
-                            >
-                              {dirtyFlags[path] && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />}
-                              {path.split('/').pop()}
-                            </button>
-                          ))
-                        )}
-                      </div>
+                  {/* Code Editor */}
+                  <div className="flex-1 flex flex-col bg-[#0d1117] border border-white/8 rounded-2xl overflow-hidden" style={{ minHeight: 0 }}>
+                    {/* Tab bar */}
+                    <div className="flex-shrink-0 flex items-center gap-2 px-4 py-3 border-b border-white/8 overflow-x-auto no-scrollbar">
+                      <Code2 size={14} className="text-gray-600 flex-shrink-0" />
+                      {openFiles.length === 0 ? (
+                        <span className="text-sm text-gray-600 italic">Open a file from the explorer →</span>
+                      ) : (
+                        openFiles.map((path) => (
+                          <button key={path} onClick={() => setActiveFile(path)}
+                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                              activeFile === path
+                                ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30"
+                                : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                            }`}>
+                            {dirtyFlags[path] && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />}
+                            {path.split("/").pop()}
+                          </button>
+                        ))
+                      )}
                     </div>
 
-                    <div className="flex-1 flex flex-col min-h-0">
+                    {/* Editor */}
+                    <div className="flex-1 min-h-0">
                       <textarea
-                        value={(activeFile && fileContents[activeFile]) || ''}
+                        value={(activeFile && fileContents[activeFile]) || ""}
                         onChange={(e) => {
                           const val = e.target.value;
                           if (!activeFile) return;
                           setFileContents((prev) => ({ ...prev, [activeFile]: val }));
                           setDirtyFlags((prev) => ({ ...prev, [activeFile]: true }));
                         }}
-                        className="w-full flex-1 p-6 text-[13px] focus:outline-none resize-none custom-scroll font-mono leading-relaxed"
-                        style={{ background: 'transparent', color: '#f0f6fc', border: 'none' }}
-                        placeholder="Select a file from the explorer to open it..."
+                        className="w-full h-full p-5 text-sm focus:outline-none resize-none custom-scroll font-mono leading-7 bg-transparent"
+                        style={{ color: "#e6edf3" }}
+                        placeholder="Select a file from the explorer to view and edit it..."
                         spellCheck={false}
                       />
                     </div>
 
-                    <div className="flex-shrink-0 px-5 py-3 border-t border-white/5 bg-black/40 flex justify-between items-center">
-                      <div className="flex items-center gap-2 text-gray-600 font-mono text-[10px] uppercase">
-                        <span className="w-1.5 h-1.5 rounded-full bg-gray-700" />
-                        {activeFile || 'IDLE_MODE'}
-                      </div>
-                      <Button
-                        variant="primary"
-                        disabled={!activeFile || !dirtyFlags[activeFile] || saving}
-                        loading={saving}
-                        onClick={handleSaveFile}
-                      >
-                        COMMIT_CHANGES
+                    {/* Footer */}
+                    <div className="flex-shrink-0 flex items-center justify-between px-4 py-2.5 border-t border-white/8 bg-black/20">
+                      <span className="text-xs font-mono text-gray-500">
+                        {activeFile ? `📄 ${activeFile}` : "— no file open —"}
+                        {activeFile && dirtyFlags[activeFile] && (
+                          <span className="ml-2 text-amber-400 font-bold">● unsaved changes</span>
+                        )}
+                      </span>
+                      <Button variant="primary" disabled={!activeFile || !dirtyFlags[activeFile] || saving} loading={saving} onClick={handleSaveFile}>
+                        💾 Save File
                       </Button>
                     </div>
-                  </Card>
+                  </div>
 
-                  {/* Orchestration strip â€” compact horizontal bar */}
-                  <Card className="flex-shrink-0 p-4 bg-white/[0.02] border-white/5">
-                    {deployMode === "docker" ? (
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <div className="flex items-center gap-2 mr-2">
-                          <TerminalIcon size={14} className="text-cyan-400" />
-                          <span className="text-[10px] font-black uppercase tracking-widest text-white">Orchestration</span>
+                  {/* ─── Docker Build Panel ─── */}
+                  {deployMode === "docker" && (
+                    <div className="flex-shrink-0 bg-[#0d1117] border border-cyan-500/15 rounded-2xl overflow-hidden">
+                      {/* Header */}
+                      <div className="flex items-center justify-between px-4 py-3 border-b border-cyan-500/10">
+                        <div className="flex items-center gap-2">
+                          <TerminalIcon size={15} className="text-cyan-400" />
+                          <span className="text-sm font-bold text-white">Docker Build Controls</span>
                           {context.metadata.deploy_blocked && (
-                            <Badge variant="default">BLOCKED</Badge>
+                            <span className="text-xs font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full border border-amber-400/20">
+                              ⚠ Deployment Blocked
+                            </span>
                           )}
                         </div>
+                        <span className="text-xs text-gray-500 font-mono">Local Docker Desktop</span>
+                      </div>
 
-                        {["build", "run", "push"].map(action => (
-                          <Button
+                      {context.metadata.deploy_blocked && (
+                        <div className="mx-4 mt-3 p-3 bg-amber-500/5 border border-amber-500/15 rounded-xl">
+                          <p className="text-sm text-amber-300">
+                            <strong>Blocker:</strong> {context.metadata.deploy_blocked_reason || "Missing environment configurations."}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Action buttons */}
+                      <div className="grid grid-cols-3 gap-3 px-4 py-3">
+                        {[
+                          { action: "build", emoji: "🔨", label: "Build Image",     cls: "bg-cyan-500/10 border-cyan-500/20 text-cyan-300 hover:bg-cyan-500/20" },
+                          { action: "run",   emoji: "▶",  label: "Run Container",   cls: "bg-emerald-500/10 border-emerald-500/20 text-emerald-300 hover:bg-emerald-500/20" },
+                          { action: "push",  emoji: "⬆",  label: "Push to Hub",     cls: "bg-violet-500/10 border-violet-500/20 text-violet-300 hover:bg-violet-500/20" },
+                        ].map(({ action, emoji, label, cls }) => (
+                          <button
                             key={action}
-                            variant="secondary"
-                            className="h-8 px-4 text-[10px] font-black uppercase tracking-widest"
                             onClick={() => startStream(action as any)}
-                            disabled={context.metadata.deploy_blocked}
+                            disabled={!!context.metadata.deploy_blocked}
+                            className={`py-3 rounded-xl text-sm font-bold border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${cls}`}
                           >
-                            {action}
-                          </Button>
+                            {emoji} {label}
+                          </button>
                         ))}
+                      </div>
 
-                        {/* Inline scrollable log strip */}
-                        <div className="flex-1 min-w-0 bg-[#050810] rounded-xl px-3 py-2 font-mono text-[10px] h-8 overflow-x-auto overflow-y-hidden border border-white/5 flex items-center gap-3 whitespace-nowrap">
-                          {logs.length === 0 ? (
-                            <span className="text-gray-700 italic">Awaiting stream...</span>
-                          ) : (
-                            logs.slice(-5).map((l, idx) => (
-                              <span key={idx} className="text-gray-500">
-                                <span className="text-cyan-400">[{l.stage.toUpperCase()}]</span> {l.line}
+                      {/* Log terminal */}
+                      <div className="mx-4 mb-4 bg-black/50 border border-white/8 rounded-xl p-3 h-32 overflow-y-auto custom-scroll font-mono text-xs leading-relaxed">
+                        {logs.length === 0 ? (
+                          <p className="text-gray-600 italic">No logs yet — click an action above to start streaming output...</p>
+                        ) : (
+                          logs.map((l, idx) => (
+                            <div key={idx} className="mb-0.5">
+                              <span className={`mr-2 font-bold ${l.stage === "build" ? "text-cyan-400" : l.stage === "run" ? "text-emerald-400" : "text-violet-400"}`}>
+                                [{l.stage?.toUpperCase()}]
                               </span>
-                            ))
-                          )}
+                              <span className={l.exit_code !== undefined && l.exit_code !== 0 ? "text-rose-400" : "text-gray-300"}>
+                                {l.line}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ─── AWS Cloud Panel ─── */}
+                  {deployMode === "aws" && (
+                    <div className="flex-shrink-0 bg-[#0d1117] border border-orange-500/15 rounded-2xl overflow-hidden">
+                      {/* Header */}
+                      <div className="flex items-center justify-between px-4 py-3 border-b border-orange-500/10">
+                        <div className="flex items-center gap-2">
+                          <Cloud size={15} className="text-orange-400" />
+                          <span className="text-sm font-bold text-white">AWS Cloud Deployment</span>
+                          <span className="text-xs text-gray-500">via Terraform</span>
+                        </div>
+                        <span className={`text-xs font-bold px-3 py-1 rounded-full border ${
+                          awsStatus === "deployed"
+                            ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400"
+                            : awsStatus === "terraform_generated"
+                            ? "bg-orange-500/10 border-orange-500/25 text-orange-400"
+                            : "bg-gray-500/10 border-gray-500/20 text-gray-500"
+                        }`}>
+                          {awsStatus === "deployed" ? "✅ Deployed" : awsStatus === "terraform_generated" ? "📋 Ready" : "⚪ Not Deployed"}
+                        </span>
+                      </div>
+
+                      {/* Config fields */}
+                      <div className="grid grid-cols-2 gap-4 px-4 pt-3 pb-2">
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">AWS Region</label>
+                          <select
+                            value={awsConfig.aws_region}
+                            onChange={(e) => setAwsConfig(prev => ({ ...prev, aws_region: e.target.value }))}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-orange-500/50 transition-colors"
+                          >
+                            <option value="us-east-1">🇺🇸 US East — N. Virginia</option>
+                            <option value="us-west-2">🇺🇸 US West — Oregon</option>
+                            <option value="eu-west-1">🇪🇺 EU — Ireland</option>
+                            <option value="ap-southeast-1">🌏 Asia — Singapore</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">Docker Hub Username</label>
+                          <input
+                            type="text"
+                            value={awsConfig.docker_repo_prefix}
+                            onChange={(e) => setAwsConfig(prev => ({ ...prev, docker_repo_prefix: e.target.value }))}
+                            placeholder="your-dockerhub-username"
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-orange-500/50 placeholder-gray-600 transition-colors"
+                          />
                         </div>
                       </div>
-                    ) : deployMode === "aws" ? (
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <div className="flex items-center gap-2 mr-2">
-                          <Cloud size={14} className="text-orange-400" />
-                          <span className="text-[10px] font-black uppercase tracking-widest text-white">Cloud</span>
-                          <Badge variant={awsStatus === 'deployed' ? 'success' : 'default'}>{awsStatus.toUpperCase()}</Badge>
-                        </div>
-                        <select
-                          value={awsConfig.aws_region}
-                          onChange={(e) => setAwsConfig(prev => ({ ...prev, aws_region: e.target.value }))}
-                          className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-[10px] text-white focus:outline-none h-8"
+
+                      {/* Action buttons */}
+                      <div className="grid grid-cols-2 gap-3 px-4 pb-3">
+                        <button
+                          onClick={async () => {
+                            if (!projectId) return;
+                            setIsDeploying(true);
+                            setMessages(prev => [...prev, { role: "ai", content: "Generating Terraform infrastructure files..." }]);
+                            try {
+                              const result = await apiClient.generateTerraform(projectId, awsConfig);
+                              setAwsStatus("terraform_generated");
+                              setMessages(prev => [...prev, { role: "ai", content: `✅ Terraform generated at ${result.terraform_path}` }]);
+                              await refreshExplorer();
+                            } catch (err: any) {
+                              setMessages(prev => [...prev, { role: "ai", content: `❌ Terraform failed: ${err.message}` }]);
+                            }
+                            setIsDeploying(false);
+                          }}
+                          disabled={isDeploying || !awsConfig.docker_repo_prefix}
+                          className="py-3 rounded-xl text-sm font-bold bg-orange-500/10 border border-orange-500/20 text-orange-300 hover:bg-orange-500/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          <option value="us-east-1">US-EAST-1</option>
-                          <option value="eu-west-1">EU-WEST-1</option>
-                        </select>
-                        <Button variant="secondary" className="h-8 px-4 text-[10px] font-black uppercase" onClick={async () => {
-                          if (!projectId) return;
-                          setIsDeploying(true);
-                          setMessages(prev => [...prev, { role: "ai", content: "Generating Terraform Layer..." }]);
-                          try {
-                            const result = await apiClient.generateTerraform(projectId, awsConfig);
-                            setAwsStatus("terraform_generated");
-                            setMessages(prev => [...prev, { role: "ai", content: `Layer Generated at ${result.terraform_path}` }]);
-                            await refreshExplorer();
-                          } catch (err: any) {
-                            setMessages(prev => [...prev, { role: "ai", content: `Layer Fail: ${err.message}` }]);
-                          }
-                          setIsDeploying(false);
-                        }} disabled={isDeploying || !awsConfig.docker_repo_prefix}>GEN_INFRA</Button>
-                        <Button variant="primary" className="h-8 px-4 text-[10px] font-black uppercase bg-orange-500 hover:bg-orange-600" onClick={() => {
-                          if (!projectId) return;
-                          setIsDeploying(true);
-                          streamAWSTerraform(projectId, "apply", (ev) => setTerraformLogs(prev => [...prev, ev]), () => { setIsDeploying(false); setAwsStatus("deployed"); }, (err) => { setIsDeploying(false); setMessages(prev => [...prev, { role: "ai", content: err.message }]); });
-                        }} disabled={isDeploying || (awsStatus === "not_deployed" && !terraformExists)}>DEPLOY_CLOUD</Button>
-                        <div className="flex-1 min-w-0 bg-[#050810] rounded-xl px-3 py-2 font-mono text-[10px] h-8 overflow-x-auto overflow-y-hidden border border-white/5 flex items-center gap-3 whitespace-nowrap">
-                          {terraformLogs.length === 0 ? <span className="text-gray-700 italic">No cloud logs.</span> : terraformLogs.slice(-3).map((l, i) => (
-                            <span key={i} className={l.type === 'error' ? 'text-rose-400' : 'text-gray-500'}>[{l.stage || 'tf'}] {l.message}</span>
-                          ))}
-                        </div>
+                          {isDeploying ? "⏳ Generating..." : "📋 Generate Terraform"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (!projectId) return;
+                            setIsDeploying(true);
+                            streamAWSTerraform(
+                              projectId, "apply",
+                              (ev) => setTerraformLogs(prev => [...prev, ev]),
+                              () => { setIsDeploying(false); setAwsStatus("deployed"); },
+                              (err) => { setIsDeploying(false); setMessages(prev => [...prev, { role: "ai", content: err.message }]); }
+                            );
+                          }}
+                          disabled={isDeploying || (awsStatus === "not_deployed" && !terraformExists)}
+                          className="py-3 rounded-xl text-sm font-bold bg-orange-500 hover:bg-orange-600 text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-orange-500/20"
+                        >
+                          {isDeploying ? "⏳ Deploying..." : "🚀 Deploy to AWS"}
+                        </button>
                       </div>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <Settings size={14} className="text-violet-400" />
-                        <span className="text-[10px] font-black uppercase tracking-widest text-white">Monitoring Active</span>
-                        <Badge variant="info">LIVE</Badge>
-                        <p className="text-[10px] text-gray-500 ml-2">Kubernetes health checks run in the panel above.</p>
+
+                      {/* Terraform logs */}
+                      <div className="mx-4 mb-4 bg-black/50 border border-white/8 rounded-xl p-3 h-28 overflow-y-auto custom-scroll font-mono text-xs leading-relaxed">
+                        {terraformLogs.length === 0 ? (
+                          <p className="text-gray-600 italic">No Terraform logs yet — generate or deploy to see output...</p>
+                        ) : (
+                          terraformLogs.map((l, i) => (
+                            <div key={i} className={`mb-0.5 ${l.type === "error" ? "text-rose-400" : "text-gray-300"}`}>
+                              <span className="text-orange-400 mr-2">[{l.stage || "tf"}]</span>{l.message}
+                            </div>
+                          ))
+                        )}
                       </div>
-                    )}
-                  </Card>
+                    </div>
+                  )}
                 </>
               )}
             </div>
 
-            {/* â”€â”€ Right: AI Chat â€” full height, nothing competing â”€â”€ */}
-            <div className="lg:col-span-4 h-full" style={{ minHeight: 0 }}>
+            {/* ═══ RIGHT: AI Chat ═══ */}
+            <div className="col-span-4 h-full" style={{ minHeight: 0 }}>
               <AIChatSidebar
                 messages={messages}
                 input={input}
