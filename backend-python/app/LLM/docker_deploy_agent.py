@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import re
 from typing import Dict, List, Optional
@@ -1271,9 +1271,12 @@ def remap_generated_docker_paths(
     services: Optional[List[Dict]],
 ) -> Dict[str, str]:
     """
-    Fix common LLM path errors before validation:
-    1. Remap Dockerfiles placed at the wrong path to match service definitions
-    2. Fix docker-compose build contexts to match service paths
+    Auto-correct common LLM output errors BEFORE validation runs:
+    1. Remap Dockerfiles placed at the wrong path
+    2. Strip legacy 'version' field from docker-compose (Compose V2 doesn't use it)
+    3. Fix build contexts to match service paths
+    4. Fix port mappings to match expected runtime_port:container_port
+    5. Fix env_file paths
     """
     if not files:
         return files
@@ -1287,7 +1290,7 @@ def remap_generated_docker_paths(
 
     new_files = dict(files)
 
-    # ── 1. Remap misplaced Dockerfiles ─────────────────────────────────
+    # ── 1. Remap misplaced Dockerfiles ───────────────────────────────────────
     expected = {_expected_dockerfile_path(svc): svc for svc in app_services}
     gen_dockerfiles = [
         p for p in new_files if os.path.basename(p).lower() == "dockerfile"
@@ -1300,42 +1303,77 @@ def remap_generated_docker_paths(
             new_files[new] = new_files.pop(old)
             print(f"🔧 Path remap: {old} → {new}")
 
-    # ── 2. Fix compose build contexts ──────────────────────────────────
+    # ── 2-5. Auto-correct docker-compose ─────────────────────────────────────
     compose_key = _compose_path(new_files)
     if compose_key:
         try:
             import yaml
-            data = yaml.safe_load(new_files[compose_key])
-            if isinstance(data, dict) and isinstance(data.get("services"), dict):
-                svc_map = {
-                    str(s.get("name", "")).strip(): _clean_path(s.get("path", "."))
-                    for s in app_services
-                }
-                changed = False
-                for name, expected_ctx in svc_map.items():
-                    cs = data["services"].get(name)
+            data = yaml.safe_load(new_files[compose_key]) or {}
+            if not isinstance(data, dict):
+                data = {}
+
+            changed = False
+
+            # 2. Strip legacy `version` field
+            if "version" in data:
+                del data["version"]
+                changed = True
+                print("🔧 Removed deprecated 'version' field from docker-compose.yml")
+
+            compose_services = data.get("services")
+            if isinstance(compose_services, dict):
+                svc_map = {str(s.get("name", "")).strip(): s for s in app_services}
+
+                for name, svc in svc_map.items():
+                    cs = compose_services.get(name)
                     if not isinstance(cs, dict):
                         continue
-                    want = f"./{expected_ctx}" if expected_ctx != "." else "."
+
+                    # 3. Fix build context
+                    expected_ctx = _clean_path(svc.get("path", "."))
+                    want_ctx = f"./{expected_ctx}" if expected_ctx != "." else "."
                     bv = cs.get("build")
                     if isinstance(bv, str):
                         if _clean_path(bv) != expected_ctx:
-                            cs["build"] = want
+                            cs["build"] = want_ctx
                             changed = True
                     elif isinstance(bv, dict):
                         if _clean_path(bv.get("context", ".")) != expected_ctx:
-                            bv["context"] = want
+                            bv["context"] = want_ctx
                             changed = True
-                if changed:
-                    new_files[compose_key] = yaml.dump(
-                        data, default_flow_style=False, sort_keys=False
-                    )
-                    print("🔧 Fixed compose build contexts")
-        except Exception:
-            pass
+
+                    # 4. Fix / add port mapping
+                    runtime_port = svc.get("runtime_port")
+                    container_port = svc.get("container_port")
+                    if runtime_port is not None and container_port is not None:
+                        ports = cs.get("ports") or []
+                        has_correct = any(
+                            _compose_port_matches(p, runtime_port, container_port)
+                            for p in ports
+                        )
+                        if not has_correct:
+                            cs["ports"] = [f"{runtime_port}:{container_port}"]
+                            changed = True
+                            print(f"🔧 Fixed port mapping for '{name}': {runtime_port}:{container_port}")
+
+                    # 5. Fix env_file path
+                    expected_env = svc.get("env_file")
+                    if expected_env:
+                        env_vals = _env_file_values(cs.get("env_file"))
+                        if _clean_path(expected_env) not in env_vals:
+                            cs["env_file"] = [expected_env]
+                            changed = True
+                            print(f"🔧 Fixed env_file for '{name}': {expected_env}")
+
+            if changed:
+                new_files[compose_key] = yaml.dump(
+                    data, default_flow_style=False, sort_keys=False
+                )
+                print("✅ docker-compose.yml auto-corrected before validation")
+        except Exception as ex:
+            print(f"⚠️  remap compose fix failed (non-fatal): {ex}")
 
     return new_files
-
 
 def _compose_port_matches(value: object, runtime_port: object, container_port: object) -> bool:
     expected = f"{runtime_port}:{container_port}"
@@ -1389,8 +1427,7 @@ def _validate_compose(
 
     if not isinstance(data, dict):
         return ["docker-compose.yml must be a YAML object."]
-    if "version" in data:
-        errors.append("docker-compose.yml must not contain a top-level version field.")
+    # version field is auto-stripped by remap; skip validation for it
 
     compose_services = data.get("services")
     if not isinstance(compose_services, dict) or not compose_services:
@@ -1485,7 +1522,10 @@ def _validate_dockerfile(path: str, content: str, service: Dict) -> List[str]:
             errors.append(f"{path} backend-like service must not use nginx.")
         entry_point = service.get("entry_point")
         if entry_point and str(entry_point) not in content:
-            errors.append(f"{path} must reference entry_point {entry_point}.")
+            # Also accept if just the basename appears (e.g. 'server.js' matches 'src/server.js')
+            entry_basename = os.path.basename(str(entry_point))
+            if not entry_basename or entry_basename not in content:
+                errors.append(f"{path} must reference entry_point {entry_point}.")
 
     return errors
 

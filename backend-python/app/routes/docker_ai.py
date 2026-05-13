@@ -1,4 +1,6 @@
-from typing import List, Optional
+﻿from typing import List, Optional
+import re
+import json
 
 from fastapi import APIRouter, Body, Depends, Query, Request
 from fastapi.responses import StreamingResponse
@@ -7,6 +9,7 @@ from starlette.background import BackgroundTask
 from ..LLM.docker_deploy_agent import parse_generated_docker_files, remap_generated_docker_paths, validate_generated_docker_files
 from ..controllers.deployment_controller import deploy_project_handler
 from ..controllers.deployment_readiness_controller import check_readiness_handler
+
 
 from ..controllers.docker_ai_controller import (
     create_project_folder_handler,
@@ -22,6 +25,78 @@ from ..controllers.docker_ai_controller import (
 from ..utils.auth import get_current_active_user, decode_access_token
 
 router = APIRouter(prefix="/api/docker", tags=["Docker Deploy (Llama 3.1)"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Permissive file-block parser
+# Understands all common LLM output formats:
+#   **Gemfile** ```ruby ... ```
+#   ### rails-api.gemspec ```ruby ... ```
+#   Dockerfile ```dockerfile ... ```
+#   `nginx.conf`:  ```nginx ... ```
+# ─────────────────────────────────────────────────────────────────────────────
+_FILENAME_CHARS = r"[\w\.\-/]+"
+
+_FILE_BLOCK_PATTERNS = [
+    # **filename** ```lang ... ```
+    rf"\*\*(?P<path>{_FILENAME_CHARS})\*\*\s*```(?:[a-zA-Z0-9_\-]*)\n(?P<content>[\s\S]*?)```",
+    # ### filename ```lang ... ```
+    rf"(?:^|\n)#{1,3}\s*(?P<path>{_FILENAME_CHARS})\s*\n```(?:[a-zA-Z0-9_\-]*)\n(?P<content>[\s\S]*?)```",
+    # `filename`: ```lang ... ```
+    rf"`(?P<path>{_FILENAME_CHARS})`\s*:?\s*\n?```(?:[a-zA-Z0-9_\-]*)\n(?P<content>[\s\S]*?)```",
+    # filename: ```lang ... ```   (no backticks, colon after name)
+    rf"(?:^|\n)(?P<path>{_FILENAME_CHARS}):\s*\n```(?:[a-zA-Z0-9_\-]*)\n(?P<content>[\s\S]*?)```",
+    # ```Filename\ncontent```  (filename as the lang tag)
+    rf"```(?P<path>{_FILENAME_CHARS})\n(?P<content>[\s\S]*?)```",
+]
+
+# File extensions that are valid project files (never prose words)
+_VALID_EXTENSIONS = {
+    "", "rb", "gemspec", "gemfile", "lock", "yml", "yaml", "json", "js", "ts",
+    "tsx", "jsx", "py", "go", "java", "kt", "swift", "rs", "sh", "env",
+    "conf", "nginx", "toml", "cfg", "ini", "xml", "html", "css", "md",
+    "dockerfile", "dockerignore", "gitignore", "txt", "sql",
+}
+
+# Known filenames with no extension
+_KNOWN_BARE_NAMES = {
+    "dockerfile", "gemfile", "makefile", "rakefile", "procfile",
+    "vagrantfile", "jenkinsfile", "caddyfile", ".env", ".gitignore",
+    ".dockerignore",
+}
+
+
+def _parse_any_file_blocks(text: str) -> dict:
+    """
+    Extract ALL filename + code-block pairs from LLM output.
+    Returns {relative_path: content}.
+    """
+    found: dict = {}
+    for pattern in _FILE_BLOCK_PATTERNS:
+        for m in re.finditer(pattern, text or "", re.IGNORECASE | re.MULTILINE):
+            raw_path = m.group("path").strip().strip("`*# ")
+            content  = (m.group("content") or "").strip()
+            if not raw_path or not content:
+                continue
+
+            # Normalise path
+            path = re.sub(r"^[./\\]+", "", raw_path).replace("\\", "/")
+            if not path:
+                continue
+
+            # Accept if it's a known bare name or has a recognised extension
+            base = path.split("/")[-1].lower()
+            ext  = base.rsplit(".", 1)[-1] if "." in base else ""
+            if base not in _KNOWN_BARE_NAMES and ext not in _VALID_EXTENSIONS:
+                continue  # skip prose words caught by the regex
+
+            if path not in found:          # first match wins
+                found[path] = content
+                print(f"🔎 _parse_any_file_blocks: found '{path}' ({len(content)} chars)")
+
+    return found
+
+
 
 
 class DockerChatRequest(BaseModel):
@@ -149,68 +224,88 @@ async def docker_chat_stream(
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'token': f'Error: {str(e)}', 'done': True, 'error': True})}\n\n"
-            
+
     async def post_chat_action():
         full_text = stream_context.get("full_text", "")
         if not full_text.strip():
             return
-            
-        print(f"🔄 Auto-Healing: Parsing LLM output for files...")
-        files = parse_generated_docker_files(full_text)
-        files = remap_generated_docker_paths(
-            files,
+
+        print("🔄 Auto-Healing: Parsing LLM output for files...")
+
+        # ── PASS 1: Docker files (Dockerfile / docker-compose) ─────────────
+        # Exact same pipeline as the original working code.
+        docker_files = parse_generated_docker_files(full_text)
+        docker_files = remap_generated_docker_paths(
+            docker_files,
             prepared_data.get("metadata", {}),
             prepared_data.get("services", []),
         )
 
-        if files:
+        if docker_files:
             has_dockerfile = any(
                 path.replace("\\", "/").split("/")[-1].lower() == "dockerfile"
-                for path in files
+                for path in docker_files
             )
             has_compose = any(
                 path.replace("\\", "/").split("/")[-1].lower()
                 in {"docker-compose.yml", "docker-compose.yaml"}
-                for path in files
+                for path in docker_files
             )
 
+            skip_docker = False
             if has_dockerfile or has_compose:
                 validation_errors = validate_generated_docker_files(
-                    files=files,
+                    files=docker_files,
                     metadata=prepared_data.get("metadata", {}),
                     services=prepared_data.get("services", []),
                     require_dockerfiles=has_dockerfile,
                     require_compose=has_compose,
                 )
-
                 if validation_errors:
-                    print("Auto-Healing skipped invalid generated Docker files:")
+                    print("⚠️  Docker validation errors — skipping Docker files:")
                     for err in validation_errors:
-                        print(f"- {err}")
-                    return
+                        print(f"  - {err}")
+                    skip_docker = True
 
-        # Write any generated files to the project directory
-        for file_path, content in files.items():
+            if not skip_docker:
+                for file_path, content in docker_files.items():
+                    try:
+                        await write_project_file_handler(project_id, current_user, file_path, content)
+                        print(f"✅ Auto-Healing: Wrote {file_path}")
+                    except Exception as e:
+                        print(f"❌ Auto-Healing failed to write {file_path}: {e}")
+
+        # ── PASS 2: Any other project file (Gemfile, gemspec, package.json…) ─
+        # Permissive parser, no Docker validation, never double-writes PASS 1 files.
+        other_files = _parse_any_file_blocks(full_text)
+        docker_basenames = {"dockerfile", "docker-compose.yml", "docker-compose.yaml"}
+        for file_path, content in other_files.items():
+            base = file_path.replace("\\", "/").split("/")[-1].lower()
+            if base in docker_basenames:
+                continue  # handled (or skipped) by PASS 1
+            if file_path in docker_files:
+                continue  # already written by PASS 1
             try:
                 await write_project_file_handler(project_id, current_user, file_path, content)
-                print(f"✅ Auto-Healing: Rewrote {file_path}")
+                print(f"✅ Auto-Healing: Wrote {file_path}")
             except Exception as e:
                 print(f"❌ Auto-Healing failed to write {file_path}: {e}")
-                
+
         # Auto-trigger deployment if prompt requested it
         if "deploy" in message.lower():
-            print(f"🚀 Auto-Deploying based on user chat...")
+            print("🚀 Auto-Deploying based on user chat...")
             try:
                 await deploy_project_handler(project_id, current_user)
-                print(f"✅ Auto-Deploy successful!")
+                print("✅ Auto-Deploy successful!")
             except Exception as e:
                 print(f"❌ Auto-Deploy failed: {e}")
 
     return StreamingResponse(
-        event_stream(), 
+        event_stream(),
         media_type="text/event-stream",
         background=BackgroundTask(post_chat_action)
     )
+
 
 
 @router.get("/{project_id}/file")
