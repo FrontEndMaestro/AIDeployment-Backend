@@ -18,6 +18,7 @@ from ..controllers.aws_deploy_controller import (
     apply_terraform_handler,
     destroy_terraform_handler,
     scale_to_zero_handler,
+    scale_up_handler,
     get_aws_status_handler,
 )
 from ..utils.auth import get_current_active_user
@@ -30,12 +31,18 @@ router = APIRouter(prefix="/api/aws", tags=["AWS Deployment"])
 class AWSConfig(BaseModel):
     """Configuration for AWS deployment."""
     aws_region: str = "us-east-1"
-    docker_repo_prefix: str  
+    docker_repo_prefix: str
     db_engine: Optional[str] = None  # mongo, postgres, mysql, none
     mongo_db_url: Optional[str] = None
     rds_db_url: Optional[str] = None
     desired_count: int = 1
     extra_env: Optional[Dict[str, str]] = None
+    # EC2 access / sizing
+    key_name: str = "aws-deployment-devops" # EC2 key pair name for SSH
+    ssh_private_key_path: str = "~/.ssh/aws-deployment-devops.pem"
+    allowed_ssh_cidr: str = "0.0.0.0/0"    # CIDR allowed to SSH; restrict to your IP in production
+    app_port: Optional[int] = None          # Primary app port; auto-detected from services when None
+    root_volume_size: int = 20              # Root EBS volume GB (min 20 for Docker workloads)
 
 
 class ApplyConfig(BaseModel):
@@ -154,6 +161,19 @@ async def scale_to_zero(
     Returns a streaming response (SSE) with progress updates.
     """
     return await scale_to_zero_handler(project_id, current_user)
+
+
+@router.post("/{project_id}/scale-up")
+async def scale_up(
+    project_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """
+    Start a stopped EC2 instance.
+
+    Returns a streaming response (SSE) with progress updates.
+    """
+    return await scale_up_handler(project_id, current_user)
 
 
 @router.get("/{project_id}/status")

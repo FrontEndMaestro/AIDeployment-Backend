@@ -287,7 +287,7 @@ async def docker_chat_stream(
                 continue  # already written by PASS 1
             try:
                 await write_project_file_handler(project_id, current_user, file_path, content)
-                print(f"✅ Auto-Healing: Wrote {file_path}")
+                print(f"✅ Auto-Healing: Rewrote {file_path}")
             except Exception as e:
                 print(f"❌ Auto-Healing failed to write {file_path}: {e}")
 

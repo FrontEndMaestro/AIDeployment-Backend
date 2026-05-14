@@ -15,14 +15,6 @@ GEMINI_API_BASE = settings.GEMINI_API_BASE.rstrip("/")
 GEMINI_MODEL_NAME = settings.GEMINI_MODEL_NAME
 GEMINI_MAX_OUTPUT_TOKENS = settings.GEMINI_MAX_OUTPUT_TOKENS
 
-# Ordered fallback list — tried in order when primary fails/is busy
-GEMINI_FALLBACK_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.5-pro",
-    "gemini-1.5-pro",
-]
-
 
 def _messages_to_prompt(messages: List[Dict[str, str]]) -> str:
     prompt = ""
@@ -208,97 +200,66 @@ def call_llama_stream(messages: List[Dict[str, str]], custom_options: Optional[D
         yield {"token": f"ERROR: LLM stream failed - {str(e)}", "done": True, "error": True}
 
 
-def call_gemini(messages: List[Dict[str, str]], custom_options: Optional[Dict] = None, model_override: Optional[str] = None) -> str:
+def call_gemini(messages: List[Dict[str, str]], custom_options: Optional[Dict] = None) -> str:
     """
-    Call Gemini for Docker generation. Supports model_override and automatic
-    fallback to alternative models when the primary returns an error.
+    Call Gemini for Docker generation. This is intentionally separate from
+    call_llama so Terraform and other Ollama paths keep their existing behavior.
     """
     if not GEMINI_API_KEY:
         return "ERROR: GEMINI_API_KEY is not set. Set it in backend-python/.env to use Gemini."
 
-    # Build the model priority list: user selection first, then fallbacks
-    models_to_try: List[str] = []
-    primary = (model_override or GEMINI_MODEL_NAME).strip()
-    models_to_try.append(primary)
-    for m in GEMINI_FALLBACK_MODELS:
-        if m != primary:
-            models_to_try.append(m)
+    try:
+        system_text, user_text = _split_messages_for_gemini(messages)
+        model_path = GEMINI_MODEL_NAME if GEMINI_MODEL_NAME.startswith("models/") else f"models/{GEMINI_MODEL_NAME}"
+        url = f"{GEMINI_API_BASE}/{model_path}:generateContent"
 
-    last_error = "Unknown error"
-    for attempt_model in models_to_try:
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": user_text}],
+                }
+            ],
+            "generationConfig": _gemini_generation_config(custom_options),
+        }
+        if system_text:
+            payload["systemInstruction"] = {"parts": [{"text": system_text}]}
+
+        resp = requests.post(
+            url,
+            params={"key": GEMINI_API_KEY},
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=LLM_TIMEOUT,
+        )
+
         try:
-            system_text, user_text = _split_messages_for_gemini(messages)
-            model_path = attempt_model if attempt_model.startswith("models/") else f"models/{attempt_model}"
-            url = f"{GEMINI_API_BASE}/{model_path}:generateContent"
+            data = resp.json()
+        except ValueError:
+            data = {}
 
-            payload = {
-                "contents": [
-                    {
-                        "role": "user",
-                        "parts": [{"text": user_text}],
-                    }
-                ],
-                "generationConfig": _gemini_generation_config(custom_options),
-            }
-            if system_text:
-                payload["systemInstruction"] = {"parts": [{"text": system_text}]}
+        if resp.status_code >= 400:
+            detail = (data.get("error") or {}).get("message") or resp.text[:500]
+            return f"ERROR: Gemini HTTP {resp.status_code} - {detail}"
 
-            resp = requests.post(
-                url,
-                params={"key": GEMINI_API_KEY},
-                headers={"Content-Type": "application/json"},
-                json=payload,
-                timeout=LLM_TIMEOUT,
-            )
+        candidates = data.get("candidates") or []
+        if not candidates:
+            feedback = data.get("promptFeedback") or {}
+            return f"ERROR: Gemini returned no candidates. Feedback: {feedback}"
 
-            try:
-                data = resp.json()
-            except ValueError:
-                data = {}
-
-            # 429 = quota/busy, 503 = overloaded — try next model
-            if resp.status_code in (429, 503):
-                detail = (data.get("error") or {}).get("message") or resp.text[:200]
-                last_error = f"Gemini HTTP {resp.status_code} on {attempt_model} - {detail}"
-                print(f"⚠️ {last_error} — trying next model...")
-                continue
-
-            if resp.status_code >= 400:
-                detail = (data.get("error") or {}).get("message") or resp.text[:500]
-                return f"ERROR: Gemini HTTP {resp.status_code} - {detail}"
-
-            candidates = data.get("candidates") or []
-            if not candidates:
-                feedback = data.get("promptFeedback") or {}
-                last_error = f"Gemini returned no candidates on {attempt_model}. Feedback: {feedback}"
-                print(f"⚠️ {last_error} — trying next model...")
-                continue
-
-            parts = ((candidates[0].get("content") or {}).get("parts") or [])
-            text = "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
-            if not text.strip():
-                finish_reason = candidates[0].get("finishReason")
-                last_error = f"Gemini empty response on {attempt_model}. Finish: {finish_reason}"
-                print(f"⚠️ {last_error} — trying next model...")
-                continue
-
-            if attempt_model != primary:
-                print(f"✅ Fell back to {attempt_model} successfully.")
-            return text
-
-        except requests.exceptions.ConnectionError as e:
-            last_error = f"Cannot connect to Gemini API: {str(e)}"
-            continue
-        except requests.exceptions.Timeout:
-            last_error = f"Gemini request timed out after {LLM_TIMEOUT}s on {attempt_model}"
-            print(f"⚠️ {last_error} — trying next model...")
-            continue
-        except Exception as e:
-            import traceback
-            last_error = f"Gemini call failed on {attempt_model} - {str(e)}"
-            continue
-
-    return f"ERROR: All Gemini models failed. Last error: {last_error}"
+        parts = ((candidates[0].get("content") or {}).get("parts") or [])
+        text = "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
+        if not text.strip():
+            finish_reason = candidates[0].get("finishReason")
+            return f"ERROR: Gemini returned an empty response. Finish reason: {finish_reason}"
+        return text
+    except requests.exceptions.ConnectionError as e:
+        return f"ERROR: Cannot connect to Gemini API at {GEMINI_API_BASE}. Details: {str(e)}"
+    except requests.exceptions.Timeout:
+        return f"ERROR: Gemini request timed out after {LLM_TIMEOUT} seconds."
+    except Exception as e:
+        import traceback
+        return f"ERROR: Gemini call failed - {str(e)}\nTraceback: {traceback.format_exc()[:500]}"
 
 
 def call_gemini_stream(messages: List[Dict[str, str]], custom_options: Optional[Dict] = None, model_override: Optional[str] = None):

@@ -310,19 +310,12 @@ class AWSDeploymentService:
     
     def scale_up(self, desired_count: int = 1) -> Generator[Dict[str, Any], None, None]:
         """
-        Scale ECS services back up.
-        Runs terraform apply with scale_to_zero=false.
-        
-        Args:
-            desired_count: Number of tasks per service
+        Start the EC2 instance back up (reverse of scale_to_zero/stop).
         
         Yields:
-            Progress logs from terraform apply
+            Progress logs from starting the instance
         """
-        yield from self.terraform_apply(variables={
-            "scale_to_zero": False,
-            "desired_count": desired_count
-        })
+        yield from self.start_instance()
     
     def check_terraform_installed(self) -> bool:
         """Check if Terraform CLI is installed and accessible."""

@@ -306,6 +306,7 @@ def _write_generated_file(project_root: str, rel_path: str, content: str) -> boo
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, "w", encoding="utf-8") as f:
             f.write(content.rstrip() + "\n")
+        print(f"[readiness] Gemini wrote {clean} -> {dest}")
         return True
     except Exception as e:
         print(f"[readiness] Failed to write {rel_path}: {e}")
