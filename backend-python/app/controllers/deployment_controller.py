@@ -2,12 +2,23 @@ from fastapi import HTTPException
 from datetime import datetime
 from bson import ObjectId
 import os
+import sys
 from ..config.database import get_projects_collection
 from ..config.settings import settings
 from ..utils.docker_builder import build_docker_image
 from ..utils.docker_pusher import push_docker_image
 from ..utils.k8s_deployer import deploy_to_kubernetes, get_deployment_status, cleanup_deployment
 from ..utils.k8s_manifest_generator import generate_k8s_manifests
+from ..utils.port_forward_manager import port_forward_manager
+
+
+def _safe_print(msg: str):
+    try:
+        print(msg)
+        sys.stdout.flush()
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", errors="replace").decode("ascii"))
+        sys.stdout.flush()
 
 
 async def deploy_project_handler(project_id: str, current_user: dict):
@@ -43,7 +54,7 @@ async def deploy_project_handler(project_id: str, current_user: dict):
             }
         )
         
-        print(f"\n🚀 Deployment started: {project_id}")
+        _safe_print(f"[DEPLOY] Deployment started: {project_id}")
         
         metadata = project.get("metadata", {})
         language = metadata.get("language", "Unknown")
@@ -56,10 +67,10 @@ async def deploy_project_handler(project_id: str, current_user: dict):
         if not extracted_path or not os.path.exists(extracted_path):
             raise HTTPException(status_code=400, detail="Extracted project files not found")
         
-        print(f"🛠️ Detected language: {language}")
+        _safe_print(f"[DEPLOY] Detected language: {language}")
         
         # Step 1: Build Docker image
-        print(f"🐳 Building Docker image...")
+        _safe_print(f"[DEPLOY] Building Docker image...")
         image_name = f"hamzafarooqi/devops-autopilot-{project_name}"
         image_tag = f"{image_name}:latest"
         
@@ -76,24 +87,24 @@ async def deploy_project_handler(project_id: str, current_user: dict):
 
         if build_result.get("detected_port"):
             port = build_result["detected_port"]
-            print(f"🔌 Using detected port: {port}")
+            _safe_print(f"[DEPLOY] Using detected port: {port}")
         
         if not build_result["success"]:
             raise Exception(f"Docker build failed: {build_result['message']}")
         
-        print(f"✅ Docker image built")
+        _safe_print("[DEPLOY] Docker image built")
         
         # Step 2: Push to Docker Hub
-        print(f"📤 Pushing to Docker Hub...")
+        _safe_print("[DEPLOY] Pushing to Docker Hub...")
         push_result = push_docker_image(image_tag)
         
         if not push_result["success"]:
             raise Exception(f"Docker push failed: {push_result['message']}")
         
-        print(f"✅ Docker image pushed")
+        _safe_print("[DEPLOY] Docker image pushed")
         
         # Step 3: Generate K8s manifests
-        print(f"📋 Generating K8s manifests...")
+        _safe_print("[DEPLOY] Generating K8s manifests...")
         deployment_name = f"devops-autopilot-{project_name}".replace("_", "-").lower()
         node_port = 30000 + (hash(project_id) % 2767)
         
@@ -103,38 +114,56 @@ async def deploy_project_handler(project_id: str, current_user: dict):
             port=port,
             node_port=node_port,
             env_variables=env_variables,
-            mongodb_url=f"mongodb://host.docker.internal:27017/{project_name}",  # Use project-specific DB
+            mongodb_url=f"mongodb://host.docker.internal:27017/{project_name}",
             labels={"project_id": project_id, "created_by": current_user.get("username", "user")}
         )
         
-        # IMPORTANT: patch imagePullPolicy to IfNotPresent for local k8s
-        # (Always would require image on DockerHub which may not be pushed yet)
         if "deployment" in manifests:
             manifests["deployment"] = manifests["deployment"].replace(
                 "imagePullPolicy: Always", "imagePullPolicy: IfNotPresent"
             )
         
-        print(f"✅ K8s manifests generated")
+        _safe_print("[DEPLOY] K8s manifests generated")
         
         # Step 4: Deploy to Kubernetes
-        print(f"⚙️ Deploying to K8s...")
+        _safe_print("[DEPLOY] Deploying to K8s...")
         k8s_result = deploy_to_kubernetes(manifests)
         
         if not k8s_result["success"]:
             raise Exception(f"K8s deployment failed: {k8s_result['message']}")
         
-        print(f"✅ Deployed to K8s")
+        _safe_print("[DEPLOY] Deployed to K8s")
         
-        # Step 5: Update database
+        # Step 5: Auto port-forward so app is reachable on localhost immediately
+        _safe_print(f"[DEPLOY] Starting auto port-forward for {deployment_name}...")
+        pf_result = port_forward_manager.start(
+            project_id=project_id,
+            service_name=deployment_name,
+            container_port=port,
+            namespace="default",
+        )
+        
+        if pf_result["success"]:
+            access_url = pf_result["url"]
+            _safe_print(f"[DEPLOY] App accessible at: {access_url}")
+        else:
+            # Port-forward failed but deploy succeeded — fall back to NodePort URL
+            _safe_print(f"[DEPLOY-WARN] Port-forward failed: {pf_result.get('message')}")
+            access_url = f"http://localhost:{node_port}"
+        
+        # Step 6: Update database with access URL
         deployment_info = {
             "deployment_name": deployment_name,
             "pod_name": k8s_result.get("pod_name"),
-            "service_url": f"http://localhost:{node_port}",
+            "service_url": access_url,
             "node_port": node_port,
+            "local_port": pf_result.get("local_port"),
+            "port_forward_active": pf_result["success"],
             "image": image_tag,
             "status": "running",
             "deployed_at": datetime.now(),
             "k8s_namespace": "default",
+            "k8s_deployment_name": deployment_name,
             "language": language,
             "framework": framework
         }
@@ -145,14 +174,17 @@ async def deploy_project_handler(project_id: str, current_user: dict):
                 "$set": {
                     "deployment_status": "deployed",
                     "deployment": deployment_info,
+                    "k8s_deployment_name": deployment_name,
+                    "k8s_namespace": "default",
                     "status": "completed",
-                    "updated_at": datetime.now()
+                    "updated_at": datetime.now(),
+                    "access_url": access_url,
                 },
-                "$push": {"logs": {"message": "Deployment completed successfully", "timestamp": datetime.now()}}
+                "$push": {"logs": {"message": f"Deployment complete. Access at: {access_url}", "timestamp": datetime.now()}}
             }
         )
         
-        print(f"✅ Deployment complete")
+        _safe_print(f"[DEPLOY] Complete — {access_url}")
         
         return {
             "success": True,
@@ -161,14 +193,15 @@ async def deploy_project_handler(project_id: str, current_user: dict):
                 "project_id": project_id,
                 "project_name": project_name,
                 "deployment": deployment_info,
-                "access_url": deployment_info["service_url"]
+                "access_url": access_url,
+                "port_forward_active": pf_result["success"],
             }
         }
     
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Deployment error: {str(e)}")
+        _safe_print(f"[DEPLOY-ERROR] {str(e)}")
         
         if ObjectId.is_valid(project_id):
             collection = get_projects_collection()
@@ -238,7 +271,9 @@ async def undeploy_project_handler(project_id: str, current_user: dict):
                 "message": "No deployment found"
             }
         
-        print(f"🗑️ Undeploying: {deployment_name}")
+        _safe_print(f"[UNDEPLOY] Removing: {deployment_name}")
+        # Stop port-forward tunnel before cluster cleanup
+        port_forward_manager.stop(project_id)
         cleanup_deployment(deployment_name)
         
         await collection.update_one(

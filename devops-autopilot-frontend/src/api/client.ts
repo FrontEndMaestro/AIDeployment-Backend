@@ -455,6 +455,21 @@ class ApiClient {
     });
     return this.handleResponse(response);
   }
+
+  async getAccessUrl(projectId: string): Promise<{
+    success: boolean;
+    url: string | null;
+    local_port: number | null;
+    port_forward_active: boolean;
+    source?: string;
+    message?: string;
+  }> {
+    const response = await fetch(`${API_BASE_URL}/monitor/${projectId}/access`, {
+      method: "GET",
+      headers: this.getHeaders(),
+    });
+    return this.handleResponse(response);
+  }
 }
 
 export const apiClient = new ApiClient();
