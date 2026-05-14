@@ -295,6 +295,142 @@ def _extract_compose_host_ports(terraform_code: str) -> List[int]:
     return ports
 
 
+def _extract_heredoc_blocks(text: str, header_pattern: str) -> List[str]:
+    blocks: List[str] = []
+    for match in re.finditer(header_pattern, text, flags=re.MULTILINE):
+        marker = match.group("marker")
+        end_match = re.search(
+            rf"^[ \t]*{re.escape(marker)}[ \t]*$",
+            text[match.end():],
+            flags=re.MULTILINE,
+        )
+        if end_match:
+            blocks.append(text[match.end():match.end() + end_match.start()])
+    return blocks
+
+
+def _extract_user_data_blocks(terraform_code: str) -> List[str]:
+    return _extract_heredoc_blocks(
+        terraform_code,
+        r"user_data\s*=\s*<<-?\s*[\"']?(?P<marker>[A-Za-z_][A-Za-z0-9_]*)[\"']?[ \t]*\n",
+    )
+
+
+def _extract_embedded_compose_documents(terraform_code: str) -> List[str]:
+    compose_docs: List[str] = []
+    for user_data in _extract_user_data_blocks(terraform_code):
+        compose_docs.extend(
+            _extract_heredoc_blocks(
+                user_data,
+                r"^[^\n]*docker-compose\.ya?ml[^\n]*<<\s*[\"']?(?P<marker>[A-Za-z_][A-Za-z0-9_]*)[\"']?[ \t]*\n",
+            )
+        )
+    return compose_docs
+
+
+def _compose_port_host_side(port_mapping: Any) -> Optional[int]:
+    if isinstance(port_mapping, dict):
+        published = port_mapping.get("published")
+        if published is None:
+            published = port_mapping.get("host_port")
+        if published is None:
+            return None
+        value = str(published).strip().strip('"\'')
+    else:
+        value = str(port_mapping).strip().strip('"\'')
+
+    if "/" in value:
+        value = value.split("/", 1)[0]
+    parts = value.split(":")
+    if len(parts) < 2:
+        return None
+    host_port = parts[-2].strip()
+    if not host_port.isdigit():
+        return None
+    port = int(host_port)
+    return port if 1 <= port <= 65535 else None
+
+
+def _output_name_for_compose_service(service_name: str, image_name: str) -> Optional[str]:
+    combined = f"{service_name} {image_name}".lower()
+    if any(token in combined for token in ("frontend", "front-end", "client", "web", "ui")):
+        return "frontend_url"
+    if any(token in combined for token in ("backend", "back-end", "server", "api")):
+        return "backend_url"
+    return None
+
+
+def _extract_compose_output_url_ports(terraform_code: str) -> Dict[str, int]:
+    output_ports: Dict[str, int] = {}
+    for compose_content in _extract_embedded_compose_documents(terraform_code):
+        try:
+            compose_data = yaml.safe_load(compose_content) or {}
+        except yaml.YAMLError:
+            continue
+        services = compose_data.get("services") if isinstance(compose_data, dict) else None
+        if not isinstance(services, dict):
+            continue
+
+        for service_name, service in services.items():
+            if not isinstance(service, dict):
+                continue
+            image_name = str(service.get("image") or "")
+            if _is_database_compose_service(str(service_name), image_name):
+                continue
+            output_name = _output_name_for_compose_service(str(service_name), image_name)
+            if not output_name or output_name in output_ports:
+                continue
+
+            for port_mapping in service.get("ports") or []:
+                host_port = _compose_port_host_side(port_mapping)
+                if host_port is not None:
+                    output_ports[output_name] = host_port
+                    break
+    return output_ports
+
+
+def _inject_url_port(value: str, port: int) -> str:
+    url_pattern = re.compile(
+        r"(?P<base>https?://\$\{aws_instance\.[^}]+\.public_ip\})(?::(?P<port>\$\{[^}]+\}|\d{1,5}))?"
+    )
+
+    def replace(match: re.Match) -> str:
+        if match.group("port") == str(port):
+            return match.group(0)
+        return f"{match.group('base')}:{port}"
+
+    return url_pattern.sub(replace, value, count=1)
+
+
+def _ensure_output_url_port(terraform_code: str, output_name: str, port: int) -> str:
+    match = re.search(rf'output\s+"{re.escape(output_name)}"\s*{{', terraform_code)
+    if not match:
+        return terraform_code
+    open_index = terraform_code.find("{", match.start(), match.end())
+    close_index = _find_matching_brace(terraform_code, open_index)
+    if close_index is None:
+        return terraform_code
+
+    block = terraform_code[match.start():close_index + 1]
+    updated_block = _inject_url_port(block, port)
+    if updated_block == block:
+        return terraform_code
+    return terraform_code[:match.start()] + updated_block + terraform_code[close_index + 1:]
+
+
+def _ensure_output_urls_include_compose_ports(terraform_code: str) -> str:
+    """
+    Make frontend_url/backend_url outputs match host ports from embedded compose.
+
+    Gemini may emit `frontend_url` without `:5173` even when user_data maps
+    `5173:80`. This pass reads only the docker-compose.yml heredoc inside
+    user_data and injects the matching host-side service port into the URL.
+    """
+    for output_name, port in _extract_compose_output_url_ports(terraform_code).items():
+        terraform_code = _ensure_output_url_port(terraform_code, output_name, port)
+    return terraform_code
+
+
 def _parse_variable_defaults(terraform_code: str) -> Dict[str, str]:
     """Return simple Terraform variable defaults as unquoted strings."""
     defaults: Dict[str, str] = {}
@@ -892,9 +1028,11 @@ async def generate_terraform_handler(
                 detail=f"LLM failed to generate Terraform: {terraform_code[:200]}"
             )
         terraform_code = _dedupe_ingress_blocks_in_security_groups(
-            _ensure_compose_host_ports_allowed(
-                _enforce_ssh_key_settings(
-                    _enforce_ec2_instance_type(_inject_docker_credentials(terraform_code))
+            _ensure_output_urls_include_compose_ports(
+                _ensure_compose_host_ports_allowed(
+                    _enforce_ssh_key_settings(
+                        _enforce_ec2_instance_type(_inject_docker_credentials(terraform_code))
+                    )
                 )
             )
         )
@@ -1248,9 +1386,11 @@ async def fix_terraform_handler(
     if not fixed_terraform or len(fixed_terraform) < 100:
         raise HTTPException(status_code=500, detail="LLM failed to generate fix")
     fixed_terraform = _dedupe_ingress_blocks_in_security_groups(
-        _ensure_compose_host_ports_allowed(
-            _enforce_ssh_key_settings(
-                _enforce_ec2_instance_type(_inject_docker_credentials(fixed_terraform))
+        _ensure_output_urls_include_compose_ports(
+            _ensure_compose_host_ports_allowed(
+                _enforce_ssh_key_settings(
+                    _enforce_ec2_instance_type(_inject_docker_credentials(fixed_terraform))
+                )
             )
         )
     )

@@ -10,6 +10,7 @@ from app.controllers.aws_deploy_controller import (
     _dedupe_ingress_blocks_in_security_groups,
     _enforce_ssh_key_settings,
     _ensure_compose_host_ports_allowed,
+    _ensure_output_urls_include_compose_ports,
     _expected_aws_app_images,
     _normalize_compose_images_for_aws,
     _validate_docker_hub_manifests_exist,
@@ -111,6 +112,51 @@ output "ssh_command" {
 '''
 
         _validate_ssh_command_output(terraform_code)
+
+
+class TestAWSOutputUrlPortPostProcessing(unittest.TestCase):
+    def test_frontend_and_backend_outputs_use_compose_host_ports(self):
+        terraform_code = '''
+resource "aws_instance" "web" {
+  user_data = <<-EOF
+cat > /home/ec2-user/app/docker-compose.yml << 'COMPOSE'
+services:
+  frontend:
+    image: abdulahad2242/devops-autopilot-mern_notes_app-frontend:latest
+    ports:
+      - 5173:80
+  server:
+    image: abdulahad2242/devops-autopilot-mern_notes_app-server:latest
+    ports:
+      - "5000:5000"
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+COMPOSE
+EOF
+}
+
+output "frontend_url" {
+  value = "http://${aws_instance.web.public_ip}"
+}
+
+output "backend_url" {
+  value = "http://${aws_instance.web.public_ip}:${var.app_port}"
+}
+'''
+
+        result = _ensure_output_urls_include_compose_ports(terraform_code)
+
+        self.assertIn(
+            'value = "http://${aws_instance.web.public_ip}:5173"',
+            result,
+        )
+        self.assertIn(
+            'value = "http://${aws_instance.web.public_ip}:5000"',
+            result,
+        )
+        self.assertNotIn("public_ip}:27017", result)
 
 
 class TestAWSComposeImageNormalization(unittest.TestCase):
