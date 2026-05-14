@@ -72,6 +72,496 @@ def _inject_docker_credentials(terraform_code: str) -> str:
     )
 
 
+def _enforce_ec2_instance_type(terraform_code: str) -> str:
+    instance_type = getattr(settings, "AWS_EC2_INSTANCE_TYPE", "t3.micro") or "t3.micro"
+    return re.sub(
+        r'instance_type\s*=\s*"[^"]+"',
+        f'instance_type = "{instance_type}"',
+        terraform_code,
+        count=1,
+    )
+
+
+def _hcl_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _normalize_local_key_path(path: str) -> str:
+    return (path or settings.AWS_SSH_PRIVATE_KEY_PATH).replace("\\", "/")
+
+
+def _replace_hcl_block(
+    terraform_code: str,
+    header_pattern: str,
+    replacement: str,
+) -> tuple[str, bool]:
+    match = re.search(header_pattern, terraform_code)
+    if not match:
+        return terraform_code, False
+    open_index = terraform_code.find("{", match.start(), match.end())
+    close_index = _find_matching_brace(terraform_code, open_index)
+    if close_index is None:
+        return terraform_code, False
+    return terraform_code[:match.start()] + replacement + terraform_code[close_index + 1:], True
+
+
+def _set_variable_default(terraform_code: str, variable_name: str, default_value: str) -> str:
+    escaped_default = _hcl_escape(default_value)
+    pattern = rf'variable\s+"{re.escape(variable_name)}"\s*{{'
+    match = re.search(pattern, terraform_code)
+    if match:
+        open_index = terraform_code.find("{", match.start(), match.end())
+        close_index = _find_matching_brace(terraform_code, open_index)
+        if close_index is None:
+            return terraform_code
+        block = terraform_code[match.start():close_index + 1]
+        if re.search(r"^\s*default\s*=", block, flags=re.MULTILINE):
+            block = re.sub(
+                r"^(\s*)default\s*=.*$",
+                rf'\1default     = "{escaped_default}"',
+                block,
+                count=1,
+                flags=re.MULTILINE,
+            )
+        else:
+            block = block[:-1].rstrip() + f'\n  default     = "{escaped_default}"\n}}'
+        return terraform_code[:match.start()] + block + terraform_code[close_index + 1:]
+
+    variable_block = (
+        f'\nvariable "{variable_name}" {{\n'
+        f'  default     = "{escaped_default}"\n'
+        f'}}\n'
+    )
+    data_match = re.search(r'\ndata\s+"aws_ami"', terraform_code)
+    if data_match:
+        return terraform_code[:data_match.start()] + variable_block + terraform_code[data_match.start():]
+    return variable_block + terraform_code
+
+
+def _enforce_ssh_key_settings(terraform_code: str) -> str:
+    """
+    Hardcode the EC2 key pair and local PEM path used by ssh_command.
+
+    Terraform needs `key_name` for AWS, while users need the local PEM path for
+    SSH. The LLM has previously emitted `<your-key.pem>`, so this pass rewrites
+    both the variable defaults and the output block deterministically.
+    """
+    key_name = settings.AWS_EC2_KEY_NAME or "aws-deployment-devops"
+    key_path = _normalize_local_key_path(settings.AWS_SSH_PRIVATE_KEY_PATH)
+    terraform_code = _set_variable_default(terraform_code, "key_name", key_name)
+    terraform_code = _set_variable_default(terraform_code, "ssh_private_key_path", key_path)
+
+    instance_match = re.search(r'resource\s+"aws_instance"\s+"([^"]+)"', terraform_code)
+    instance_name = instance_match.group(1) if instance_match else "main"
+    ssh_output = (
+        'output "ssh_command" {\n'
+        '  description = "SSH command for the EC2 instance"\n'
+        f'  value       = "ssh -i ${{var.ssh_private_key_path}} ec2-user@${{aws_instance.{instance_name}.public_ip}}"\n'
+        '}'
+    )
+    terraform_code, replaced = _replace_hcl_block(
+        terraform_code,
+        r'output\s+"ssh_command"\s*{',
+        ssh_output,
+    )
+    if not replaced:
+        terraform_code = terraform_code.rstrip() + "\n\n" + ssh_output + "\n"
+    return terraform_code
+
+
+def _extract_compose_host_ports(terraform_code: str) -> List[int]:
+    ports = []
+    for match in re.finditer(
+        r"""["'](?:(?:\d{1,3}\.){3}\d{1,3}:)?(\d{1,5}):\d{1,5}(?:/(?:tcp|udp))?["']""",
+        terraform_code,
+    ):
+        port = int(match.group(1))
+        if 1 <= port <= 65535:
+            ports.append(port)
+    return ports
+
+
+def _parse_variable_defaults(terraform_code: str) -> Dict[str, str]:
+    """Return simple Terraform variable defaults as unquoted strings."""
+    defaults: Dict[str, str] = {}
+    for match in re.finditer(
+        r'variable\s+"([^"]+)"\s*\{(?P<body>.*?)\}',
+        terraform_code,
+        flags=re.DOTALL,
+    ):
+        default_match = re.search(
+            r"default\s*=\s*(?P<value>\"[^\"]*\"|'[^']*'|[^\s#]+)",
+            match.group("body"),
+        )
+        if default_match:
+            defaults[match.group(1)] = _strip_hcl_quotes(default_match.group("value"))
+    return defaults
+
+
+def _strip_hcl_quotes(value: str) -> str:
+    value = value.strip().rstrip(",")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _resolve_hcl_scalar(value: str, var_defaults: Dict[str, str]) -> str:
+    value = _strip_hcl_quotes(value)
+    var_match = re.fullmatch(r"var\.(\w+)", value)
+    if var_match:
+        return var_defaults.get(var_match.group(1), value)
+    return value
+
+
+def _resolve_hcl_port(value: str, var_defaults: Dict[str, str]) -> Optional[int]:
+    resolved = _resolve_hcl_scalar(value, var_defaults)
+    return int(resolved) if resolved.isdigit() else None
+
+
+def _extract_hcl_attr(body: str, attr: str) -> Optional[str]:
+    match = re.search(rf"\b{re.escape(attr)}\s*=\s*(?P<value>[^\n#]+)", body)
+    return match.group("value").strip() if match else None
+
+
+def _extract_hcl_list_attr(
+    body: str,
+    attr: str,
+    var_defaults: Dict[str, str],
+) -> tuple:
+    match = re.search(
+        rf"\b{re.escape(attr)}\s*=\s*\[(?P<value>.*?)\]",
+        body,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return ()
+    values = [
+        _resolve_hcl_scalar(item, var_defaults)
+        for item in match.group("value").split(",")
+        if item.strip()
+    ]
+    return tuple(sorted(values))
+
+
+def _ingress_permission_key(
+    body: str,
+    var_defaults: Dict[str, str],
+) -> Optional[tuple]:
+    """
+    Build the AWS permission identity for an ingress block.
+
+    AWS ignores descriptions when deciding duplicate ingress permissions. A
+    block using `var.app_port` with default `5000` is the same permission as a
+    literal `5000` block when protocol and source match.
+    """
+    from_expr = _extract_hcl_attr(body, "from_port")
+    to_expr = _extract_hcl_attr(body, "to_port")
+    protocol_expr = _extract_hcl_attr(body, "protocol")
+    if not (from_expr and to_expr and protocol_expr):
+        return None
+
+    from_port = _resolve_hcl_port(from_expr, var_defaults)
+    to_port = _resolve_hcl_port(to_expr, var_defaults)
+    if from_port is None or to_port is None:
+        return None
+
+    protocol = _resolve_hcl_scalar(protocol_expr, var_defaults).lower()
+    sources = []
+    for attr in ("cidr_blocks", "ipv6_cidr_blocks", "prefix_list_ids", "security_groups"):
+        values = _extract_hcl_list_attr(body, attr, var_defaults)
+        if values:
+            sources.append((attr, values))
+
+    self_expr = _extract_hcl_attr(body, "self")
+    if self_expr:
+        sources.append(("self", (_resolve_hcl_scalar(self_expr, var_defaults).lower(),)))
+
+    if not sources:
+        return None
+    return (from_port, to_port, protocol, tuple(sorted(sources)))
+
+
+def _find_matching_brace(text: str, open_index: int) -> Optional[int]:
+    depth = 0
+    for index in range(open_index, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _dedupe_ingress_blocks_in_security_groups(terraform_code: str) -> str:
+    """
+    Remove duplicate ingress blocks from generated aws_security_group resources.
+
+    This is a post-LLM safety pass for AWS EC2's "same permission must not
+    appear multiple times" error. It preserves the first matching permission
+    and only removes later exact duplicates after resolving simple variable
+    defaults.
+    """
+    var_defaults = _parse_variable_defaults(terraform_code)
+    resource_pattern = re.compile(r'resource\s+"aws_security_group"\s+"[^"]+"\s*{')
+    ingress_pattern = re.compile(
+        r"(?P<block>\n?[ \t]*ingress\s*\{(?P<body>.*?)\n[ \t]*\})",
+        flags=re.DOTALL,
+    )
+
+    result = []
+    last_index = 0
+    for match in resource_pattern.finditer(terraform_code):
+        open_index = terraform_code.find("{", match.start(), match.end())
+        close_index = _find_matching_brace(terraform_code, open_index)
+        if close_index is None:
+            continue
+
+        result.append(terraform_code[last_index:match.start()])
+        resource_block = terraform_code[match.start():close_index + 1]
+        seen_permissions = set()
+        block_parts = []
+        block_last_index = 0
+
+        for ingress_match in ingress_pattern.finditer(resource_block):
+            block_parts.append(resource_block[block_last_index:ingress_match.start()])
+            key = _ingress_permission_key(ingress_match.group("body"), var_defaults)
+            if key is None or key not in seen_permissions:
+                block_parts.append(ingress_match.group("block"))
+                if key is not None:
+                    seen_permissions.add(key)
+            block_last_index = ingress_match.end()
+
+        block_parts.append(resource_block[block_last_index:])
+        result.append("".join(block_parts))
+        last_index = close_index + 1
+
+    if not result:
+        return terraform_code
+    result.append(terraform_code[last_index:])
+    return "".join(result)
+
+
+def _validate_unique_host_ports(host_ports: List[int]) -> None:
+    seen = set()
+    duplicates = set()
+    for port in host_ports:
+        if port in seen:
+            duplicates.add(port)
+        seen.add(port)
+    if duplicates:
+        duplicate_list = ", ".join(str(port) for port in sorted(duplicates))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Generated docker-compose.yml contains duplicate host port mappings: "
+                f"{duplicate_list}. Fix Docker compose ports before AWS deployment."
+            ),
+        )
+
+
+def _existing_ingress_ranges(terraform_code: str) -> List[tuple]:
+    """
+    Return (from_port, to_port) tuples for every ingress block already in the
+    security group.  Handles both literal port numbers and Terraform variable
+    references like `from_port = var.app_port`.  Variable references are
+    resolved by looking up the `default` value in the matching variable block.
+    If a default cannot be determined the block is skipped (safe: may add a
+    redundant rule but never a duplicate).
+    """
+    var_defaults = _parse_variable_defaults(terraform_code)
+    ranges = []
+    for match in re.finditer(r'ingress\s*\{(?P<body>.*?)\}', terraform_code, flags=re.DOTALL):
+        body = match.group('body')
+        from_expr = _extract_hcl_attr(body, "from_port")
+        to_expr = _extract_hcl_attr(body, "to_port")
+        if from_expr and to_expr:
+            from_port = _resolve_hcl_port(from_expr, var_defaults)
+            to_port = _resolve_hcl_port(to_expr, var_defaults)
+            if from_port is not None and to_port is not None:
+                ranges.append((from_port, to_port))
+    return ranges
+
+
+def _port_is_allowed(port: int, ranges: List[tuple]) -> bool:
+    return any(start <= port <= end for start, end in ranges)
+
+
+
+def _find_security_group_close(terraform_code: str) -> Optional[int]:
+    match = re.search(r'resource\s+"aws_security_group"\s+"[^"]+"\s*{', terraform_code)
+    if not match:
+        return None
+    depth = 0
+    for index in range(match.start(), len(terraform_code)):
+        char = terraform_code[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _ensure_compose_host_ports_allowed(terraform_code: str) -> str:
+    host_ports = _extract_compose_host_ports(terraform_code)
+    if not host_ports:
+        return terraform_code
+
+    _validate_unique_host_ports(host_ports)
+
+    ingress_ranges = _existing_ingress_ranges(terraform_code)
+    missing_ports = [
+        port for port in sorted(set(host_ports))
+        if not _port_is_allowed(port, ingress_ranges)
+    ]
+    if not missing_ports:
+        return terraform_code
+
+    close_index = _find_security_group_close(terraform_code)
+    if close_index is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Generated Terraform is missing an aws_security_group resource.",
+        )
+
+    blocks = []
+    for port in missing_ports:
+        blocks.append(
+            "\n"
+            "  ingress {\n"
+            f'    description = "App port {port}"\n'
+            f"    from_port   = {port}\n"
+            f"    to_port     = {port}\n"
+            "    protocol    = \"tcp\"\n"
+            "    cidr_blocks = [\"0.0.0.0/0\"]\n"
+            "  }\n"
+        )
+    return terraform_code[:close_index] + "".join(blocks) + terraform_code[close_index:]
+
+
+def _validate_key_name(terraform_code: str) -> None:
+    """Raise HTTPException if key_name is missing from the aws_instance block."""
+    if not re.search(r'resource\s+"aws_instance"', terraform_code):
+        return  # No instance block yet; other validators will catch it
+    if not re.search(r'key_name\s*=', terraform_code):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Generated Terraform is missing key_name on the aws_instance resource. "
+                "SSH access will be impossible without a key pair."
+            ),
+        )
+
+
+def _validate_ssh_ingress(terraform_code: str) -> None:
+    """Raise HTTPException if no ingress rule allows port 22."""
+    ingress_ranges = _existing_ingress_ranges(terraform_code)
+    if not _port_is_allowed(22, ingress_ranges):
+        raise HTTPException(
+            status_code=400,
+            detail="Generated Terraform security group is missing an ingress rule for SSH port 22.",
+        )
+
+
+def _validate_egress(terraform_code: str) -> None:
+    """Raise HTTPException if no egress block is present in the security group."""
+    if re.search(r'resource\s+"aws_security_group"', terraform_code):
+        if not re.search(r'egress\s*{', terraform_code):
+            raise HTTPException(
+                status_code=400,
+                detail="Generated Terraform security group is missing an egress (outbound) rule.",
+            )
+
+
+def _validate_user_data(terraform_code: str) -> None:
+    """Raise HTTPException if user_data block is absent or contains no startup commands."""
+    if not re.search(r'user_data\s*=', terraform_code):
+        raise HTTPException(
+            status_code=400,
+            detail="Generated Terraform is missing a user_data startup script on the EC2 instance.",
+        )
+    if not re.search(r'docker', terraform_code, re.IGNORECASE):
+        raise HTTPException(
+            status_code=400,
+            detail="Generated Terraform user_data does not appear to install or start Docker.",
+        )
+
+
+def _validate_required_outputs(terraform_code: str) -> None:
+    """Raise HTTPException if any of the required output blocks are missing."""
+    required = ["app_url", "ssh_command"]
+    for name in required:
+        if not re.search(rf'output\s+"{re.escape(name)}"', terraform_code):
+            raise HTTPException(
+                status_code=400,
+                detail=f'Generated Terraform is missing required output "{name}".',
+            )
+
+
+def _validate_ssh_command_output(terraform_code: str) -> None:
+    """Reject placeholder SSH output values before Terraform is written."""
+    key_path = _normalize_local_key_path(settings.AWS_SSH_PRIVATE_KEY_PATH)
+    match = re.search(r'output\s+"ssh_command"\s*{', terraform_code)
+    if not match:
+        return
+    open_index = terraform_code.find("{", match.start(), match.end())
+    close_index = _find_matching_brace(terraform_code, open_index)
+    ssh_output_block = (
+        terraform_code[match.start():close_index + 1]
+        if close_index is not None
+        else terraform_code[match.start():]
+    )
+    if "<your-key.pem>" in ssh_output_block or "<key.pem>" in ssh_output_block:
+        raise HTTPException(
+            status_code=400,
+            detail="Generated Terraform ssh_command still contains a placeholder key path.",
+        )
+    if "var.ssh_private_key_path" not in ssh_output_block and key_path not in ssh_output_block:
+        raise HTTPException(
+            status_code=400,
+            detail="Generated Terraform ssh_command does not reference the configured SSH private key path.",
+        )
+
+
+def _validate_root_volume(terraform_code: str, min_gb: int = 20) -> None:
+    """Raise HTTPException if root_block_device is missing or volume_size is below min_gb."""
+    if not re.search(r'root_block_device\s*{', terraform_code):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Generated Terraform is missing root_block_device on the EC2 instance. "
+                f"Docker deployments require at least {min_gb} GB."
+            ),
+        )
+    match = re.search(r'volume_size\s*=\s*(\d+)', terraform_code)
+    if match and int(match.group(1)) < min_gb:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Generated Terraform root volume is {match.group(1)} GB, "
+                f"which is below the minimum {min_gb} GB required for Docker deployments."
+            ),
+        )
+
+
+def _run_terraform_validations(terraform_code: str) -> None:
+    """
+    Run all post-LLM Terraform validations in order.
+    Each validator raises HTTPException on failure.
+    """
+    _validate_key_name(terraform_code)
+    _validate_ssh_ingress(terraform_code)
+    _validate_egress(terraform_code)
+    _validate_user_data(terraform_code)
+    _validate_required_outputs(terraform_code)
+    _validate_ssh_command_output(terraform_code)
+    _validate_root_volume(terraform_code)
+
+
+
 def _resolve_project_root(project: Dict, detail: str = "Project path not found") -> str:
     extracted_path = project.get("extracted_path")
     if not extracted_path:
@@ -256,6 +746,11 @@ async def generate_terraform_handler(
             service_env_vars=service_env_vars,
             existing_compose=compose_data.get("compose_content"),
             existing_env_files=compose_data.get("env_files"),
+            key_name=aws_config.get("key_name") or settings.AWS_EC2_KEY_NAME,
+            ssh_private_key_path=aws_config.get("ssh_private_key_path") or settings.AWS_SSH_PRIVATE_KEY_PATH,
+            allowed_ssh_cidr=aws_config.get("allowed_ssh_cidr", "0.0.0.0/0"),
+            app_port=aws_config.get("app_port"),
+            root_volume_size=aws_config.get("root_volume_size", 20),
         )
         
         if not terraform_code or terraform_code.startswith("ERROR"):
@@ -263,7 +758,14 @@ async def generate_terraform_handler(
                 status_code=500,
                 detail=f"LLM failed to generate Terraform: {terraform_code[:200]}"
             )
-        terraform_code = _inject_docker_credentials(terraform_code)
+        terraform_code = _dedupe_ingress_blocks_in_security_groups(
+            _ensure_compose_host_ports_allowed(
+                _enforce_ssh_key_settings(
+                    _enforce_ec2_instance_type(_inject_docker_credentials(terraform_code))
+                )
+            )
+        )
+        _run_terraform_validations(terraform_code)
         
         # Write Terraform to project's infra directory
         terraform_path = getattr(settings, "TERRAFORM_PATH", "terraform")
@@ -612,7 +1114,14 @@ async def fix_terraform_handler(
     
     if not fixed_terraform or len(fixed_terraform) < 100:
         raise HTTPException(status_code=500, detail="LLM failed to generate fix")
-    fixed_terraform = _inject_docker_credentials(fixed_terraform)
+    fixed_terraform = _dedupe_ingress_blocks_in_security_groups(
+        _ensure_compose_host_ports_allowed(
+            _enforce_ssh_key_settings(
+                _enforce_ec2_instance_type(_inject_docker_credentials(fixed_terraform))
+            )
+        )
+    )
+    _run_terraform_validations(fixed_terraform)
     
     # Write fixed Terraform
     with open(tf_path, "w", encoding="utf-8") as f:

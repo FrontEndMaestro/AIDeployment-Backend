@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     AWS_PROFILE: Optional[str] = None  # AWS CLI profile name (e.g., "my-terraform")
     AWS_DEFAULT_REGION: str = "us-east-1"
     TERRAFORM_PATH: str = "terraform"  # Path to terraform CLI binary
+    AWS_EC2_INSTANCE_TYPE: str = "t3.micro"
+    AWS_EC2_KEY_NAME: str = "aws-deployment-devops"
+    AWS_SSH_PRIVATE_KEY_PATH: str = "~/.ssh/aws-deployment-devops.pem"
     
     class Config:
         env_file = ".env"

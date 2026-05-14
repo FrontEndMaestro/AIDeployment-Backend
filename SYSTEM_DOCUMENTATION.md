@@ -1,7 +1,7 @@
-# DevOps AutoPilot — Complete System Documentation
+# DevOps AutoPilot - Complete System Documentation
 
-**Author:** Abdul Ahad Abbassi  
-**Date:** March 2026  
+**Author:** Abdul Ahad Abbassi
+**Date:** April 18, 2026
 **Purpose:** Comprehensive technical reference covering all inputs, AI prompts, environment handling, and data flow
 
 ---
@@ -23,7 +23,8 @@
 13. [Database Schema (MongoDB)](#13-database-schema-mongodb)
 14. [Frontend Integration](#14-frontend-integration)
 15. [AWS Terraform Deployment](#15-aws-terraform-deployment)
-16. [Script Editing Guide (Critical Couplings)](#16-script-editing-guide-critical-couplings)
+16. [Monitoring & Kubernetes Deployment](#16-monitoring--kubernetes-deployment)
+17. [Script Editing Guide (Critical Couplings)](#17-script-editing-guide-critical-couplings)
 
 ---
 
@@ -33,10 +34,10 @@ DevOps AutoPilot is a full-stack AI-powered DevOps tool that:
 
 1. Accepts a **user's project archive** (ZIP / TAR / TGZ)
 2. **Extracts** and **analyses** it automatically (language, framework, ports, DB, services)
-3. Feeds structured project metadata into a **local LLM** (Llama / Qwen via Ollama)
-4. The LLM **generates or validates** `Dockerfile`s and `docker-compose.yml`
-5. Allows the user to **build, run, and push** Docker images from the UI
-6. (Optional) Generates **Terraform** configs for AWS ECS/ECR deployment
+3. Feeds structured project metadata into the configured LLM provider (Ollama or Gemini)
+4. The LLM generates or validates `Dockerfile`s, `docker-compose.yml`, and Kubernetes manifests
+5. Allows the user to build, run, push, and Kubernetes-deploy Docker images from the UI
+6. (Optional) Generates Terraform for AWS EC2 Free Tier docker-compose deployment
 
 ### Technology Stack
 
@@ -44,10 +45,12 @@ DevOps AutoPilot is a full-stack AI-powered DevOps tool that:
 | ---------------- | ------------------------------------------------ |
 | Backend API      | FastAPI (Python 3.11+)                           |
 | Database         | MongoDB 7.x (Motor async)                        |
-| LLM Runtime      | Ollama — `qwen2.5-coder:7b` (local)              |
+| LLM Runtime      | Ollama local models or Gemini API                 |
 | ML Analyser      | scikit-learn (language/framework classification) |
 | Frontend         | React + TypeScript (Vite)                        |
 | Docker Operation | Python `subprocess` + Docker CLI                 |
+| Kubernetes Ops   | `kubectl` + Docker Desktop compatible manifests  |
+| AWS Operation    | Terraform CLI + AWS CLI                          |
 
 ---
 
@@ -64,8 +67,9 @@ FastAPI Backend (port 8000)
     ├── upload_controller     ← receives zip/tar
     ├── extract_controller    ← unzips to ./extracted/user_X/
     ├── analyze_controller    ← runs detector.py (orchestrator)
-    ├── docker_ai_controller  ← calls LLM + runs docker
-    └── aws_deploy_controller ← calls LLM for Terraform
+    ├── docker_ai_controller  ← calls LLM + runs docker/k8s
+    ├── aws_deploy_controller ← calls Gemini for Terraform
+    └── monitor_controller    ← reads k8s/AWS health
          │
     Detection Modules (app/utils/)
     ├── detector.py                ← orchestrator + re-export hub
@@ -79,13 +83,14 @@ FastAPI Backend (port 8000)
          │
          ▼
     LLM Layer (app/LLM/)
-    ├── llm_client.py         ← HTTP calls to Ollama
+    ├── llm_client.py         ← Ollama/Gemini adapters
     ├── docker_deploy_agent.py← system prompt + user message builder
     └── terraform_deploy_agent.py
          │
          ▼
-    Ollama (http://localhost:11434)
-    └── Model: qwen2.5-coder:7b
+    LLM provider
+    ├── Ollama (http://localhost:11434)
+    └── Gemini API (when configured)
          │
          ▼
     MongoDB (localhost:27017)
@@ -115,15 +120,31 @@ LLM_MODEL_NAME=qwen2.5-coder:7b
 LLM_TEMPERATURE=0.1
 LLM_TOP_P=0.9
 LLM_TIMEOUT=600                  # seconds
+DOCKER_LLM_PROVIDER=ollama        # ollama | gemini
+GEMINI_API_KEY=
+GEMINI_API_BASE=https://generativelanguage.googleapis.com/v1beta
+GEMINI_MODEL_NAME=gemini-2.5-flash
+GEMINI_MAX_OUTPUT_TOKENS=8192
+GEMINI_FALLBACK_MODEL_NAME=       # optional; only used when different from primary
 
 # Docker Hub (optional, for push)
 DOCKER_HUB_USERNAME=myuser
 DOCKER_HUB_PASSWORD=mypassword
 
+# Kubernetes
+K8S_NAMESPACE=default
+K8S_CLUSTER=docker-desktop
+APP_REGISTRY_PREFIX=devops-autopilot
+K8S_NODE_PORT_START=30001
+K8S_NODE_PORT_END=32767
+
 # AWS (optional, for Terraform)
 AWS_PROFILE=my-terraform
 AWS_DEFAULT_REGION=us-east-1
 TERRAFORM_PATH=terraform
+AWS_EC2_INSTANCE_TYPE=t3.micro
+AWS_EC2_KEY_NAME=aws-deployment-devops
+AWS_SSH_PRIVATE_KEY_PATH=~/.ssh/aws-deployment-devops.pem
 ```
 
 > Note: `.env` values override `settings.py` defaults at runtime.
@@ -138,6 +159,12 @@ TERRAFORM_PATH=terraform
 | `LLM_TIMEOUT`     | `600s`                                 | 10-minute max wait        |
 | `num_ctx`         | `16384` (non-stream) / `8192` (stream) | Context window            |
 | `MAX_FILE_SIZE`   | `100 MB`                               | Upload cap                |
+| `DOCKER_LLM_PROVIDER` | `ollama`                           | Docker agent provider: `ollama` or `gemini` |
+| `GEMINI_MODEL_NAME` | `gemini-2.5-flash`                   | Primary Gemini model      |
+| `GEMINI_FALLBACK_MODEL_NAME` | `None`                    | Optional fallback used only for Gemini 429/503 |
+| `AWS_EC2_INSTANCE_TYPE` | `t3.micro`                       | EC2 instance type enforced after Terraform generation |
+| `AWS_EC2_KEY_NAME` | `aws-deployment-devops`              | EC2 key pair name enforced for SSH |
+| `AWS_SSH_PRIVATE_KEY_PATH` | `~/.ssh/aws-deployment-devops.pem` | Local PEM path used in `ssh_command` output |
 
 ---
 
@@ -178,25 +205,46 @@ All endpoints are prefixed with `/api`. Authentication via JWT Bearer token (exc
 | POST   | `/analyze`  | Run detector.py     | `use_ml: bool` (default true) |
 | GET    | `/analysis` | Get stored analysis | —                             |
 
-### Docker AI (`/api/projects/{id}`)
+### Docker AI (`/api/docker/{id}`)
 
-| Method | Path               | Description                                                                             |
-| ------ | ------------------ | --------------------------------------------------------------------------------------- |
-| GET    | `/docker-context`  | Get metadata + Dockerfiles + file tree (re-checks service `.env`, backend/monolith entry hints, and missing per-service runtime) |
-| POST   | `/docker-generate` | Call LLM to generate/validate Dockerfiles                                               |
-| POST   | `/docker-chat`     | Free-form chat with LLM about Docker                                                    |
-| POST   | `/docker-stream`   | SSE-streamed LLM generation                                                             |
-| POST   | `/docker-build`    | `docker build` — streams output                                                         |
-| POST   | `/docker-run`      | `docker run` — streams output                                                           |
-| POST   | `/docker-push`     | `docker push` — streams output                                                          |
+| Method | Path               | Description |
+| ------ | ------------------ | ----------- |
+| GET    | `/context`         | Get metadata, Dockerfiles, compose files, k8s manifests, readiness status, and file tree |
+| GET    | `/check-readiness` | Scan deployment files and auto-generate missing Docker/compose/k8s files via Gemini |
+| POST   | `/chat`            | Free-form Docker deploy chat |
+| GET    | `/chat/stream`     | SSE-streamed Docker deploy chat; generated files are parsed and written after the stream |
+| GET    | `/file`            | Read a project file by relative path |
+| POST   | `/file`            | Write a project file by relative path |
+| POST   | `/folder`          | Create a folder under the project root |
+| DELETE | `/path`            | Delete a file or folder under the project root |
+| GET    | `/logs?action=build` | Stream Docker build logs |
+| GET    | `/logs?action=run` | Stream Docker run logs |
+| GET    | `/logs?action=push` | Stream Docker push logs |
+| GET    | `/logs?action=k8s_deploy` | Stream Kubernetes deploy logs |
 
-### AWS Deployment (`/api/projects/{id}`)
+### AWS Deployment (`/api/aws/{id}`)
 
-| Method | Path           | Description                |
-| ------ | -------------- | -------------------------- |
-| POST   | `/aws-deploy`  | Generate Terraform + apply |
-| GET    | `/aws-status`  | Check Terraform state      |
-| POST   | `/aws-destroy` | Run `terraform destroy`    |
+| Method | Path             | Description |
+| ------ | ---------------- | ----------- |
+| GET    | `/prerequisites` | Check Docker push, AWS credentials, Terraform CLI, compose file, and generated Terraform state |
+| POST   | `/generate`      | Generate and validate `infra/main.tf` using Gemini plus backend post-processing |
+| POST   | `/apply`         | Run `terraform init -input=false` and `terraform apply -auto-approve` as SSE |
+| POST   | `/destroy`       | Run `terraform destroy -auto-approve` as SSE |
+| POST   | `/scale-zero`    | Stop the deployed EC2 instance |
+| POST   | `/scale-up`      | Start the stopped EC2 instance |
+| GET    | `/status`        | Read stored AWS status plus live Terraform outputs when deployed |
+| POST   | `/fix`           | Ask Gemini to repair `infra/main.tf` using Terraform error output |
+
+### Monitoring (`/api/monitor`)
+
+| Method | Path                    | Description |
+| ------ | ----------------------- | ----------- |
+| GET    | `/{project_id}/status`  | Get Kubernetes health, AWS health, recent k8s events, and all pods |
+| POST   | `/{project_id}/heal`    | Trigger `kubectl rollout restart` for the project deployment |
+| GET    | `/{project_id}/logs`    | Return recent pod logs |
+| GET    | `/{project_id}/events`  | Return recent Kubernetes events |
+| GET    | `/pods/all`             | Return all pods in the default namespace |
+| GET    | `/{project_id}/logs/stream` | Stream live pod logs by SSE using `?token=<jwt>` |
 
 ---
 
@@ -541,9 +589,15 @@ Then:
 
 ### 8.1 LLM Client (`llm_client.py`)
 
-All LLM calls go through Ollama's HTTP API.
+LLM calls are routed through `backend-python/app/LLM/llm_client.py`.
 
-**Non-streaming call:**
+- Docker deploy calls use `call_docker_llm()` / `call_docker_llm_stream()`.
+- `DOCKER_LLM_PROVIDER=ollama` sends Docker requests to Ollama.
+- `DOCKER_LLM_PROVIDER=gemini` sends Docker requests to Gemini.
+- Terraform generation/fix uses Gemini directly through `call_gemini()` / `call_gemini_stream()`.
+- `GEMINI_FALLBACK_MODEL_NAME` is optional and is only used when Gemini returns HTTP 429 or 503 and the fallback differs from the primary model.
+
+**Ollama non-streaming call:**
 
 ```python
 POST http://localhost:11434/api/generate
@@ -559,13 +613,30 @@ POST http://localhost:11434/api/generate
 }
 ```
 
-**Streaming call** (used for Docker generate/chat in UI):
+**Ollama streaming call** (used when Docker provider is Ollama):
 
 ```python
 POST http://localhost:11434/api/generate
 {  "stream": true, "options": { "num_ctx": 8192 }  }
 # SSE: yields {"token": "...", "done": false}
 ```
+
+**Gemini call shape:**
+
+```python
+POST {GEMINI_API_BASE}/models/{GEMINI_MODEL_NAME}:generateContent?key=...
+{
+  "systemInstruction": { "parts": [{ "text": "..." }] },
+  "contents": [{ "role": "user", "parts": [{ "text": "..." }] }],
+  "generationConfig": {
+    "temperature": 0.1,
+    "topP": 0.9,
+    "maxOutputTokens": 8192
+  }
+}
+```
+
+Gemini streaming is implemented as a compatibility adapter: the backend calls Gemini once and emits the full response as a token chunk followed by `done=true`.
 
 ### 8.2 System Prompt (Full — `docker_deploy_agent.py`)
 
@@ -598,6 +669,16 @@ STEP 3: GENERATE DOCKERFILES
     ENV PORT={service.container_port}   ← ALWAYS set env fallback
     EXPOSE {service.container_port}
     CMD {CMD_ARRAY}           ← ["node", "{entry_point}"] or ["npm", "start"]
+
+  PYTHON BACKEND (single-stage, pip-optimized):
+    FROM {service.runtime or RUNTIME}
+    WORKDIR /app
+    COPY requirements.txt ./
+    RUN pip install --no-cache-dir --timeout 120 --retries 5 -r requirements.txt
+    COPY . .
+    ENV PORT={service.container_port}
+    EXPOSE {service.container_port}
+    CMD {CMD_ARRAY}
 
   FRONTEND (multi-stage required):
     FROM {service.runtime or RUNTIME} AS builder
@@ -684,8 +765,9 @@ Every LLM call constructs a structured user message using a fixed `ports_v2` con
 8. Existing Dockerfile contents (if any)
 9. Existing docker-compose.yml contents (if any)
 10. File tree (depth=4, max 200 entries)
-11. Build/Run logs (or "none yet")
-   12. ⚠️⚠️⚠️ SERVICE DEFINITIONS (per service):
+11. Source file snippets when provided by controller/service auto-generation paths
+12. Build/Run logs (or "none yet")
+   13. ⚠️⚠️⚠️ SERVICE DEFINITIONS (per service):
    - name: backend, path: backend, type: backend,
       runtime: node:20-alpine (USE IN Dockerfile FROM),
       runtime_port: 5000, container_port: 5000 (USE: "5000:5000"),
@@ -695,9 +777,9 @@ Every LLM call constructs a structured user message using a fixed `ports_v2` con
       runtime: nginx:alpine (USE IN Dockerfile FROM),
       runtime_port: 5173, container_port: 80 (USE: "5173:80"),
         build_output: dist (USE /app/dist), package_manager: npm (USE: npm ci, npm run build)
-13. User message: "Generate all required Docker files..."
+14. User message: "Generate all required Docker files..."
     (auto-enhanced when mode=GENERATE_MISSING and user said only "generate")
-14. Final instruction line: "Respond with STATUS/REASON/FIXES or GENERATED DOCKERFILES/LOG ANALYSIS."
+15. Final instruction line: "Respond with STATUS/REASON/FIXES or GENERATED DOCKERFILES/LOG ANALYSIS."
 ```
 
 Service-line emission rules in `build_deploy_message()`:
@@ -784,7 +866,7 @@ Respond with STATUS/REASON/FIXES or GENERATED DOCKERFILES/LOG ANALYSIS.
 
 `docker_ai_controller.py` orchestrates the full Docker deploy cycle:
 
-### 9.1 Fetching Context (`GET /docker-context`)
+### 9.1 Fetching Context (`GET /api/docker/{id}/context`)
 
 1. Validates project ownership
 2. Resolves `extracted_path` → `project_root` (handles nested zip structure)
@@ -798,35 +880,70 @@ Respond with STATUS/REASON/FIXES or GENERATED DOCKERFILES/LOG ANALYSIS.
    - Backfills per-service `runtime` **only when missing** using `infer_service_runtime_image_from_code()` (does not overwrite existing runtime)
    - For frontend runtime backfill, infers/uses `frontend_mode` (`static_nginx` / `ssr` / `dev_server`) from service metadata fields
 5. Recalculates `deploy_blocked` / `deploy_warning` based on current disk state using backend-like types (`backend`, `monolith`)
-6. Returns: `metadata`, `dockerfiles`, `compose_files`, `file_tree`
+6. Returns: `metadata`, `dockerfiles`, `compose_files`, `k8s_files`, readiness status, `file_tree`, `k8s_node_port`, and `image_repo`
 
-### 9.2 Generating Docker Files (`POST /docker-stream`)
+### 9.2 Docker Chat / Streaming Generation (`GET /chat/stream`)
 
 1. Retrieves project + metadata from MongoDB
-2. Collects existing Docker files from disk
-3. Runs the same shared runtime-hint enrichment used by `/docker-context`
-4. Calls `run_docker_deploy_chat_stream()` → Ollama SSE stream
-5. Yields tokens to frontend via Server-Sent Events
-6. Frontend parses `STATUS:` / `GENERATED FILES:` sections from the stream
-7. Frontend saves generated files to disk via a separate file-write endpoint
+2. Resolves `extracted_path` to `project_root`
+3. Collects Dockerfiles, compose files, k8s manifests, file tree, and source snippets
+4. Runs the same shared runtime-hint enrichment used by `/context`
+5. Calls `run_docker_deploy_chat_stream()` through the configured Docker LLM provider
+6. Streams tokens to the frontend via Server-Sent Events
+7. After the stream finishes, the backend parses generated Docker files from the LLM output
+8. Parsed paths are remapped with `remap_generated_docker_paths()`
+9. Generated Dockerfiles/compose files are validated before writing
+10. Valid generated files are written under the resolved project root and the log prints file name plus absolute location
 
 > Note: Runtime-hint enrichment is response-time normalization only in controller paths; it is not automatically persisted back to MongoDB unless a separate write/update path does so.
 
-### 9.3 Build / Run / Push
+### 9.3 Build / Run / Push / Kubernetes Deploy
 
 These use Python `subprocess` calls to the Docker CLI and stream output line-by-line:
 
 ```python
 # Build
-docker build -t {project_name}-{service}:latest ./{service_path}
+docker compose -f docker-compose.yml build
+# or, when no compose exists, sequential docker build for discovered Dockerfiles
 
 # Run
-docker run -d -p {host_port}:{container_port} {image_name}
+docker compose -f docker-compose.yml up --force-recreate
+# or docker run for single-image fallback
 
 # Push
 docker tag {image} {hub_username}/{image}
 docker push {hub_username}/{image}
+
+# Kubernetes deploy
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
 ```
+
+Build-specific behavior in `docker_service.py`:
+
+1. Docker login is attempted before build/push when Docker Hub credentials are configured.
+2. If `metadata.backend_env_missing` is true and root `.env` is missing, the build flow asks Gemini to generate a root `.env` with placeholder values and logs that it must be reviewed before production.
+3. If no Dockerfiles are found, the build flow asks Gemini to generate Dockerfiles plus `docker-compose.yml`, validates the result, writes the files, logs their locations, then builds.
+4. If compose exists, `docker compose build` runs in the compose directory.
+5. If compose does not exist, discovered Dockerfiles are built one-by-one.
+
+Run-specific behavior:
+
+1. If compose exists, `docker compose up` is used.
+2. If multiple Dockerfiles exist and compose is missing, Gemini generates `docker-compose.yml`, the backend validates it with `docker compose config`, writes it to project root, then runs compose.
+3. For single-image fallback, container ports are inferred from Docker metadata and host port conflicts are resolved before running.
+
+### 9.4 Deployment Readiness (`GET /check-readiness`)
+
+`deployment_readiness_controller.py` checks and prepares deployment-critical files:
+
+1. Requires project status `analyzed` or `completed`
+2. Resolves the real project root with `find_project_root()`
+3. Scans for expected Dockerfiles, `docker-compose.yml`, `k8s/deployment.yaml`, `k8s/service.yaml`, and `.env`
+4. Generates missing Docker/compose files through `run_docker_deploy_chat()`
+5. Generates missing Kubernetes manifests through `run_k8s_manifest_generation()`
+6. Does not overwrite a missing real `.env`; it writes `.env.template` instead when needed
+7. Returns `present_before`, `missing_before`, `generated`, `still_missing`, `skipped`, `write_errors`, `k8s_node_port`, and `image_repo`
 
 ---
 
@@ -886,11 +1003,15 @@ backend:
     - ./backend/.env    ← added only if env_file is set in service definition
 ```
 
-If the backend service has **no `.env` file**, the LLM is still told to `ENV PORT={service.container_port}` in the Dockerfile as a fallback so the container doesn't fail if no env is provided at runtime.
+If the backend service has **no `.env` file**, the LLM is still told to `ENV PORT={service.container_port}` in the Dockerfile as a fallback so the container does not fail if no env is provided at runtime.
+
+The build flow no longer blocks only because `.env` is missing. When `metadata.backend_env_missing` is true and root `.env` is absent, `docker_service.py` asks Gemini to generate a root `.env` with placeholder/default values before Docker build. The log warns the user to review secrets before production.
+
+The readiness flow is more conservative: if a real `.env` is missing, it writes `.env.template` instead of overwriting/creating real secrets.
 
 ### 10.3 Dynamic Re-Check on Deploy Page
 
-Every time the user opens the Deploy page (`GET /docker-context`), the system **re-checks disk** for service runtime hints — not relying on the stored MongoDB metadata:
+Every time the user opens the Deploy page (`GET /api/docker/{id}/context`), the system **re-checks disk** for service runtime hints — not relying on the stored MongoDB metadata:
 
 1. `.env` / `.env.local` / `.env.production` re-check per service
 2. backend/monolith `entry_point` backfill (when metadata is missing it)
@@ -901,8 +1022,8 @@ The same shared enrichment is also executed in Docker chat and streaming generat
 This allows a user to:
 
 1. Upload project (no `.env`)
-2. System shows "deploy blocked" warning
-3. User manually adds `.env` to the extracted folder on disk
+2. System shows a non-blocking `.env` warning
+3. User manually adds `.env` to the extracted folder on disk, or lets the build flow auto-generate root `.env`
 4. User refreshes Deploy page → system detects `.env`, clears the warning
 
 **`.env` files checked per service directory:**
@@ -926,19 +1047,19 @@ This logic runs in **two places** and produces consistent output both times:
 
 | Condition                                             | `deploy_blocked` | `deploy_warning`        | UI Effect                                      |
 | ----------------------------------------------------- | ---------------- | ----------------------- | ---------------------------------------------- |
-| Backend/Monolith exists + DB detected + **no .env**   | `True`           | `null`                  | 🔴 Red banner, Build/Run/Push buttons disabled |
-| Backend/Monolith exists + **no DB** + **no .env**     | `False`          | `"No .env detected..."` | 🟡 Amber banner, buttons remain enabled        |
-| Backend/Monolith exists + **.env present**            | `False`          | `null`                  | ✅ No banner                                   |
-| Frontend-only / no backend-like services              | `False`          | `null`                  | ✅ No banner                                   |
+| Backend/Monolith exists + DB detected + **no .env**   | `False`          | `"No .env file detected. One will be auto-generated before build."` | Amber banner, buttons remain enabled |
+| Backend/Monolith exists + **no DB** + **no .env**     | `False`          | `"No .env detected. Auto-generating template..."` | Amber banner, buttons remain enabled |
+| Backend/Monolith exists + **.env present**            | `False`          | `null`                  | No banner                                      |
+| Frontend-only / no backend-like services              | `False`          | `null`                  | No banner                                      |
 
 ### Output fields set on `metadata`:
 
 ```json
 {
-  "deploy_blocked": true,
-  "deploy_blocked_reason": "Backend .env file is required because a database was detected...",
+  "deploy_blocked": false,
+  "deploy_blocked_reason": null,
   "backend_env_missing": true,
-  "deploy_warning": null
+  "deploy_warning": "No .env file detected. One will be auto-generated before build."
 }
 ```
 
@@ -1025,6 +1146,14 @@ This logic runs in **two places** and produces consistent output both times:
   },
   "analysis_date": "datetime | null",
   "analysis_logs": ["string"],
+  "docker_push_success": false,
+  "aws_deployment_status": "not_deployed | terraform_generated | deploying | deployed | failed | destroying | destroy_failed | scaled_to_zero",
+  "aws_region": "string | null",
+  "aws_frontend_url": "string | null",
+  "aws_backend_url": "string | null",
+  "aws_instance_id": "string | null",
+  "aws_last_deployed": "datetime | null",
+  "aws_terraform_path": "string | null",
   "logs": [{ "message": "string", "timestamp": "datetime" }],
   "created_at": "datetime",
   "updated_at": "datetime"
@@ -1035,15 +1164,15 @@ This logic runs in **two places** and produces consistent output both times:
 
 ## 14. Frontend Integration
 
-**File:** `devops-autopilot-frontend/src/pages/DeployPage.tsx`
+**Files:** `devops-autopilot-frontend/src/pages/DeployPage.tsx`, `src/components/AWSDeployPanel.tsx`, `src/api/client.ts`
 
 ### Key UI States
 
 | State          | Condition                                   | Component shown                   |
 | -------------- | ------------------------------------------- | --------------------------------- |
-| Deploy Blocked | `metadata.deploy_blocked === true`          | 🔴 Red banner + disabled buttons  |
-| Deploy Warning | `!deploy_blocked && deploy_warning != null` | 🟡 Amber banner + enabled buttons |
-| Normal         | Both false/null                             | ✅ Clean UI, all buttons enabled  |
+| Deploy Blocked | `metadata.deploy_blocked === true`          | Red banner + disabled buttons |
+| Deploy Warning | `!deploy_blocked && deploy_warning != null` | Amber banner + enabled buttons |
+| Normal         | Both false/null                             | Clean UI, all buttons enabled |
 
 ### TypeScript Types (`src/types/api.ts`)
 
@@ -1057,40 +1186,261 @@ deploy_warning?: string | null;   // non-blocking warning
 
 ### SSE Streaming (Deploy Page)
 
-The frontend connects to `/api/projects/{id}/docker-stream` via `EventSource` and renders tokens in real time as the LLM generates Docker files.
+The frontend uses these streaming paths:
+
+1. Docker deploy chat: `GET /api/docker/{id}/chat/stream?message=...&token=...`
+2. Docker logs: `GET /api/docker/{id}/logs?action=build|run|push|k8s_deploy&token=...`
+3. Monitoring logs: `GET /api/monitor/{id}/logs/stream?token=...`
+4. AWS operations: fetch streaming against `/api/aws/{id}/{apply|destroy|scale-zero|scale-up}`
+
+`streamAWSTerraform()` accepts `apply`, `destroy`, `scale-zero`, and `scale-up`. It calls `onComplete()` once, even when the backend sends an explicit `complete` event.
+
+### AWS UI Wiring
+
+On Deploy page load, `DeployPage.tsx` also calls `checkAWSPrerequisites(projectId)` to prefill `awsConfig.docker_repo_prefix` from `docker_hub_username` and to initialize `terraformExists` / `awsStatus` from the backend.
+
+The current `DeployPage.tsx` AWS config state contains `aws_region`, `docker_repo_prefix`, `db_engine`, `mongo_db_url`, and `desired_count`. The visible Cloud panel exposes the region selector, then:
+
+1. `GEN_INFRA` calls `apiClient.generateTerraform(projectId, awsConfig)`, sets local status to `terraform_generated`, and refreshes the file explorer.
+2. `DEPLOY_CLOUD` calls `streamAWSTerraform(projectId, "apply", ...)` and sets local status to `deployed` when streaming completes.
+
+`AWSDeployPanel.tsx` provides a fuller generate/apply/destroy/scale-zero component used from project details. Its form sends region, Docker repo prefix, optional DB engine/URL, and desired count.
 
 ---
 
 ## 15. AWS Terraform Deployment
 
-**File:** `app/LLM/terraform_deploy_agent.py` + `aws_deploy_controller.py`
+**Files:** `app/LLM/terraform_deploy_agent.py`, `aws_deploy_controller.py`, `aws_service.py`
 
-The system can also generate Terraform configurations for AWS ECS + ECR deployment:
+The current AWS flow generates Terraform for a single EC2 Free Tier instance running `docker-compose`.
 
-1. User triggers AWS deploy from UI
-2. `aws_deploy_controller.py` calls the Terraform LLM agent
-3. LLM generates:
-   - `main.tf` — ECS cluster, task definition, service, ALB
-   - `ecr.tf` — ECR repository per service
-   - `variables.tf`
-   - `outputs.tf`
-4. System runs:
-   ```bash
-   terraform init
-   terraform plan
-   terraform apply -auto-approve
-   ```
-5. Streams Terraform output back to UI
+### 15.1 Prerequisites
 
-> **Note:** Requires `AWS_PROFILE` set in `.env` with appropriate IAM permissions (ECS, ECR, VPC, IAM roles).
+`GET /api/aws/{project_id}/prerequisites` checks:
+
+1. Project ownership
+2. Docker images have been pushed (`docker_push_success`)
+3. AWS credentials through `verify_aws_credentials()`
+4. Terraform CLI is installed at `settings.TERRAFORM_PATH`
+5. Real project root exists after `find_project_root()`
+6. `docker-compose.yml` exists under the resolved project root
+7. Existing `infra/main.tf` status
+
+Credential behavior in code:
+
+- If process env `AWS_PROFILE` is set, the backend runs `aws sts get-caller-identity --profile <profile>`.
+- Otherwise it checks process env `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are present.
+- Region is read from process env `AWS_DEFAULT_REGION` / `AWS_REGION`, falling back to `us-east-1`.
+
+Response fields:
+
+```json
+{
+  "can_deploy": true,
+  "issues": [],
+  "project_name": "app",
+  "aws_region": "us-east-1",
+  "docker_push_success": true,
+  "docker_hub_username": "myuser",
+  "terraform_exists": false,
+  "aws_deployment_status": "not_deployed"
+}
+```
+
+This endpoint is a readiness check. `generate_terraform_handler()` performs its own project/ownership/path checks, but it does not call the prerequisites handler before generating Terraform.
+
+### 15.2 Terraform Generation
+
+`POST /api/aws/{project_id}/generate` accepts this backend request model:
+
+| Field | Default | Used for |
+| ----- | ------- | -------- |
+| `aws_region` | `us-east-1` | Terraform provider region and availability zone prefix |
+| `docker_repo_prefix` | required | Docker image prefix used in generated service image names |
+| `db_engine` | `None` | Optional database context passed to Gemini |
+| `mongo_db_url` | `None` | DB URL when Mongo is selected |
+| `rds_db_url` | `None` | DB URL for non-Mongo DB engines |
+| `desired_count` | `1` | Passed to the prompt for compatibility; EC2/docker-compose apply does not pass it as a Terraform variable |
+| `extra_env` | `None` | Merged into every detected service env dict before prompting |
+| `key_name` | `aws-deployment-devops` | EC2 key pair name; generated Terraform must include `key_name = var.key_name` |
+| `ssh_private_key_path` | `~/.ssh/aws-deployment-devops.pem` | Local PEM path used by `ssh_command` output |
+| `allowed_ssh_cidr` | `0.0.0.0/0` | Security group SSH CIDR default |
+| `app_port` | auto-detected | Primary app port used for `var.app_port` and app URL output |
+| `root_volume_size` | `20` | Root EBS volume size in GB |
+
+Generation flow:
+
+1. Resolves `project.extracted_path` to the real project root with `find_project_root()`
+2. Builds service inputs from `metadata.services` when available and skips `type=database`
+3. Uses service port priority: `container_port -> runtime_port -> port -> 3000`
+4. Falls back to legacy fullstack/frontend/backend service inference when `metadata.services` is missing
+5. Reads service env vars through `get_service_env_vars_for_terraform()`
+6. Merges `extra_env` into every service env dict
+7. Reads root `docker-compose.yml` plus service `.env`, `.env.local`, or `.env.production` contents
+8. Sends project name, AWS region, EC2 instance type, Docker repo prefix, services, env vars, existing compose, existing env files, SSH config, app port, and root volume size to Gemini
+9. Post-processes and validates the returned HCL before writing
+10. Writes the final Terraform to `{project_root}/infra/main.tf`
+11. Stores `aws_deployment_status="terraform_generated"`, `aws_region`, and `aws_terraform_path`
+12. Logs `Terraform configuration generated: main.tf -> <absolute path>`
+
+The Terraform prompt requires:
+
+- AWS provider `~> 5.0`
+- Amazon Linux 2023 AMI via `data "aws_ami"`
+- Variables for `project_name`, `aws_region`, `docker_repo_prefix`, `key_name`, `ssh_private_key_path`, `allowed_ssh_cidr`, `app_port`, and `root_volume_size`
+- VPC, internet gateway, public subnet with `map_public_ip_on_launch = true`, route table, route table association, and security group
+- Security group ingress for SSH 22, HTTP 80, HTTPS 443, `var.app_port`, and every host-side port from compose mappings
+- Single `aws_instance` using `settings.AWS_EC2_INSTANCE_TYPE` (`t3.micro` by default)
+- `vpc_security_group_ids`, `key_name = var.key_name`, and `root_block_device` with `gp3` and `volume_size = var.root_volume_size`
+- `user_data` that logs to `/var/log/devops-autopilot-userdata.log`, installs Docker, installs docker-compose, logs into Docker Hub with `DOCKER_USERNAME` / `DOCKER_PASSWORD` placeholders, writes env files and compose YAML, pulls images, and runs `docker-compose up -d`
+- Outputs requested by the prompt: `instance_public_ip`, `public_dns`, `instance_id`, `vpc_id`, `app_url`, `frontend_url`, `backend_url`, and `ssh_command`
+- IAM permission comments near the top and debug command comments near the bottom
+
+If an existing root `docker-compose.yml` is available, the prompt tells Gemini to embed that compose content exactly in `user_data` and create provided env files before the compose file. If no compose file is provided, the prompt tells Gemini to generate compose content from the service/env inputs.
+
+Post-processing in `aws_deploy_controller.py`:
+
+1. `_inject_docker_credentials()` replaces `DOCKER_USERNAME` / `DOCKER_PASSWORD` placeholders when Docker Hub credentials are configured.
+2. If placeholders exist but credentials are missing, generation fails with HTTP 400.
+3. `_enforce_ec2_instance_type()` rewrites the first `instance_type = "..."` to `settings.AWS_EC2_INSTANCE_TYPE`.
+4. `_enforce_ssh_key_settings()` sets `key_name` to `aws-deployment-devops`, adds/updates `ssh_private_key_path`, and rewrites `ssh_command` so it uses `~/.ssh/aws-deployment-devops.pem` instead of `<your-key.pem>`.
+5. `_ensure_compose_host_ports_allowed()` extracts quoted compose port mappings from the generated HCL, rejects duplicate host ports, and inserts missing security group ingress blocks for host ports.
+6. `_dedupe_ingress_blocks_in_security_groups()` removes duplicate AWS ingress permissions after resolving simple variable defaults such as `var.app_port`.
+7. `_run_terraform_validations()` requires `key_name`, SSH ingress for 22, an egress block, `user_data` containing Docker commands, output blocks for `app_url` and `ssh_command`, a non-placeholder SSH key path, and a root block device of at least 20 GB when a literal `volume_size` is present.
+
+> Security note: Docker Hub credentials are intentionally embedded into generated Terraform/user_data only when Gemini includes the Docker login placeholders and the backend replaces them. Do not commit generated `infra/main.tf` if it contains real credentials.
+
+### 15.3 Apply / Destroy / Fix
+
+Apply streams:
+
+```bash
+terraform init -input=false
+terraform apply -auto-approve
+```
+
+Destroy streams:
+
+```bash
+terraform destroy -auto-approve
+```
+
+Fix flow:
+
+1. Reads current `infra/main.tf`
+2. Requires Terraform CLI to be available
+3. Sends Terraform code plus error output to Gemini
+4. Runs the same Docker credential injection, EC2 instance type enforcement, compose host-port ingress augmentation, and Terraform validations used during generation
+5. Writes the fixed file back to `infra/main.tf`
+6. Pushes a `"Terraform fixed by LLM"` log entry
+
+Apply status updates:
+
+1. Before streaming, MongoDB status becomes `deploying`.
+2. If `terraform init` fails, status becomes `failed`.
+3. If `terraform apply` succeeds, the backend reads `terraform output -json`, updates status to `deployed`, stores `aws_frontend_url` / `aws_backend_url` when present, and emits a final SSE `complete` event with deployment outputs.
+4. If apply exits non-zero, status becomes `failed`.
+
+Destroy status updates:
+
+1. Before streaming, MongoDB status becomes `destroying`.
+2. Successful destroy sets status to `not_deployed` and emits a final `complete` event.
+3. Failed destroy sets status to `destroy_failed`.
+
+### 15.4 Scale Controls
+
+AWS scale controls operate on the EC2 instance from Terraform output:
+
+| Endpoint | Service method | Behavior | Status update |
+| -------- | -------------- | -------- | ------------- |
+| `POST /api/aws/{id}/scale-zero` | `AWSDeploymentService.scale_to_zero()` -> `stop_instance()` | Runs `aws ec2 stop-instances --instance-ids <id>` | `scaled_to_zero` |
+| `POST /api/aws/{id}/scale-up` | `AWSDeploymentService.scale_up()` -> `start_instance()` | Runs `aws ec2 start-instances --instance-ids <id>` | `deployed` |
+
+### 15.5 Status
+
+`GET /api/aws/{project_id}/status` returns stored MongoDB AWS fields:
+
+```json
+{
+  "aws_deployment_status": "deployed",
+  "aws_region": "us-east-1",
+  "aws_frontend_url": "http://...",
+  "aws_backend_url": "http://...",
+  "aws_instance_id": null,
+  "aws_last_deployed": "datetime",
+  "docker_push_success": true
+}
+```
+
+When status is `deployed`, it also reads live Terraform outputs from `{project_root}/infra` and adds:
+
+```json
+{
+  "live_public_ip": "x.x.x.x",
+  "live_frontend_url": "http://...",
+  "live_backend_url": "http://...",
+  "live_instance_id": "i-...",
+  "live_vpc_id": "vpc-..."
+}
+```
+
+> Requires AWS CLI credentials/profile and Terraform installed on the backend machine.
 
 ---
 
-## 16. Script Editing Guide (Critical Couplings)
+## 16. Monitoring & Kubernetes Deployment
+
+**Files:** `routes/monitor.py`, `controllers/monitor_controller.py`, `services/monitor_service.py`, `utils/k8s_deployer.py`, `components/MonitoringDashboard.tsx`
+
+Monitoring is exposed through `/api/monitor` and is backed by `kubectl` plus Terraform output checks.
+
+### 16.1 Monitoring Status
+
+`GET /api/monitor/{project_id}/status`:
+
+1. Loads the project for the authenticated user
+2. Derives deployment name from `project.metadata.name` or `project.project_name`
+3. Reads Kubernetes pod health through `diagnose_pod_health()`
+4. Reads AWS health by checking `terraform/<project_id>/terraform.tfstate` and `terraform output -json`
+5. Adds recent k8s events and all pods
+6. Returns `healthy` when either k8s or AWS health is healthy
+
+### 16.2 Self-Healing
+
+`POST /api/monitor/{project_id}/heal` triggers:
+
+```bash
+kubectl rollout restart deployment/{deployment_name}
+```
+
+### 16.3 Logs And Events
+
+| Endpoint | Source |
+| -------- | ------ |
+| `GET /api/monitor/{id}/logs` | `kubectl logs <pod> --tail=<n> --timestamps=true` |
+| `GET /api/monitor/{id}/logs/stream?token=<jwt>` | `kubectl logs -f <pod> --timestamps=true` |
+| `GET /api/monitor/{id}/events` | `kubectl get events --sort-by=.lastTimestamp` |
+| `GET /api/monitor/pods/all` | `kubectl get pods -n default -o json` |
+
+EventSource log streaming uses `?token=<jwt>` because browser `EventSource` cannot send custom Authorization headers.
+
+### 16.4 Kubernetes Deploy
+
+Docker logs support `action=k8s_deploy`. The backend:
+
+1. Ensures Kubernetes connectivity with `kubectl cluster-info`
+2. Uses existing `k8s/deployment.yaml` and `k8s/service.yaml`, or generates missing manifests
+3. Applies manifests with `kubectl apply -f`
+4. Uses NodePort services and reports the selected node port
+5. Streams deployment progress to the UI
+
+---
+
+## 17. Script Editing Guide (Critical Couplings)
 
 This section is a maintenance map for editing detector/deploy scripts without introducing hidden regressions.
 
-### 16.1 Port Schema Contract (`ports_v2`)
+### 17.1 Port Schema Contract (`ports_v2`)
 
 Canonical meaning:
 
@@ -1105,7 +1455,7 @@ Do not repurpose these fields. If one script changes this meaning, update all do
 3. `app/LLM/docker_deploy_agent.py` (`_normalize_service_ports_v2`, `_format_metadata`, service-lines formatter)
 4. Any external audit/training script that compares detector vs compose outputs
 
-### 16.2 Runtime Inference Flow (Where Runtime Comes From)
+### 17.2 Runtime Inference Flow (Where Runtime Comes From)
 
 Primary source:
 
@@ -1121,7 +1471,7 @@ Controller backfill:
 
 Editing rule: if you change runtime inference logic in detector, mirror compatible logic in controller backfill, or older metadata rows may diverge from fresh analysis rows.
 
-### 16.3 Frontend Mode Coupling
+### 17.3 Frontend Mode Coupling
 
 Frontend behavior depends on `frontend_mode` and `container_port_source`.
 
@@ -1135,7 +1485,7 @@ If you add/change modes in `detection_services.py`, also update:
 2. Controller mode derivation in `_augment_services_runtime_hints()`
 3. Documentation sample prompt/service-line examples
 
-### 16.4 Compose Unmatched Service Path
+### 17.4 Compose Unmatched Service Path
 
 When compose build-context services do not match inferred services by path/name, detector creates new service rows.
 
@@ -1143,21 +1493,24 @@ Non-frontend unmatched services now infer `svc_language/svc_framework` from the 
 
 Editing rule: keep this service-local fallback logic intact; using project-wide framework/language here reintroduces frontend-to-backend bleed (for example React assigned to backend).
 
-### 16.5 Deploy-Blocked Logic Scope
+### 17.5 Deploy Warning Logic Scope
 
-Deploy blocking is backend-like only (`backend`, `monolith`) and is recomputed at:
+Missing `.env` handling is backend-like only (`backend`, `monolith`) and is recomputed at:
 
 1. analysis time (`detector.py`)
 2. deploy page context time (`docker_ai_controller.py`)
 
-If you expand service types that need `.env` enforcement, update both paths together.
+Current behavior does not block deployment only because `.env` is missing. It sets `backend_env_missing=true`, leaves `deploy_blocked=false`, and emits a warning so the build/readiness flows can generate `.env` or `.env.template`.
 
-### 16.6 Minimum Regression Checks After Script Edits
+If you expand service types that need `.env` handling, update both paths together.
+
+### 17.6 Minimum Regression Checks After Script Edits
 
 Run at least:
 
 ```bash
 python -m py_compile app/config/settings.py app/utils/command_extractor.py app/utils/detection_ports.py app/utils/detection_services.py app/utils/detector.py app/controllers/docker_ai_controller.py app/LLM/docker_deploy_agent.py
+python -m py_compile app/controllers/aws_deploy_controller.py app/routes/aws_deploy.py app/services/aws_service.py app/controllers/deployment_readiness_controller.py app/routes/monitor.py app/controllers/monitor_controller.py app/services/monitor_service.py app/utils/k8s_deployer.py
 python -m pytest tests/test_docker_pipeline.py -k RuntimeHintAugmentation -v
 python -m pytest tests/test_detector_exhaustive.py -k runtime_selection -v
 ```
@@ -1168,7 +1521,7 @@ For data quality edits, also run your detector audit script on sampled compose r
 2. runtime_port/container_port parity
 3. entry_point parity for backend/monolith services
 
-### 16.7 Console Encoding Guard (Windows)
+### 17.7 Console Encoding Guard (Windows)
 
 `detect_framework()` now calls `_ensure_utf8_stdout()` before running detection.
 
@@ -1179,7 +1532,7 @@ Purpose:
 
 Editing rule: if you move/rename detector entry points, preserve this guard at the earliest practical point in the flow.
 
-### 16.8 Startup Log Safety (`settings.py`)
+### 17.8 Startup Log Safety (`settings.py`)
 
 `app/config/settings.py` startup logs are ASCII-only.
 
@@ -1218,11 +1571,17 @@ devops-autopilot/
 │               │   └── server.js
 │               ├── frontend/
 │               │   └── package.json
-│               ├── Dockerfile         ← generated by LLM
-│               └── docker-compose.yml ← generated by LLM
+│               ├── k8s/
+│               │   ├── deployment.yaml ← generated by LLM/readiness flow
+│               │   └── service.yaml    ← generated by LLM/readiness flow
+│               ├── infra/
+│               │   └── main.tf         ← generated AWS Terraform
+│               ├── Dockerfile          ← generated by LLM when single-service/root
+│               └── docker-compose.yml  ← generated by LLM
 └── devops-autopilot-frontend/
     └── src/
         ├── pages/DeployPage.tsx
+        ├── components/MonitoringDashboard.tsx
         └── types/api.ts
 ```
 
@@ -1259,4 +1618,4 @@ python -m pytest tests/test_database_detection.py -v
 
 ---
 
-_Document updated: 2026-04-02 | DevOps AutoPilot v1.9 — env precedence hardening + JS port pattern expansion + backend `app` classification + UTF-8 logging safety guard_
+_Document updated: 2026-04-18 | DevOps AutoPilot v2.0 - Gemini/Ollama provider routing, Docker/Kubernetes readiness, monitoring dashboard APIs, AWS EC2 Terraform flow, scale-zero/scale-up controls, and non-blocking `.env` auto-generation_

@@ -405,7 +405,7 @@ def build_project_stream(
         for ev in ensure_external_networks(compose_path, "build"):
             yield ev
 
-        cmd = ["docker", "compose", "-f", compose_file, "build"]
+        cmd = ["docker", "compose", "-f", compose_file, "build", "--progress=plain"]
 
         rel_compose = os.path.relpath(compose_path, project_root).replace("\\", "/")
         yield {
@@ -521,7 +521,7 @@ def build_project_stream(
             )
             if compose_generated:
                 yield {"line": "Using generated docker-compose.yml for build...", "stage": "build"}
-                cmd = ["docker", "compose", "-f", "docker-compose.yml", "build"]
+                cmd = ["docker", "compose", "-f", "docker-compose.yml", "build", "--progress=plain"]
                 for event in _stream_command(cmd, cwd=project_root, stage="build"):
                     yield event
                 return
@@ -572,7 +572,7 @@ def build_project_stream(
         build_context_dir = os.path.dirname(full) or project_root
         dockerfile_name = os.path.basename(full)
 
-        cmd = ["docker", "build", "-t", service_image]
+        cmd = ["docker", "build", "--progress=plain", "-t", service_image]
         if dockerfile_name != "Dockerfile":
             cmd.extend(["-f", dockerfile_name])
         cmd.append(".")

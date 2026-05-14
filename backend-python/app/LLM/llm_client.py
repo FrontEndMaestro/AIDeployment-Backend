@@ -271,7 +271,7 @@ def call_gemini(messages: List[Dict[str, str]], custom_options: Optional[Dict] =
         result, status = _call_gemini_once(messages, GEMINI_MODEL_NAME, custom_options)
 
         if status in (429, 503) and GEMINI_FALLBACK_MODEL_NAME and GEMINI_FALLBACK_MODEL_NAME != GEMINI_MODEL_NAME:
-            print(f"⚠️ Gemini primary model ({GEMINI_MODEL_NAME}) returned {status}. Retrying with fallback ({GEMINI_FALLBACK_MODEL_NAME})...")
+            print(f"Gemini primary model ({GEMINI_MODEL_NAME}) returned {status}. Retrying with fallback ({GEMINI_FALLBACK_MODEL_NAME})...")
             result, status = _call_gemini_once(messages, GEMINI_FALLBACK_MODEL_NAME, custom_options)
 
         return result
