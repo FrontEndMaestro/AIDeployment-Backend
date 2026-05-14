@@ -284,24 +284,39 @@ def cleanup_deployment(deployment_name: str) -> Dict:
         }
 
 
-async def stream_pod_logs(deployment_name: str) -> AsyncGenerator[str, None]:
+async def stream_pod_logs(
+    pod_or_deployment_name: str,
+    namespace: str = "default",
+) -> AsyncGenerator[str, None]:
     """
-    Streams live pod logs for a deployment using asyncio subprocess.
-    Includes timestamps, stderr, and heartbeat SSE comments to keep connections alive.
+    Streams live pod logs using asyncio subprocess (kubectl logs -f).
+    Accepts either a raw pod name or a deployment name (will discover first pod).
     """
-    # First get the pod name
-    pod_status = get_pod_status(deployment_name)
-    pod_name = pod_status.get("pod_name")
+    # If looks like a pod name (has random suffix), use directly; else discover
+    pod_name = pod_or_deployment_name
+    if not any(pod_or_deployment_name.endswith(sfx) for sfx in ["-0", "-1"]):
+        try:
+            proc = subprocess.run(
+                ["kubectl", "get", "pods", "-n", namespace,
+                 "-l", f"app={pod_or_deployment_name}",
+                 "-o", "jsonpath={.items[0].metadata.name}"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+            )
+            discovered = proc.stdout.decode("utf-8", errors="replace").strip()
+            if discovered:
+                pod_name = discovered
+        except Exception:
+            pass  # fall back to treating input as pod name
 
     if not pod_name:
-        yield "data: {\"type\": \"error\", \"message\": \"No pod found for deployment. Is it running?\"}\n\n"
+        yield "data: {\"type\": \"error\", \"message\": \"No pod found. Is the deployment running?\"}\n\n"
         return
 
     yield f"data: {{\"type\": \"info\", \"message\": \"Streaming logs for pod: {pod_name}\"}}\n\n"
 
     # Run kubectl logs -f with timestamps
     process = await asyncio.create_subprocess_exec(
-        "kubectl", "logs", "-f", pod_name, "--timestamps=true",
+        "kubectl", "logs", "-f", pod_name, "-n", namespace, "--timestamps=true",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
