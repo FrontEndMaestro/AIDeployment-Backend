@@ -1,8 +1,20 @@
 import os
 import json
+import sys
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import numpy as np
+
+
+def _safe_print(msg: str):
+    """Print safely on Windows without emoji encoding crashes."""
+    try:
+        print(msg)
+        sys.stdout.flush()
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", errors="replace").decode("ascii"))
+        sys.stdout.flush()
+
 
 try:
     import torch
@@ -11,9 +23,8 @@ try:
     from sklearn.metrics.pairwise import cosine_similarity
     HAS_ML = True
 except ImportError as e:
-    print(f"⚠️ ML libraries not available: {e}")
+    _safe_print(f"[ML-WARN] ML libraries not available: {e}")
     HAS_ML = False
-
 
 
 class MLCodeAnalyzer:
@@ -57,12 +68,12 @@ class MLCodeAnalyzer:
             if self.model:
                 self._initialize_embeddings()
         else:
-            print("⚠️ ML libraries not installed. Please install: pip install torch transformers scikit-learn")
+            _safe_print("[ML-WARN] ML libraries not installed. Please install: pip install torch transformers scikit-learn")
     
     def _initialize_model(self):
         """Initialize CodeBERT model"""
         try:
-            print("🤖 Loading CodeBERT model...")
+            _safe_print("[ML] Loading CodeBERT model (microsoft/codebert-base)...")
             model_name = "microsoft/codebert-base"
             
             cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
@@ -81,41 +92,39 @@ class MLCodeAnalyzer:
             self.model.to(self.device)
             self.model.eval()
             
-            print(f"✅ CodeBERT loaded successfully on {self.device}")
+            _safe_print(f"[ML-OK] CodeBERT loaded successfully on {self.device}")
             self.ml_available = True
             
         except Exception as e:
-            print(f"❌ CodeBERT loading failed: {e}")
-            print("   Install required libraries: pip install torch transformers scikit-learn")
+            _safe_print(f"[ML-ERROR] CodeBERT loading failed: {e}")
+            _safe_print("   Install required libraries: pip install torch transformers scikit-learn")
             self.model = None
             self.ml_available = False
     
     def _initialize_embeddings(self):
         """Pre-compute embeddings for all languages and frameworks"""
         if not self.model or not HAS_ML:
-            print("⚠️ Skipping embedding initialization (model not loaded)")
+            _safe_print("[ML-WARN] Skipping embedding initialization (model not loaded)")
             return
         
-        print("🔄 Computing language & framework embeddings...")
+        _safe_print("[ML] Computing language & framework embeddings...")
         
         try:
-            # Compute language embeddings
             for lang, signature in self.language_signatures.items():
                 embedding = self._extract_embedding(signature)
                 if embedding is not None:
                     self.language_embeddings[lang] = embedding
             
-            # Compute framework embeddings
             for framework, signature in self.framework_signatures.items():
                 embedding = self._extract_embedding(signature)
                 if embedding is not None:
                     self.framework_embeddings[framework] = embedding
             
-            print(f"✅ Computed {len(self.language_embeddings)} language embeddings")
-            print(f"✅ Computed {len(self.framework_embeddings)} framework embeddings")
+            _safe_print(f"[ML-OK] Computed {len(self.language_embeddings)} language embeddings")
+            _safe_print(f"[ML-OK] Computed {len(self.framework_embeddings)} framework embeddings")
             
         except Exception as e:
-            print(f"❌ Embedding initialization failed: {e}")
+            _safe_print(f"[ML-ERROR] Embedding initialization failed: {e}")
             import traceback
             traceback.print_exc()
     
@@ -141,7 +150,7 @@ class MLCodeAnalyzer:
             return embedding
             
         except Exception as e:
-            print(f"⚠️ Embedding extraction failed: {e}")
+            _safe_print(f"[ML-WARN] Embedding extraction failed: {e}")
             return None
     
     def analyze_project_structure(self, project_path: str) -> Dict:
@@ -163,7 +172,6 @@ class MLCodeAnalyzer:
         
         try:
             for root, _, files in os.walk(project_path):
-                # Skip ignored directories
                 if any(skip in root for skip in ["node_modules", "__pycache__", ".git", "venv", "dist", "build"]):
                     continue
                 
@@ -172,18 +180,16 @@ class MLCodeAnalyzer:
                     file_path = os.path.join(root, file)
                     ext = Path(file).suffix.lower()
                     
-                    # Track important config files
                     if file in important_files:
                         analysis["key_files"].append(file)
                         analysis["config_files"].append(file_path)
                     
-                    # Collect code samples
                     if ext in code_extensions:
                         analysis["code_files"] += 1
-                        if len(analysis["code_samples"]) < 15:  # Collect up to 15 samples
+                        if len(analysis["code_samples"]) < 15:
                             try:
                                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                    content = f.read(5000)  # Read first 5000 chars
+                                    content = f.read(5000)
                                     if content.strip():
                                         analysis["code_samples"].append({
                                             "file": file,
@@ -194,7 +200,7 @@ class MLCodeAnalyzer:
                                 pass
         
         except Exception as e:
-            print(f"⚠️ Structure analysis error: {e}")
+            _safe_print(f"[ML-WARN] Structure analysis error: {e}")
         
         return analysis
     
@@ -208,17 +214,14 @@ class MLCodeAnalyzer:
             return "Unknown", 0.0
         
         try:
-            # Combine code samples
             code_texts = [sample["content"][:1000] for sample in structure["code_samples"][:10]]
             combined_code = "\n".join(code_texts)
             
-            # Get project code embedding
             project_embedding = self._extract_embedding(combined_code)
             
             if project_embedding is None:
                 return "Unknown", 0.0
             
-            # Calculate similarity with each language
             best_language = "Unknown"
             best_similarity = 0.0
             
@@ -230,13 +233,12 @@ class MLCodeAnalyzer:
                     best_language = lang
             
             confidence = float(best_similarity)
-            
-            print(f"   🔤 Language Detection: {best_language} (similarity: {confidence:.3f})")
+            _safe_print(f"   [ML] Language Detection: {best_language} (similarity: {confidence:.3f})")
             
             return best_language, confidence
             
         except Exception as e:
-            print(f"   ❌ Language detection failed: {e}")
+            _safe_print(f"   [ML-ERROR] Language detection failed: {e}")
             import traceback
             traceback.print_exc()
             return "Unknown", 0.0
@@ -251,17 +253,14 @@ class MLCodeAnalyzer:
             return "Unknown", 0.0
         
         try:
-            # Combine code samples
             code_texts = [sample["content"][:1000] for sample in structure["code_samples"][:10]]
             combined_code = "\n".join(code_texts)
             
-            # Get project code embedding
             project_embedding = self._extract_embedding(combined_code)
             
             if project_embedding is None:
                 return "Unknown", 0.0
             
-            # Calculate similarity with each framework
             best_framework = "Unknown"
             best_similarity = 0.0
             
@@ -273,13 +272,12 @@ class MLCodeAnalyzer:
                     best_framework = framework
             
             confidence = float(best_similarity)
-            
-            print(f"   🎯 Framework Detection: {best_framework} (similarity: {confidence:.3f})")
+            _safe_print(f"   [ML] Framework Detection: {best_framework} (similarity: {confidence:.3f})")
             
             return best_framework, confidence
             
         except Exception as e:
-            print(f"   ❌ Framework detection failed: {e}")
+            _safe_print(f"   [ML-ERROR] Framework detection failed: {e}")
             import traceback
             traceback.print_exc()
             return "Unknown", 0.0
@@ -287,10 +285,10 @@ class MLCodeAnalyzer:
     def analyze_project(self, project_path: str) -> Dict:
         """Main ML analysis pipeline - PURE CodeBERT"""
         
-        print("🧠 Starting PURE CodeBERT ML Analysis...")
+        _safe_print("[ML] Starting PURE CodeBERT ML Analysis...")
         
         if not self.ml_available or not self.model:
-            print("❌ CodeBERT not available! Cannot analyze.")
+            _safe_print("[ML-ERROR] CodeBERT not available! Cannot analyze.")
             return {
                 "language": "Unknown",
                 "language_confidence": 0.0,
@@ -306,12 +304,11 @@ class MLCodeAnalyzer:
                 }
             }
         
-        # Step 1: Analyze structure
         structure = self.analyze_project_structure(project_path)
-        print(f"📊 Found {structure['total_files']} files, {structure['code_files']} code files")
+        _safe_print(f"[ML] Found {structure['total_files']} files, {structure['code_files']} code files")
         
         if structure['code_files'] == 0:
-            print("⚠️ No code files found!")
+            _safe_print("[ML-WARN] No code files found!")
             return {
                 "language": "Unknown",
                 "language_confidence": 0.0,
@@ -327,17 +324,15 @@ class MLCodeAnalyzer:
                 }
             }
         
-        # Step 2: Detect Language using CodeBERT
-        print("🔍 Detecting language...")
+        _safe_print("[ML] Detecting language...")
         language, lang_confidence = self.detect_language_ml(structure)
         
-        # Step 3: Detect Framework using CodeBERT
-        print("🔍 Detecting framework...")
+        _safe_print("[ML] Detecting framework...")
         framework, fw_confidence = self.detect_framework_ml(structure, language)
         
-        print(f"\n✅ Analysis Complete!")
-        print(f"   Language: {language} (confidence: {lang_confidence:.2f})")
-        print(f"   Framework: {framework} (confidence: {fw_confidence:.2f})")
+        _safe_print(f"[ML] Analysis Complete!")
+        _safe_print(f"   Language: {language} (confidence: {lang_confidence:.2f})")
+        _safe_print(f"   Framework: {framework} (confidence: {fw_confidence:.2f})")
         
         return {
             "language": language,
