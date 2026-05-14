@@ -144,7 +144,7 @@ AWS_DEFAULT_REGION=us-east-1
 TERRAFORM_PATH=terraform
 AWS_EC2_INSTANCE_TYPE=t3.micro
 AWS_EC2_KEY_NAME=aws-deployment-devops
-AWS_SSH_PRIVATE_KEY_PATH=~/.ssh/aws-deployment-devops.pem
+AWS_SSH_PRIVATE_KEY_PATH=C:/Users/abdul/Downloads/aws-deployment-devops.pem
 ```
 
 > Note: `.env` values override `settings.py` defaults at runtime.
@@ -164,7 +164,7 @@ AWS_SSH_PRIVATE_KEY_PATH=~/.ssh/aws-deployment-devops.pem
 | `GEMINI_FALLBACK_MODEL_NAME` | `None`                    | Optional fallback used only for Gemini 429/503 |
 | `AWS_EC2_INSTANCE_TYPE` | `t3.micro`                       | EC2 instance type enforced after Terraform generation |
 | `AWS_EC2_KEY_NAME` | `aws-deployment-devops`              | EC2 key pair name enforced for SSH |
-| `AWS_SSH_PRIVATE_KEY_PATH` | `~/.ssh/aws-deployment-devops.pem` | Local PEM path used in `ssh_command` output |
+| `AWS_SSH_PRIVATE_KEY_PATH` | `C:/Users/abdul/Downloads/aws-deployment-devops.pem` | Local PEM path used in `ssh_command` output |
 
 ---
 
@@ -933,6 +933,15 @@ Run-specific behavior:
 2. If multiple Dockerfiles exist and compose is missing, Gemini generates `docker-compose.yml`, the backend validates it with `docker compose config`, writes it to project root, then runs compose.
 3. For single-image fallback, container ports are inferred from Docker metadata and host port conflicts are resolved before running.
 
+Push-specific behavior:
+
+1. Docker login is attempted before pushing when Docker Hub credentials are configured.
+2. For compose projects, `docker compose config --format json` is used to resolve services.
+3. Database services are skipped and are not pushed to Docker Hub.
+4. App services are tagged and pushed as `{DOCKER_HUB_USERNAME}/{APP_REGISTRY_PREFIX}-{project}-{service}:latest` using the shared `utils/image_naming.py` helper.
+5. The push stream treats internal `docker tag` / `docker push` command exits as `command_complete`, not final stream completion, so the browser does not close before every service image is pushed.
+6. The push stream emits one final `complete=true` event only after all selected app images push successfully. That final event includes `pushed_images`.
+
 ### 9.4 Deployment Readiness (`GET /check-readiness`)
 
 `deployment_readiness_controller.py` checks and prepares deployment-critical files:
@@ -1263,7 +1272,7 @@ This endpoint is a readiness check. `generate_terraform_handler()` performs its 
 | `desired_count` | `1` | Passed to the prompt for compatibility; EC2/docker-compose apply does not pass it as a Terraform variable |
 | `extra_env` | `None` | Merged into every detected service env dict before prompting |
 | `key_name` | `aws-deployment-devops` | EC2 key pair name; generated Terraform must include `key_name = var.key_name` |
-| `ssh_private_key_path` | `~/.ssh/aws-deployment-devops.pem` | Local PEM path used by `ssh_command` output |
+| `ssh_private_key_path` | `C:/Users/abdul/Downloads/aws-deployment-devops.pem` | Local PEM path used by `ssh_command` output |
 | `allowed_ssh_cidr` | `0.0.0.0/0` | Security group SSH CIDR default |
 | `app_port` | auto-detected | Primary app port used for `var.app_port` and app URL output |
 | `root_volume_size` | `20` | Root EBS volume size in GB |
@@ -1277,11 +1286,12 @@ Generation flow:
 5. Reads service env vars through `get_service_env_vars_for_terraform()`
 6. Merges `extra_env` into every service env dict
 7. Reads root `docker-compose.yml` plus service `.env`, `.env.local`, or `.env.production` contents
-8. Sends project name, AWS region, EC2 instance type, Docker repo prefix, services, env vars, existing compose, existing env files, SSH config, app port, and root volume size to Gemini
-9. Post-processes and validates the returned HCL before writing
-10. Writes the final Terraform to `{project_root}/infra/main.tf`
-11. Stores `aws_deployment_status="terraform_generated"`, `aws_region`, and `aws_terraform_path`
-12. Logs `Terraform configuration generated: main.tf -> <absolute path>`
+8. Normalizes app-service compose images for EC2 pulls using the same pushed image naming rule as Docker push: `{docker_hub_user}/{APP_REGISTRY_PREFIX}-{project}-{service}:latest`
+9. Sends project name, AWS region, EC2 instance type, Docker repo prefix, resolved image repo, services, env vars, normalized compose, existing env files, SSH config, app port, and root volume size to Gemini
+10. Post-processes and validates the returned HCL before writing
+11. Writes the final Terraform to `{project_root}/infra/main.tf`
+12. Stores `aws_deployment_status="terraform_generated"`, `aws_region`, and `aws_terraform_path`
+13. Logs `Terraform configuration generated: main.tf -> <absolute path>`
 
 The Terraform prompt requires:
 
@@ -1296,17 +1306,23 @@ The Terraform prompt requires:
 - Outputs requested by the prompt: `instance_public_ip`, `public_dns`, `instance_id`, `vpc_id`, `app_url`, `frontend_url`, `backend_url`, and `ssh_command`
 - IAM permission comments near the top and debug command comments near the bottom
 
-If an existing root `docker-compose.yml` is available, the prompt tells Gemini to embed that compose content exactly in `user_data` and create provided env files before the compose file. If no compose file is provided, the prompt tells Gemini to generate compose content from the service/env inputs.
+If an existing root `docker-compose.yml` is available, AWS generation reads it into memory and rewrites only non-database service image references before prompting Gemini. App services are pointed at the Docker Hub tags that `push_image_stream()` publishes, and `build:` blocks are removed from the AWS-embedded compose because EC2 receives only the compose file, not the source tree. Database images such as `mongo:latest`, `postgres:latest`, `mysql:latest`, and `redis:alpine` are left unchanged. The prompt then tells Gemini to embed that normalized compose content exactly in `user_data` and create provided env files before the compose file. If no compose file is provided, the prompt tells Gemini to generate compose content from the service/env inputs using the resolved image repo.
+
+Before Terraform is generated, AWS generation collects the expected non-database app images from the normalized compose and runs `docker manifest inspect <image>` for each one. If any expected Docker Hub manifest is missing, generation fails with HTTP 400 before EC2 can later fail with `manifest unknown`.
 
 Post-processing in `aws_deploy_controller.py`:
 
 1. `_inject_docker_credentials()` replaces `DOCKER_USERNAME` / `DOCKER_PASSWORD` placeholders when Docker Hub credentials are configured.
 2. If placeholders exist but credentials are missing, generation fails with HTTP 400.
-3. `_enforce_ec2_instance_type()` rewrites the first `instance_type = "..."` to `settings.AWS_EC2_INSTANCE_TYPE`.
-4. `_enforce_ssh_key_settings()` sets `key_name` to `aws-deployment-devops`, adds/updates `ssh_private_key_path`, and rewrites `ssh_command` so it uses `~/.ssh/aws-deployment-devops.pem` instead of `<your-key.pem>`.
-5. `_ensure_compose_host_ports_allowed()` extracts quoted compose port mappings from the generated HCL, rejects duplicate host ports, and inserts missing security group ingress blocks for host ports.
-6. `_dedupe_ingress_blocks_in_security_groups()` removes duplicate AWS ingress permissions after resolving simple variable defaults such as `var.app_port`.
-7. `_run_terraform_validations()` requires `key_name`, SSH ingress for 22, an egress block, `user_data` containing Docker commands, output blocks for `app_url` and `ssh_command`, a non-placeholder SSH key path, and a root block device of at least 20 GB when a literal `volume_size` is present.
+3. `utils/image_naming.py` builds the same Docker image base for Docker push, deployment readiness, and AWS generation from `DOCKER_HUB_USERNAME`, `APP_REGISTRY_PREFIX`, and the sanitized project name.
+4. `_normalize_compose_images_for_aws()` rewrites app service images to `{image_repo}-{service}:latest`, removes app `build:` blocks, and leaves database images unchanged.
+5. `_expected_aws_app_images()` extracts the exact non-database images EC2 will pull.
+6. `_validate_docker_hub_manifests_exist()` blocks Terraform generation when Docker Hub does not have one of those app image manifests.
+7. `_enforce_ec2_instance_type()` rewrites the first `instance_type = "..."` to `settings.AWS_EC2_INSTANCE_TYPE`.
+8. `_enforce_ssh_key_settings()` sets `key_name` to `aws-deployment-devops`, adds/updates `ssh_private_key_path`, and rewrites `ssh_command` so it uses `C:/Users/abdul/Downloads/aws-deployment-devops.pem` instead of `<your-key.pem>`.
+9. `_ensure_compose_host_ports_allowed()` extracts quoted compose port mappings from the generated HCL, rejects duplicate host ports, and inserts missing security group ingress blocks for host ports.
+10. `_dedupe_ingress_blocks_in_security_groups()` removes duplicate AWS ingress permissions after resolving simple variable defaults such as `var.app_port`.
+11. `_run_terraform_validations()` requires `key_name`, SSH ingress for 22, an egress block, `user_data` containing Docker commands, output blocks for `app_url` and `ssh_command`, a non-placeholder SSH key path, and a root block device of at least 20 GB when a literal `volume_size` is present.
 
 > Security note: Docker Hub credentials are intentionally embedded into generated Terraform/user_data only when Gemini includes the Docker login placeholders and the backend replaces them. Do not commit generated `infra/main.tf` if it contains real credentials.
 

@@ -11,6 +11,7 @@ from ..LLM.docker_deploy_agent import (
 )
 
 from ..config.settings import settings
+from ..utils.image_naming import build_service_image
 
 
 # --------- helpers to discover compose + Dockerfiles ---------
@@ -38,6 +39,69 @@ def _infer_compose_image_name(compose_dir: str, service_name: str) -> str:
     project = _re.sub(r"-+", "-", project)
     # Compose image name = {project}-{service}
     return f"{project}-{service_name}"
+
+
+def _infer_legacy_compose_image_name(compose_dir: str, service_name: str) -> str:
+    """Docker Compose v1-style fallback: {project}_{service}."""
+    folder = os.path.basename(compose_dir) or "project"
+    import re as _re
+    project = _re.sub(r"[^a-z0-9]", "_", folder.lower()).strip("_")
+    project = _re.sub(r"_+", "_", project)
+    return f"{project}_{service_name}"
+
+
+def _image_with_latest_tag(image_name: str) -> str:
+    image_name = (image_name or "").strip()
+    if not image_name:
+        return image_name
+    name_part = image_name.rsplit("/", 1)[-1]
+    if ":" in name_part:
+        return image_name
+    return f"{image_name}:latest"
+
+
+def _compose_source_image_candidates(
+    compose_dir: str,
+    service_name: str,
+    configured_image: str,
+) -> List[str]:
+    candidates: List[str] = []
+
+    def add(image_name: str) -> None:
+        image_name = (image_name or "").strip()
+        if image_name and image_name not in candidates:
+            candidates.append(image_name)
+        tagged = _image_with_latest_tag(image_name)
+        if tagged and tagged not in candidates:
+            candidates.append(tagged)
+
+    add(configured_image)
+    add(_infer_compose_image_name(compose_dir, service_name))
+    add(_infer_legacy_compose_image_name(compose_dir, service_name))
+    return candidates
+
+
+def _docker_image_exists(image_name: str, cwd: str) -> bool:
+    proc = subprocess.run(
+        ["docker", "image", "inspect", image_name],
+        cwd=cwd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def _resolve_existing_compose_source_image(
+    compose_dir: str,
+    service_name: str,
+    configured_image: str,
+) -> Optional[str]:
+    for image_name in _compose_source_image_candidates(compose_dir, service_name, configured_image):
+        if _docker_image_exists(image_name, cwd=compose_dir):
+            return image_name
+    return None
+
 
 def _docker_login(stage: str) -> Generator[Dict, None, None]:
     """
@@ -194,6 +258,15 @@ def _stream_command(cmd: List[str], cwd: str, stage: str) -> Generator[Dict, Non
         }
 
 
+def _as_intermediate_command_event(event: Dict) -> Dict:
+    if not event.get("complete"):
+        return event
+    command_event = dict(event)
+    command_event["complete"] = False
+    command_event["command_complete"] = True
+    return command_event
+
+
 def _tag_and_push(
     source_image: str,
     dest_image: str,
@@ -209,10 +282,23 @@ def _tag_and_push(
         "line": f"Tagging {source_image} -> {dest_image}",
         "stage": "push",
     }
+    tag_exit_code = 0
+    tag_tail: List[str] = []
     for event in _stream_command(tag_cmd, cwd=cwd, stage="push"):
-        yield event
-        if event.get("complete") and event.get("exit_code", 0) != 0:
-            return  # tagging failed; abort
+        if event.get("complete"):
+            tag_exit_code = event.get("exit_code", 0)
+            tag_tail = event.get("tail") or []
+        yield _as_intermediate_command_event(event)
+    if tag_exit_code != 0:
+        msg = f"Failed to tag {source_image} as {dest_image}."
+        yield {
+            "line": msg,
+            "stage": "push",
+            "exit_code": tag_exit_code,
+            "complete": True,
+            "tail": tag_tail + [msg],
+        }
+        return False
 
     # docker push
     push_cmd = ["docker", "push", dest_image]
@@ -220,8 +306,24 @@ def _tag_and_push(
         "line": f"Pushing {dest_image}",
         "stage": "push",
     }
+    push_exit_code = 0
+    push_tail: List[str] = []
     for event in _stream_command(push_cmd, cwd=cwd, stage="push"):
-        yield event
+        if event.get("complete"):
+            push_exit_code = event.get("exit_code", 0)
+            push_tail = event.get("tail") or []
+        yield _as_intermediate_command_event(event)
+    if push_exit_code != 0:
+        msg = f"Failed to push {dest_image}."
+        yield {
+            "line": msg,
+            "stage": "push",
+            "exit_code": push_exit_code,
+            "complete": True,
+            "tail": push_tail + [msg],
+        }
+        return False
+    return True
 
 
 def _extract_env_from_llm_response(response: str) -> str:
@@ -566,7 +668,7 @@ def build_project_stream(
             service_name = (path_parts[-2] or "root").lower()
 
         # e.g. abdul/devops-autopilot-<project_id>-server:latest
-        service_image = f"{image_repo}-{service_name}:latest"
+        service_image = build_service_image(image_repo, service_name)
 
         full = os.path.join(project_root, rel)
         build_context_dir = os.path.dirname(full) or project_root
@@ -1550,6 +1652,7 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
     # ---------- 2. Compose-Aware Push ----------
     compose_path = _find_compose_file(project_root)
     if compose_path:
+        pushed_images: List[str] = []
         compose_dir = os.path.dirname(compose_path)
         compose_file = os.path.basename(compose_path)
         rel_compose = os.path.relpath(compose_path, project_root).replace("\\", "/")
@@ -1647,18 +1750,34 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
                     continue
 
                 # 3. Resolve source image — explicit or compose auto-name
-                source_image = svc_image_raw or None
+                source_image = _resolve_existing_compose_source_image(compose_dir, svc_name, svc_image_raw)
                 if not source_image:
-                    # Docker Compose auto-names build images as {project_dir}-{service_name}
-                    inferred = _infer_compose_image_name(compose_dir, svc_name)
+                    tried = ", ".join(_compose_source_image_candidates(compose_dir, svc_name, svc_image_raw))
+                    msg = (
+                        f"No local image found for compose service '{svc_name}'. "
+                        f"Tried: {tried}. Run the build step before push."
+                    )
                     yield {
-                        "line": f"Service '{svc_name}' has no explicit image. Inferring built image: {inferred}",
+                        "line": msg,
                         "stage": "push",
+                        "exit_code": 1,
+                        "complete": True,
+                        "tail": [msg],
                     }
-                    source_image = inferred
+                    return
 
-                dest_image = f"{image_repo}-{svc_name.lower()}:latest"
-                yield from _tag_and_push(source_image, dest_image, cwd=compose_dir)
+                dest_image = build_service_image(image_repo, svc_name)
+                pushed = yield from _tag_and_push(source_image, dest_image, cwd=compose_dir)
+                if not pushed:
+                    return
+                pushed_images.append(dest_image)
+            yield {
+                "line": f"Pushed {len(pushed_images)} image(s): {', '.join(pushed_images)}",
+                "stage": "push",
+                "exit_code": 0,
+                "complete": True,
+                "pushed_images": pushed_images,
+            }
             return
 
         # --- PATH B: Fallback YAML Parsing (Safety Mode) ---
@@ -1686,24 +1805,34 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
                 continue
 
             # 3. Resolve source image — explicit or compose auto-name
-            source_image = svc_image_raw or None
+            source_image = _resolve_existing_compose_source_image(compose_dir, svc_name, svc_image_raw)
             if not source_image:
-                if "build" in svc:
-                    inferred = _infer_compose_image_name(compose_dir, svc_name)
-                    yield {
-                        "line": f"Service '{svc_name}' has no explicit image. Inferring built image: {inferred}",
-                        "stage": "push",
-                    }
-                    source_image = inferred
-                else:
-                    yield {
-                        "line": f"WARNING: Service '{svc_name}' has no image and no build config. Skipping.",
-                        "stage": "push",
-                    }
-                    continue
+                tried = ", ".join(_compose_source_image_candidates(compose_dir, svc_name, svc_image_raw))
+                msg = (
+                    f"No local image found for compose service '{svc_name}'. "
+                    f"Tried: {tried}. Run the build step before push."
+                )
+                yield {
+                    "line": msg,
+                    "stage": "push",
+                    "exit_code": 1,
+                    "complete": True,
+                    "tail": [msg],
+                }
+                return
 
-            dest_image = f"{image_repo}-{svc_name.lower()}:latest"
-            yield from _tag_and_push(source_image, dest_image, cwd=compose_dir)
+            dest_image = build_service_image(image_repo, svc_name)
+            pushed = yield from _tag_and_push(source_image, dest_image, cwd=compose_dir)
+            if not pushed:
+                return
+            pushed_images.append(dest_image)
+        yield {
+            "line": f"Pushed {len(pushed_images)} image(s): {', '.join(pushed_images)}",
+            "stage": "push",
+            "exit_code": 0,
+            "complete": True,
+            "pushed_images": pushed_images,
+        }
         return
 
     # ---------- 3. Non-Compose Projects ----------
@@ -1783,10 +1912,22 @@ def push_image_stream(project_root: str, image_repo: str,metadata) -> Generator[
         "stage": "push",
     }
 
+    pushed_images: List[str] = []
     for img in discovered:
         yield {"line": f"Pushing {img}", "stage": "push"}
         for event in _stream_command(["docker", "push", img], cwd=project_root, stage="push"):
-            yield event
+            if event.get("complete") and event.get("exit_code", 0) != 0:
+                yield event
+                return
+            yield _as_intermediate_command_event(event)
+        pushed_images.append(img)
+    yield {
+        "line": f"Pushed {len(pushed_images)} image(s): {', '.join(pushed_images)}",
+        "stage": "push",
+        "exit_code": 0,
+        "complete": True,
+        "pushed_images": pushed_images,
+    }
 
 
 def _ensure_compose_env_files(project_root: str) -> None:

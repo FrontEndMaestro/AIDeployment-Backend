@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     TERRAFORM_PATH: str = "terraform"  # Path to terraform CLI binary
     AWS_EC2_INSTANCE_TYPE: str = "t3.micro"
     AWS_EC2_KEY_NAME: str = "aws-deployment-devops"
-    AWS_SSH_PRIVATE_KEY_PATH: str = "~/.ssh/aws-deployment-devops.pem"
+    AWS_SSH_PRIVATE_KEY_PATH: str = "C:/Users/abdul/Downloads/aws-deployment-devops.pem"
     
     class Config:
         env_file = ".env"

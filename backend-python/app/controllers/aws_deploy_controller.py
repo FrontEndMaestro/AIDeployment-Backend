@@ -11,9 +11,11 @@ Provides handlers for:
 
 import os
 import re
+import subprocess
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
+import yaml
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from bson import ObjectId
@@ -28,10 +30,122 @@ from ..LLM.terraform_deploy_agent import (
 )
 from ..services.aws_service import AWSDeploymentService, verify_aws_credentials
 from ..utils.detector import find_project_root
+from ..utils.image_naming import build_project_image_repo, build_service_image
+
+
+_COMPOSE_DB_TOKENS = {"mongo", "postgres", "postgresql", "mysql", "mariadb", "redis", "sqlite", "database", "db"}
 
 
 def _shell_single_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _is_database_compose_service(service_name: str, image_name: str) -> bool:
+    combined = f"{service_name} {image_name}".lower()
+    return any(token in combined for token in _COMPOSE_DB_TOKENS)
+
+
+def _normalize_compose_images_for_aws(compose_content: str, image_repo: str) -> str:
+    """
+    Make EC2 pull the same non-database service images pushed by Docker deploy.
+
+    The push path publishes compose services as `{image_repo}-{service}:latest`.
+    AWS user_data only receives docker-compose.yml, so build-only app services
+    must become image-only pull targets.
+    """
+    if not compose_content or not image_repo:
+        return compose_content
+
+    try:
+        compose_data = yaml.safe_load(compose_content) or {}
+    except yaml.YAMLError:
+        return compose_content
+
+    if not isinstance(compose_data, dict):
+        return compose_content
+    services = compose_data.get("services")
+    if not isinstance(services, dict):
+        return compose_content
+
+    changed = False
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        current_image = str(svc.get("image") or "")
+        if _is_database_compose_service(str(svc_name), current_image):
+            continue
+
+        target_image = build_service_image(image_repo, str(svc_name))
+        if svc.get("image") != target_image:
+            svc["image"] = target_image
+            changed = True
+        if "build" in svc:
+            del svc["build"]
+            changed = True
+
+    if not changed:
+        return compose_content
+    return yaml.safe_dump(compose_data, sort_keys=False)
+
+
+def _expected_aws_app_images(
+    compose_content: Optional[str],
+    services: List[Dict],
+    image_repo: str,
+) -> List[str]:
+    images: List[str] = []
+
+    if compose_content:
+        try:
+            compose_data = yaml.safe_load(compose_content) or {}
+        except yaml.YAMLError:
+            compose_data = {}
+        compose_services = compose_data.get("services") if isinstance(compose_data, dict) else None
+        if isinstance(compose_services, dict):
+            for svc_name, svc in compose_services.items():
+                if not isinstance(svc, dict):
+                    continue
+                image_name = str(svc.get("image") or "").strip()
+                if image_name and not _is_database_compose_service(str(svc_name), image_name):
+                    images.append(image_name)
+
+    if not images and image_repo:
+        for svc in services:
+            if str(svc.get("type", "")).lower() == "database":
+                continue
+            svc_name = str(svc.get("name") or "app").lower()
+            images.append(build_service_image(image_repo, svc_name))
+
+    return list(dict.fromkeys(images))
+
+
+def _validate_docker_hub_manifests_exist(images: List[str]) -> None:
+    missing: List[str] = []
+    for image in images:
+        try:
+            proc = subprocess.run(
+                ["docker", "manifest", "inspect", image],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unable to inspect Docker Hub image manifests: {exc}",
+            ) from exc
+        if proc.returncode != 0:
+            missing.append(image)
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Docker Hub image manifest not found for AWS deployment: "
+                + ", ".join(missing)
+                + ". Run PUSH_IMAGE successfully before generating or applying AWS infrastructure."
+            ),
+        )
 
 
 def _inject_docker_credentials(terraform_code: str) -> str:
@@ -579,7 +693,11 @@ def _optional_project_root(project: Dict) -> Optional[str]:
         return None
 
 
-def get_compose_and_env_for_terraform(extracted_path: str, services: List[Dict]) -> Dict[str, Any]:
+def get_compose_and_env_for_terraform(
+    extracted_path: str,
+    services: List[Dict],
+    image_repo: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Read existing docker-compose.yml and .env files from the project.
     
@@ -598,6 +716,11 @@ def get_compose_and_env_for_terraform(extracted_path: str, services: List[Dict])
         try:
             with open(compose_path, 'r', encoding='utf-8') as f:
                 result["compose_content"] = f.read()
+            if image_repo:
+                result["compose_content"] = _normalize_compose_images_for_aws(
+                    result["compose_content"],
+                    image_repo,
+                )
             print(f"📄 Read docker-compose.yml: {len(result['compose_content'])} bytes")
         except Exception as e:
             print(f"⚠️ Error reading docker-compose.yml: {e}")
@@ -729,8 +852,17 @@ async def generate_terraform_handler(
                 env_dict = service_env_vars.setdefault(svc_name, {})
                 env_dict.update(extra_env)
         
+        image_repo = build_project_image_repo(
+            project.get("project_name", "unnamed"),
+            aws_config.get("docker_repo_prefix") or settings.DOCKER_HUB_USERNAME,
+            settings.APP_REGISTRY_PREFIX,
+        )
+
         # Read existing docker-compose.yml and .env files (from Docker deployment)
-        compose_data = get_compose_and_env_for_terraform(project_root, services)
+        compose_data = get_compose_and_env_for_terraform(project_root, services, image_repo)
+        _validate_docker_hub_manifests_exist(
+            _expected_aws_app_images(compose_data.get("compose_content"), services, image_repo)
+        )
         
         # Generate Terraform via LLM
         print(f"🏗️ Generating Terraform for project: {project_name}")
@@ -739,6 +871,7 @@ async def generate_terraform_handler(
             project_name=project_name,
             services=services,
             docker_repo_prefix=aws_config.get("docker_repo_prefix", ""),
+            image_repo=image_repo,
             aws_region=aws_config.get("aws_region", "us-east-1"),
             db_engine=aws_config.get("db_engine"),
             db_url=aws_config.get("mongo_db_url") or aws_config.get("rds_db_url"),

@@ -13,6 +13,7 @@ from ..utils.file_system import read_file
 from ..utils.detector import find_project_root
 from ..utils.detection_constants import PORT_SCHEMA_VERSION, SSR_FRONTEND_BUILD_OUTPUTS
 from ..utils.detection_services import infer_service_runtime_image_from_code
+from ..utils.image_naming import build_project_image_repo
 
 from ..services.docker_service import (
     build_project_stream,
@@ -368,15 +369,11 @@ async def get_docker_context_handler(project_id: str, current_user: dict) -> Dic
     if not has_env:
         missing_files.append(".env")
 
-    import re as _re
-    project_name_raw = project.get("project_name", "project")
-    sanitized = _re.sub(r"[^a-z0-9_-]", "-", project_name_raw.lower()).strip("-")[:50]
-    hub_user = settings.DOCKER_HUB_USERNAME
-    repo_prefix = settings.APP_REGISTRY_PREFIX or "devops-autopilot"
-    if hub_user:
-        image_repo = f"{hub_user}/{repo_prefix}-{sanitized}"
-    else:
-        image_repo = f"{repo_prefix}-{sanitized}"
+    image_repo = build_project_image_repo(
+        project.get("project_name", "project"),
+        settings.DOCKER_HUB_USERNAME,
+        settings.APP_REGISTRY_PREFIX,
+    )
 
     node_port = 30000 + (hash(project_root) % 2767)
     node_port = max(30000, min(32767, node_port))
@@ -693,24 +690,11 @@ async def stream_docker_logs_handler(
     metadata = project.get("metadata", {}) or {}
     backend_host_port = metadata.get("backend_port") or metadata.get("port") or 8000
 
-    # Build a canonical image repo for this project, namespaced by Docker Hub username if available
-    hub_user = settings.DOCKER_HUB_USERNAME
-    repo_prefix = settings.APP_REGISTRY_PREFIX or "devops-autopilot"
-    
-    # Use project_name instead of project_id for better readability
-    # Sanitize project_name for Docker tag compatibility (lowercase, alphanumeric, dashes, underscores)
-    project_name = project.get("project_name", "unnamed")
-    import re
-    sanitized_name = re.sub(r'[^a-z0-9_-]', '-', project_name.lower()).strip('-')
-    # Limit length to avoid overly long image names
-    sanitized_name = sanitized_name[:50] if len(sanitized_name) > 50 else sanitized_name
-
-    if hub_user:
-        # e.g. abdul/devops-autopilot-simplecart-js-master
-        image_repo = f"{hub_user}/{repo_prefix}-{sanitized_name}"
-    else:
-        # fallback (local only)
-        image_repo = f"{repo_prefix}-{sanitized_name}"
+    image_repo = build_project_image_repo(
+        project.get("project_name", "unnamed"),
+        settings.DOCKER_HUB_USERNAME,
+        settings.APP_REGISTRY_PREFIX,
+    )
 
     if action == "build":
         generator = build_project_stream(project_root, image_repo, metadata)

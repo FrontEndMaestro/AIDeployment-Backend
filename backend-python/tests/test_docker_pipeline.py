@@ -16,6 +16,7 @@ import re
 import tempfile
 import shutil
 import unittest
+import json
 from unittest.mock import patch
 
 # Add parent directory to path for imports
@@ -27,6 +28,11 @@ from app.LLM.docker_deploy_agent import (
     DOCKER_DEPLOY_SYSTEM_PROMPT,
 )
 from app.controllers.docker_ai_controller import _augment_services_runtime_hints
+from app.services.docker_service import (
+    _compose_source_image_candidates,
+    _resolve_existing_compose_source_image,
+    push_image_stream,
+)
 
 
 # =============================================================================
@@ -516,6 +522,97 @@ class TestComposeYamlExtraction(unittest.TestCase):
         )
         result = self._extract_compose(response)
         self.assertIn("services:", result)
+
+
+class TestComposePushSourceResolution(unittest.TestCase):
+    def test_candidates_include_configured_hyphen_and_legacy_underscore_names(self):
+        candidates = _compose_source_image_candidates(
+            os.path.join("tmp", "MERN Notes App"),
+            "frontend",
+            "mern_notes_app_frontend",
+        )
+
+        self.assertIn("mern_notes_app_frontend", candidates)
+        self.assertIn("mern_notes_app_frontend:latest", candidates)
+        self.assertIn("mern-notes-app-frontend", candidates)
+        self.assertIn("mern-notes-app-frontend:latest", candidates)
+
+    @patch("app.services.docker_service.subprocess.run")
+    def test_resolves_existing_fallback_when_configured_image_is_missing(self, mock_run):
+        def fake_run(cmd, **kwargs):
+            image_name = cmd[-1]
+            return_code = 0 if image_name == "mern-notes-app-frontend:latest" else 1
+
+            class Result:
+                pass
+
+            result = Result()
+            result.returncode = return_code
+            return result
+
+        mock_run.side_effect = fake_run
+
+        result = _resolve_existing_compose_source_image(
+            os.path.join("tmp", "MERN Notes App"),
+            "frontend",
+            "mern_notes_app_frontend",
+        )
+
+        self.assertEqual(result, "mern-notes-app-frontend:latest")
+
+    @patch("app.services.docker_service._docker_login")
+    @patch("app.services.docker_service.ensure_external_networks")
+    @patch("app.services.docker_service._resolve_existing_compose_source_image")
+    @patch("app.services.docker_service._tag_and_push")
+    @patch("app.services.docker_service.subprocess.run")
+    def test_push_stream_completes_only_after_all_compose_images_are_pushed(
+        self,
+        mock_run,
+        mock_tag_and_push,
+        mock_resolve,
+        mock_networks,
+        mock_login,
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "docker-compose.yml"), "w", encoding="utf-8") as f:
+                f.write("services:\n  server:\n    image: mern_notes_app_server\n")
+
+            class Result:
+                returncode = 0
+                stderr = ""
+                stdout = json.dumps({
+                    "services": {
+                        "server": {
+                            "image": "mern_notes_app_server"
+                        }
+                    }
+                })
+
+            def fake_tag_and_push(source_image, dest_image, cwd):
+                yield {
+                    "line": "push command exited with code 0",
+                    "stage": "push",
+                    "exit_code": 0,
+                    "command_complete": True,
+                    "complete": False,
+                }
+                return True
+
+            mock_run.return_value = Result()
+            mock_tag_and_push.side_effect = fake_tag_and_push
+            mock_resolve.return_value = "mern-notes-app-server:latest"
+            mock_networks.return_value = []
+            mock_login.return_value = []
+
+            events = list(push_image_stream(tmpdir, "abdulahad2242/devops-autopilot-mern_notes_app", {}))
+
+        complete_events = [event for event in events if event.get("complete")]
+        self.assertEqual(len(complete_events), 1)
+        self.assertEqual(complete_events[0]["exit_code"], 0)
+        self.assertEqual(
+            complete_events[0]["pushed_images"],
+            ["abdulahad2242/devops-autopilot-mern_notes_app-server:latest"],
+        )
 
 
 class TestDockerfileExtraction(unittest.TestCase):

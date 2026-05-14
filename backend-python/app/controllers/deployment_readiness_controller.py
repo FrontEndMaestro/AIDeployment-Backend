@@ -24,6 +24,7 @@ from ..config.database import get_projects_collection
 from ..utils.auth import decode_access_token
 from ..utils.detector import find_project_root
 from ..utils.file_system import read_file
+from ..utils.image_naming import build_project_image_repo
 from ..LLM.docker_deploy_agent import (
     run_docker_deploy_chat,
     parse_and_validate_generated_docker_response,
@@ -52,12 +53,11 @@ def _node_port_for(project_root: str) -> int:
 
 
 def _image_repo_for(project_name: str) -> str:
-    hub_user = settings.DOCKER_HUB_USERNAME
-    prefix = settings.APP_REGISTRY_PREFIX or "devops-autopilot"
-    sanitized = _sanitize_name(project_name)
-    if hub_user:
-        return f"{hub_user}/{prefix}-{sanitized}"
-    return f"{prefix}-{sanitized}"
+    return build_project_image_repo(
+        project_name,
+        settings.DOCKER_HUB_USERNAME,
+        settings.APP_REGISTRY_PREFIX,
+    )
 
 
 # ─── File scanning ────────────────────────────────────────────────────────────

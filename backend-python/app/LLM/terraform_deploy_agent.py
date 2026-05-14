@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 
 from .llm_client import call_gemini, call_gemini_stream
 from ..config.settings import settings
+from ..utils.image_naming import build_service_image
 
 # System prompt for Terraform generation - EC2 Free Tier Version
 TERRAFORM_DEPLOY_SYSTEM_PROMPT = """You generate Terraform for deploying Docker containers to AWS EC2 (Free Tier).
@@ -52,7 +53,7 @@ variable "key_name" {
 }
 variable "ssh_private_key_path" {
   description = "Local path to the EC2 private key PEM file"
-  default     = "~/.ssh/aws-deployment-devops.pem"
+  default     = "C:/Users/abdul/Downloads/aws-deployment-devops.pem"
 }
 variable "allowed_ssh_cidr" {
   description = "CIDR block allowed to SSH"
@@ -161,7 +162,7 @@ Output all of these, no exceptions:
 ## DEBUG COMMANDS (include as comments at the bottom of main.tf)
 # After deployment, use these commands to debug:
 # terraform output                                          - Show all outputs
-# ssh -i ~/.ssh/aws-deployment-devops.pem ec2-user@<public_ip> - SSH into instance
+# ssh -i C:/Users/abdul/Downloads/aws-deployment-devops.pem ec2-user@<public_ip> - SSH into instance
 # curl http://<public_ip>:<app_port>                       - Test app endpoint
 # sudo docker ps                                           - List running containers
 # sudo docker logs <container_name>                        - View container logs
@@ -186,6 +187,7 @@ def build_terraform_message(
     service_env_vars: Optional[Dict[str, Dict[str, str]]] = None,
     existing_compose: Optional[str] = None,
     existing_env_files: Optional[Dict[str, str]] = None,
+    image_repo: Optional[str] = None,
     key_name: str = settings.AWS_EC2_KEY_NAME,
     ssh_private_key_path: str = settings.AWS_SSH_PRIVATE_KEY_PATH,
     allowed_ssh_cidr: str = "0.0.0.0/0",
@@ -240,11 +242,16 @@ def build_terraform_message(
         svc_name = svc.get("name", "app")
         svc_port = svc.get("port", 3000)
         svc_type = svc.get("type", "backend")
+        svc_image = (
+            build_service_image(image_repo, str(svc_name))
+            if image_repo
+            else f"{docker_repo_prefix}/{project_name}-{svc_name}:latest"
+        )
         
         lines.append(f"\nService: {svc_name}")
         lines.append(f"  Type: {svc_type}")
         lines.append(f"  Port: {svc_port}")
-        lines.append(f"  Image: {docker_repo_prefix}/{project_name}-{svc_name}:latest")
+        lines.append(f"  Image: {svc_image}")
         
         # Add service-specific environment variables
         if service_env_vars and svc_name in service_env_vars:
@@ -318,6 +325,7 @@ def run_terraform_deploy_chat(
     service_env_vars: Optional[Dict[str, Dict[str, str]]] = None,
     existing_compose: Optional[str] = None,
     existing_env_files: Optional[Dict[str, str]] = None,
+    image_repo: Optional[str] = None,
     key_name: str = settings.AWS_EC2_KEY_NAME,
     ssh_private_key_path: str = settings.AWS_SSH_PRIVATE_KEY_PATH,
     allowed_ssh_cidr: str = "0.0.0.0/0",
@@ -341,6 +349,7 @@ def run_terraform_deploy_chat(
         service_env_vars=service_env_vars,
         existing_compose=existing_compose,
         existing_env_files=existing_env_files,
+        image_repo=image_repo,
         key_name=key_name,
         ssh_private_key_path=ssh_private_key_path,
         allowed_ssh_cidr=allowed_ssh_cidr,
@@ -374,6 +383,7 @@ def run_terraform_deploy_chat_stream(
     db_url: Optional[str] = None,
     desired_count: int = 1,
     service_env_vars: Optional[Dict[str, Dict[str, str]]] = None,
+    image_repo: Optional[str] = None,
     key_name: str = settings.AWS_EC2_KEY_NAME,
     ssh_private_key_path: str = settings.AWS_SSH_PRIVATE_KEY_PATH,
     allowed_ssh_cidr: str = "0.0.0.0/0",
@@ -393,6 +403,7 @@ def run_terraform_deploy_chat_stream(
         db_url=db_url,
         desired_count=desired_count,
         service_env_vars=service_env_vars,
+        image_repo=image_repo,
         key_name=key_name,
         ssh_private_key_path=ssh_private_key_path,
         allowed_ssh_cidr=allowed_ssh_cidr,
